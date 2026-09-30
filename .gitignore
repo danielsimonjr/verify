@@ -1,0 +1,11 @@
+# Large artifacts and third-party runtimes are never committed.
+/data/
+/runs/
+/harness/vendor/
+/harness/pi-home/*
+!/harness/pi-home/models.json
+/local.env
+__pycache__/
+*.pyc
+*.log
+.vscode/
