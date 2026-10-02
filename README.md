@@ -8,7 +8,7 @@
 Check what agent outputs disagree on, and what they all get wrong. Deliver a better artifact with a record of why.</p>
 
 <p align="center">
-  <a href="https://veriharness.com/assets/paper.pdf"><img src="https://img.shields.io/badge/Paper-PDF-EA4335" alt="Paper"></a>
+  <a href="https://arxiv.org/abs/2610.00972"><img src="https://img.shields.io/badge/arXiv-2610.00972-EA4335" alt="arXiv"></a>
   <a href="https://veriharness.com"><img src="https://img.shields.io/badge/Website-veriharness.com-4285F4" alt="Website"></a>
   <a href="https://huggingface.co/datasets/caiqizh/veriharness"><img src="https://img.shields.io/badge/Dataset-Hugging%20Face-FBBC04" alt="Dataset"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-34A853" alt="License"></a>
@@ -376,9 +376,11 @@ what the task's own text asks for.
 
 ```bibtex
 @article{veriharness2026,
-  title  = {VeriHarness: Scaling Agentic Verification for Long-Horizon Tasks},
-  author = {Zhang, Caiqi and Han, Rujun and Wang, Zifeng and CuiZhu, Zoey and Collier, Nigel and Pfister, Tomas and Lee, Chen-Yu},
-  year   = {2026}
+  title   = {VeriHarness: Scaling Agentic Verification for Long-Horizon Tasks},
+  author  = {Zhang, Caiqi and Han, Rujun and Wang, Zifeng and CuiZhu, Zoey and Collier, Nigel and Pfister, Tomas and Lee, Chen-Yu},
+  journal = {arXiv preprint arXiv:2610.00972},
+  year    = {2026},
+  url     = {https://arxiv.org/abs/2610.00972}
 }
 ```
 
