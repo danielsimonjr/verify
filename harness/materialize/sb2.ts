@@ -13,10 +13,10 @@
 // limitations under the License.
 
 import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
-import { exists, isDir, readJson } from "../fsutil.js";
-import { Rollout, Task, srcRoot } from "./base.js";
+import { exists, isDir } from "../fsutil.js";
+import { Rollout, Task, readJsonStrict, srcRoot } from "./base.js";
 import { renderSb2Traj } from "./renderers.js";
 
 export const POOLS: Record<string, string> = { flash: "flash_high", opus: "opus_high" };
@@ -25,16 +25,29 @@ function sb2Root(): string {
   return join(srcRoot(), "benchmarks/sb2");
 }
 
-function specs(): Record<string, [string, string]> {
-  const out: Record<string, [string, string]> = {};
+type Spec = { instruction: string; inputFile: string; tid: string };
+
+/**
+ * key -> spec. The task id is taken from the dataset record, not cut out of the key: an id may
+ * itself contain "__", and the Python split at the FIRST separator only.
+ */
+function specs(): Map<string, Spec> {
+  const out = new Map<string, Spec>();
   const official = join(sb2Root(), "official/data");
   for (const cat of readdirSync(official).sort()) {
     const ds = join(official, cat, "dataset.json");
     if (!exists(ds)) continue;
-    const recs = readJson(ds) as { id: string; instruction?: string; spreadsheet_path: string }[];
-    for (const rec of recs ?? []) {
-      const key = `${cat}__${rec.id}`;
-      out[key] = [rec.instruction ?? "", join(official, cat, rec.spreadsheet_path)];
+    const recs = readJsonStrict<{ id?: unknown; instruction?: unknown; spreadsheet_path?: unknown }[]>(ds);
+    if (!Array.isArray(recs)) throw new Error(`${ds} is not a list of task records`);
+    for (const rec of recs) {
+      if (typeof rec?.id !== "string" || typeof rec.spreadsheet_path !== "string") {
+        throw new Error(`${ds} has a record without a string id and spreadsheet_path`);
+      }
+      out.set(`${cat}__${rec.id}`, {
+        instruction: typeof rec.instruction === "string" ? rec.instruction : "",
+        inputFile: join(official, cat, rec.spreadsheet_path),
+        tid: rec.id,
+      });
     }
   }
   return out;
@@ -43,10 +56,9 @@ function specs(): Record<string, [string, string]> {
 export function* iterTasks(pool: string): Generator<Task> {
   const prefix = POOLS[pool]!;
   const sb2 = sb2Root();
-  const grades = readJson(join(sb2, "grades/grades.json")) as Record<
-    string,
-    Record<string, { accuracy?: number }>
-  >;
+  const grades = readJsonStrict<Record<string, Record<string, { accuracy?: unknown }>>>(
+    join(sb2, "grades/grades.json"),
+  );
   const specMap = specs();
   const poolsDir = join(sb2, "pools");
   const seedsAll = new Set(
@@ -59,11 +71,11 @@ export function* iterTasks(pool: string): Generator<Task> {
     const seeds = Object.keys(grades[key] ?? {})
       .filter((s) => s.startsWith(prefix) && seedsAll.has(s))
       .sort();
-    if (seeds.length < 2 || !(key in specMap)) continue;
-    const [instruction, inputFile] = specMap[key]!;
-    const tid = key.split("__", 2)[1]!;
+    const spec = specMap.get(key);
+    if (seeds.length < 2 || !spec) continue;
+    const { instruction, inputFile, tid } = spec;
     const task = new Task(key, instruction);
-    if (exists(inputFile)) task.workspace.push([inputFile, inputFile.split("/").pop()!]);
+    if (exists(inputFile)) task.workspace.push([inputFile, basename(inputFile)]);
     for (const seed of seeds) {
       const d = join(poolsDir, seed, key);
       const files =
@@ -75,7 +87,14 @@ export function* iterTasks(pool: string): Generator<Task> {
           : [];
       const tf = join(d, "traj", `${tid}.traj`);
       const acc = grades[key]![seed]?.accuracy;
-      const r = new Rollout(seed, acc !== undefined && acc !== null ? Number(acc) : null);
+      let score: number | null = null;
+      if (acc !== undefined && acc !== null) {
+        score = Number(acc);
+        if (!Number.isFinite(score)) {
+          throw new Error(`accuracy ${JSON.stringify(acc)} of ${key} / ${seed} is not a number`);
+        }
+      }
+      const r = new Rollout(seed, score);
       r.files = files;
       if (exists(tf)) r.traj = () => renderSb2Traj(tf);
       task.rollouts[seed] = r;

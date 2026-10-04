@@ -55,7 +55,7 @@ function asText(v: unknown, opaque: Set<string> = OPAQUE): string {
  * archived formats carry `content: []` and `arguments: {}` where JavaScript's `if (x)` would
  * treat them as present and render an empty block.
  */
-function truthy(v: unknown): boolean {
+export function truthy(v: unknown): boolean {
   if (v === null || v === undefined || v === false || v === 0 || v === "") return false;
   if (Array.isArray(v)) return v.length > 0;
   if (typeof v === "object") return Object.keys(v as object).length > 0;

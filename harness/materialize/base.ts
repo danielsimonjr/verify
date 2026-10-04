@@ -58,12 +58,16 @@ export function assertSegment(label: string, value: string): void {
   }
 }
 
-/** Write JSON through a temp file and a rename, so a crash never leaves a half-written file. */
-function writeJsonAtomic(path: string, obj: unknown): void {
+/** Write a file through a temp file and a rename, so a crash never leaves a half-written file. */
+export function writeFileAtomic(path: string, data: string | Uint8Array): void {
   ensureDir(dirname(path));
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(obj, null, 1), "utf8");
+  writeFileSync(tmp, data);
   renameSync(tmp, path);
+}
+
+function writeJsonAtomic(path: string, obj: unknown): void {
+  writeFileAtomic(path, JSON.stringify(obj, null, 1));
 }
 
 export type TextOrFn = string | (() => string);

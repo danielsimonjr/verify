@@ -65,16 +65,30 @@ function renderTraj(f: string): () => string {
   return () => renderOpencodeEvents(readText(f).split(/\r?\n/));
 }
 
+/**
+ * `<prof>/<task>/task_folder/TASK_INSTRUCTIONS.txt` under the dataset, for task directories whose
+ * name starts with "task", in the order the Python glob gave them (profession, then task). Only
+ * those two directory levels are listed: the task folders hold the inputs, which can be a large tree.
+ */
+function taskInstructions(ds: string): { prof: string; tn: string; td: string; instr: string }[] {
+  const out: { prof: string; tn: string; td: string; instr: string }[] = [];
+  for (const prof of readdirSync(ds).sort()) {
+    const pd = join(ds, prof);
+    if (!isDir(pd)) continue;
+    for (const tn of readdirSync(pd).sort()) {
+      if (!tn.startsWith("task")) continue;
+      const td = join(pd, tn);
+      const instr = join(td, "task_folder", "TASK_INSTRUCTIONS.txt");
+      if (exists(instr)) out.push({ prof, tn, td, instr });
+    }
+  }
+  return out;
+}
+
 export function* iterTasks(pool: string): Generator<Task> {
   const labels = POOLS[pool]!;
   const { ds, judgeRoot, trajRoot, outputRoot } = jbPaths();
-  const instrFiles = walkFiles(ds, { followLinks: false })
-    .filter((p) => p.endsWith("/task_folder/TASK_INSTRUCTIONS.txt"))
-    .sort();
-  for (const instr of instrFiles) {
-    const td = join(instr, "..", "..");
-    const prof = basename(join(td, ".."));
-    const tn = basename(td);
+  for (const { prof, tn, td, instr } of taskInstructions(ds)) {
     const task = new Task(`${prof}__${tn}`, readText(instr));
     task.trees.push([join(td, "task_folder"), "task_folder"]);
     const frs = join(td, "files_required_to_search");
