@@ -14,11 +14,11 @@
 
 /** Score one cell of a run against its archived rollout pool. */
 
-import { appendFileSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import * as config from "./config.js";
-import { baseOf, readJson } from "./driver.js";
+import { baseOf, readJson, rolloutDir } from "./driver.js";
 import { isDir, isFile, readText, writeJson } from "./fsutil.js";
 import {
   gradeDeliverables,
@@ -26,7 +26,22 @@ import {
   preflight,
   type GradeResult,
 } from "./grade/index.js";
-import { mapPool } from "./pool.js";
+
+/** The grader entry points score.ts calls, injectable so a test can run a cell without real graders. */
+export interface GradeApi {
+  loadGradeModule: typeof loadGradeModule;
+  gradeDeliverables: typeof gradeDeliverables;
+  preflight: typeof preflight;
+}
+
+/** What `main` reads from outside the cell: the pools' data root and the graders. */
+export interface ScoreDeps {
+  dataRoot: string;
+  grade: GradeApi;
+}
+
+const DEFAULT_GRADE: GradeApi = { loadGradeModule, gradeDeliverables, preflight };
+import { iteratePool } from "./pool.js";
 import { isMain } from "./runtime.js";
 
 function bootstrapCi(xs: number[], iters = 10000, alpha = 0.05, seed = 0): [number, number] {
@@ -47,13 +62,14 @@ function bootstrapCi(xs: number[], iters = 10000, alpha = 0.05, seed = 0): [numb
 }
 
 async function safeGrade(
+  grade: GradeApi,
   bench: string,
   key: string,
   deliverables: string,
   kw: Record<string, unknown> = {},
 ): Promise<GradeResult> {
   try {
-    return await gradeDeliverables(bench, key, deliverables, kw);
+    return await grade.gradeDeliverables(bench, key, deliverables, kw);
   } catch (e) {
     const name = e instanceof Error ? e.constructor.name : "Error";
     const msg = e instanceof Error ? e.message : String(e);
@@ -63,16 +79,16 @@ async function safeGrade(
 
 type GradeJob = [string, string, string, boolean];
 
-async function gradeTask(job: GradeJob): Promise<[string, GradeResult, GradeResult]> {
+async function gradeTask(grade: GradeApi, job: GradeJob): Promise<[string, GradeResult, GradeResult]> {
   const [bench, wsStr, base, deliveryValid] = job;
   const key = basename(wsStr);
   const baseDir = join(wsStr, "rollouts", base, "deliverables");
   const gBase = isDir(baseDir)
-    ? await safeGrade(bench, key, baseDir)
+    ? await safeGrade(grade, bench, key, baseDir)
     : { score: null, error: "no base" };
   const trace = join(baseDir, "..", "trajectory", "agent.json");
   const gOut = deliveryValid
-    ? await safeGrade(bench, key, join(wsStr, "out", "deliverables"), { trace })
+    ? await safeGrade(grade, bench, key, join(wsStr, "out", "deliverables"), { trace })
     : { score: null, error: "delivery failed the bundle contract" };
   return [key, gBase, gOut];
 }
@@ -98,12 +114,13 @@ async function runBatch(
 }
 
 async function* gradeBatched(
+  grade: GradeApi,
   bench: string,
   jobs: GradeJob[],
   batch: number,
   containers: number,
 ): AsyncGenerator<[string, GradeResult, GradeResult]> {
-  const mod = await loadGradeModule(bench);
+  const mod = await grade.loadGradeModule(bench);
   const gradeBatch = mod.gradeBatch;
   if (!gradeBatch) return;
 
@@ -148,8 +165,9 @@ async function* gradeBatched(
 
   yield* ready();
 
-  const results = await mapPool(batches, containers, (b) => runBatch(gradeBatch, batch, b));
-  for (const [side, res] of results) {
+  // Each batch is folded in as it lands, so finished tasks reach the caller (and its partial
+  // file) while the other containers are still grading.
+  for await (const [side, res] of iteratePool(batches, containers, (b) => runBatch(gradeBatch, batch, b))) {
     for (const [key, r] of Object.entries(res)) {
       if (pending[key]) {
         pending[key][side] = r;
@@ -167,6 +185,11 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
+/** The archived score of `base` in the pool, or null: a task's rollout names are data, not property names. */
+function archivedScore(poolScores: Record<string, number>, base: string): number | null {
+  return Object.hasOwn(poolScores, base) ? poolScores[base]! : null;
+}
+
 function unchanged(base: string, delivery: Record<string, unknown>): boolean {
   return base !== "none" && (delivery.changed as unknown[] | undefined)?.length === 0;
 }
@@ -178,7 +201,9 @@ function row(
   gBase: GradeResult | null,
   gOut: GradeResult | null,
 ): Record<string, unknown> {
-  let select = poolScores[base];
+  // null, not undefined: the row is JSON, and the Python wrote "select": null for a base the pool
+  // holds no score for. An absent key reads differently to whatever consumes scores.json.
+  let select: number | null = archivedScore(poolScores, base);
   const changed = delivery.changed;
   const rowOut: Record<string, unknown> = {
     base,
@@ -195,7 +220,7 @@ function row(
   if (gBase === null) {
     return { ...rowOut, final: select };
   }
-  if (unchanged(base, delivery) && select !== undefined && select !== null) {
+  if (unchanged(base, delivery) && select !== null) {
     return {
       ...rowOut,
       base_regraded: null,
@@ -206,13 +231,13 @@ function row(
   }
   const baseRegraded = gBase.score ?? null;
   const outGraded = gOut?.score ?? null;
-  if (select === undefined && base !== "none" && baseRegraded !== null) {
+  if (select === null && base !== "none" && baseRegraded !== null) {
     rowOut.select = select = baseRegraded;
   }
   let final: number | null;
   if (outGraded === null) {
-    final = select ?? null;
-  } else if (select === undefined || select === null) {
+    final = select;
+  } else if (select === null) {
     final = outGraded;
   } else if (baseRegraded === null) {
     final = outGraded;
@@ -284,36 +309,67 @@ function graderHealth(rows: Record<string, Record<string, unknown>>): string {
   return "";
 }
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      workers: { type: "string", default: "6" },
-      batch: { type: "string", default: "1" },
-      "select-only": { type: "boolean", default: false },
-      redo: { type: "boolean", default: false },
-      json: { type: "boolean", default: false },
-    },
-  });
+const OPTIONS = {
+  workers: { type: "string", default: "6" },
+  batch: { type: "string", default: "1" },
+  "select-only": { type: "boolean", default: false },
+  redo: { type: "boolean", default: false },
+  json: { type: "boolean", default: false },
+} as const;
+
+function parseScoreArgs(argv: string[]) {
+  return parseArgs({ args: argv, allowPositionals: true, options: OPTIONS });
+}
+
+/** A whole number >= 1, or null. `Number("abc")` is NaN, which a pool used to read as zero workers. */
+function positiveInt(raw: string | undefined): number | null {
+  if (raw === undefined || !/^\d+$/.test(raw.trim())) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= 1 ? n : null;
+}
+
+export async function main(argv: string[] = process.argv.slice(2), deps: Partial<ScoreDeps> = {}): Promise<number> {
+  const dataRoot = deps.dataRoot ?? config.DATA;
+  const grade = deps.grade ?? DEFAULT_GRADE;
+  let parsed: ReturnType<typeof parseScoreArgs>;
+  try {
+    parsed = parseScoreArgs(argv);
+  } catch (e) {
+    process.stderr.write(`error: ${e instanceof Error ? e.message : String(e)}\n`);
+    return 2;
+  }
+  const { values, positionals } = parsed;
   if (!positionals.length) {
     process.stderr.write("cell positional required\n");
     return 2;
   }
+  const parsedWorkers = positiveInt(values.workers);
+  const parsedBatch = positiveInt(values.batch);
+  if (parsedWorkers === null || parsedBatch === null) {
+    const [flag, raw] = parsedWorkers === null ? ["--workers", values.workers] : ["--batch", values.batch];
+    process.stderr.write(`error: ${flag} must be a positive integer, got '${raw}'\n`);
+    return 2;
+  }
+  const workers: number = parsedWorkers;
+  const batch: number = parsedBatch;
 
   const cell = resolve(positionals[0]!);
   const cellName = basename(cell);
   const lastUnderscore = cellName.lastIndexOf("_");
+  if (lastUnderscore <= 0 || lastUnderscore === cellName.length - 1) {
+    process.stderr.write(`error: the cell directory must be named <bench>_<pool>, got '${cellName}'\n`);
+    return 2;
+  }
   const benchName = cellName.slice(0, lastUnderscore);
   const poolName = cellName.slice(lastUnderscore + 1);
 
-  const meta = JSON.parse(readText(join(config.DATA, benchName, poolName, "meta.json"))) as Record<
+  const meta = JSON.parse(readText(join(dataRoot, benchName, poolName, "meta.json"))) as Record<
     string,
     { rollouts: Record<string, { score: number | null }> }
   >;
 
   if (!values["select-only"]) {
-    const problem = await preflight(benchName);
+    const problem = await grade.preflight(benchName);
     if (problem) {
       process.stderr.write(
         `!! ${benchName} grader preflight failed; refusing to run rather than score zeros:\n   ${problem}\n`,
@@ -322,17 +378,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
   }
 
+  // Keyed by directory and rollout names, which are data: no prototype, so "constructor" or
+  // "__proto__" is an ordinary key and `in` / hasOwn see only what was put there.
   const tasks: Record<
     string,
     [string, string, Record<string, number>, Record<string, unknown>]
-  > = {};
+  > = Object.create(null);
   const unfinished: string[] = [];
 
-  for (const ent of readdirSync(cell, { withFileTypes: true })) {
-    if (!ent.isDirectory() || !(ent.name in meta)) continue;
+  // Sorted, as the Python was: the bootstrap CI resamples the per-task deltas in this order, so an
+  // unsorted listing (Bun and Node differ, and ext4 is not alphabetical) would move the interval.
+  const entries = readdirSync(cell, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const ent of entries) {
+    if (!ent.isDirectory() || !Object.hasOwn(meta, ent.name)) continue;
     const ws = join(cell, ent.name);
-    const poolScores: Record<string, number> = {};
-    for (const [r, v] of Object.entries(meta[ent.name].rollouts)) {
+    const poolScores: Record<string, number> = Object.create(null);
+    for (const [r, v] of Object.entries(meta[ent.name]!.rollouts)) {
       if (v.score !== null) poolScores[r] = v.score;
     }
     const finish = readJson<Record<string, unknown>>(join(ws, "finish.json"));
@@ -341,17 +402,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       continue;
     }
     const base = finish ? baseOf(finish) : "none";
-    if (
-      finish === null ||
-      (base !== "none" && !isDir(join(ws, "rollouts", base)))
-    ) {
+    if (finish === null || (base !== "none" && rolloutDir(ws, base) === null)) {
       unfinished.push(ent.name);
       continue;
     }
     tasks[ent.name] = [ws, base, poolScores, (finish.repair as Record<string, unknown>) || {}];
   }
 
-  let rows: Record<string, Record<string, unknown>> = {};
+  const rows: Record<string, Record<string, unknown>> = Object.create(null);
 
   if (values["select-only"]) {
     for (const [k, [, base, sc, delivery]] of Object.entries(tasks)) {
@@ -359,7 +417,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
   } else {
     for (const [k, [, base, poolScores, delivery]] of Object.entries(tasks)) {
-      if (unchanged(base, delivery) && poolScores[base] !== undefined) {
+      if (unchanged(base, delivery) && archivedScore(poolScores, base) !== null) {
         rows[k] = row(base, poolScores, delivery, { score: null }, { score: null });
       }
     }
@@ -370,7 +428,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         if (!line.trim()) continue;
         try {
           const rec = JSON.parse(line) as { key: string; row: Record<string, unknown> };
-          if (rec.key in tasks && !(rec.key in rows)) {
+          if (Object.hasOwn(tasks, rec.key) && !Object.hasOwn(rows, rec.key)) {
             const [, base, poolScores, delivery] = tasks[rec.key];
             const old = rec.row;
             rows[rec.key] = row(
@@ -391,27 +449,25 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
 
     const jobs: GradeJob[] = Object.entries(tasks)
-      .filter(([k]) => !(k in rows))
-      .map(([k, [ws, base, , delivery]]) => [benchName, ws, base, Boolean(delivery.valid)] as GradeJob);
+      .filter(([k]) => !Object.hasOwn(rows, k))
+      .map(([, [ws, base, , delivery]]) => [benchName, ws, base, Boolean(delivery.valid)] as GradeJob);
 
     console.log(
       `${jobs.length} tasks to grade; ${nUnchanged} delivered unchanged (the base stands)`,
     );
 
-    const workers = Number(values.workers ?? 6);
-    const batch = Number(values.batch ?? 1);
-    const mod = await loadGradeModule(benchName);
+    const mod = await grade.loadGradeModule(benchName);
     const hasBatch = typeof mod.gradeBatch === "function" && batch > 1;
 
+    // Results arrive as each task finishes, so every one reaches scores.partial.jsonl at once and a
+    // run that dies mid-cell resumes from what was graded. (Awaiting the whole pool first, as this
+    // did, wrote nothing until the last task was done.)
     async function* results(): AsyncGenerator<[string, GradeResult, GradeResult]> {
       if (hasBatch) {
-        yield* gradeBatched(benchName, jobs, batch, workers);
+        yield* gradeBatched(grade, benchName, jobs, batch, workers);
         return;
       }
-      const graded = await mapPool(jobs, workers, async (job) => gradeTask(job));
-      for (const r of graded) {
-        yield r;
-      }
+      yield* iteratePool(jobs, workers, async (job) => gradeTask(grade, job));
     }
 
     for await (const [key, gBase, gOut] of results()) {
