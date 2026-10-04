@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # The action pins in .github/workflows are commit SHAs, so nothing moves them unless this does.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  # No npm or bun entry: Dependabot's bun reads bun.lock lockfileVersion 1 only (Bun 1.4 writes 2),
+  # and npm_and_yarn does not update bun.lock, so CI's `bun install --frozen-lockfile` would fail on
+  # its pull requests. Security alerts still come from the dependency graph. Bump dependencies with
+  # `bun update <pkg>` and commit bun.lock.
