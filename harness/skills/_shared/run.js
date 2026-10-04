@@ -13,14 +13,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/** Dual-runtime skill entry: Bun (dev) or compiled/Node (prod). */
+/**
+ * Dual-runtime skill entry: Bun (dev) or compiled/Node (prod).
+ *
+ * This file is NOT compiled by tsc (tsconfig includes only the .ts files under harness/) and
+ * Node runs it as-is, so it must stay plain JavaScript: types go in JSDoc, never in annotations.
+ */
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export async function launchSkill(metaUrl: string): Promise<void> {
+/**
+ * Run the skill script that sits next to the calling entry script.
+ * @param {string} metaUrl `import.meta.url` of the entry script, e.g. scripts/xlsx_dump.js.
+ * @returns {Promise<void>}
+ */
+export async function launchSkill(metaUrl) {
   const dir = dirname(fileURLToPath(metaUrl));
   const base = basename(fileURLToPath(metaUrl), ".js");
   const skill = basename(join(dir, ".."));

@@ -18,7 +18,16 @@ import { mkdtempSync, openSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { HARNESS_DIR, benchRoot, DATA, TMP_DIR } from "../config.js";
-import { copyTree, exists, isDir, readText, rmrf } from "../fsutil.js";
+import {
+  assertNoSymlinks,
+  copyTree,
+  exists,
+  isDir,
+  partition,
+  readText,
+  rmrf,
+  SymlinkError,
+} from "../fsutil.js";
 import type { GradeResult } from "./index.js";
 
 const WB_PY = join(HARNESS_DIR, "grade", "wb.py");
@@ -61,11 +70,11 @@ function wbEnv(): Record<string, string> {
 
 function imageFor(tname: string): string | null {
   const mark = join(WORLDS, tname, ".exported");
-  const images = spawnSync("docker", ["images", "--format", "{{.Repository}}"], {
+  // stdout is null when the docker binary cannot be started; that means "no images", not a crash.
+  const listed = spawnSync("docker", ["images", "--format", "{{.Repository}}"], {
     encoding: "utf8",
-  })
-    .stdout.split("\n")
-    .filter(Boolean);
+  });
+  const images = (listed.stdout ?? "").split("\n").filter(Boolean);
   if (exists(mark)) {
     const cand = readText(mark).trim();
     if (images.includes(cand)) return cand;
@@ -198,18 +207,29 @@ export async function grade(
   opts: { keep?: boolean } = {},
 ): Promise<GradeResult> {
   const keep = opts.keep ?? false;
-  const [dom, , tname] = key.split("__");
+  // Keys are `<domain>__<task>` and the task name may itself contain "__".
+  const [dom, tname] = partition(key, "__");
   if (!dom || !DS_NAME[dom]) {
     return { score: null, error: `unknown domain ${dom}`, grader: GRADER };
   }
-  const taskDir = join(DATASETS, DS_NAME[dom], "tasks", tname!);
+  if (!tname) {
+    return { score: null, error: `malformed key ${key}: expected <domain>__<task>`, grader: GRADER };
+  }
+  const taskDir = join(DATASETS, DS_NAME[dom], "tasks", tname);
   if (!exists(join(taskDir, "task.toml"))) {
     return { score: null, error: `no task dir ${taskDir}`, grader: GRADER };
   }
   if (!isDir(deliverables)) {
     return { score: null, error: `no deliverables dir ${deliverables}`, grader: GRADER };
   }
-  const image = imageFor(tname!);
+  // Refuse a symlinked bundle before anything else touches Docker. copyTree below checks again.
+  try {
+    assertNoSymlinks(deliverables);
+  } catch (e) {
+    if (e instanceof SymlinkError) return { score: null, error: e.message, grader: GRADER };
+    throw e;
+  }
+  const image = imageFor(tname);
   if (!image) {
     return { score: null, error: `no local env image for ${tname}`, grader: GRADER };
   }

@@ -17,7 +17,17 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { benchRoot, TMP_DIR } from "../config.js";
-import { copyTree, exists, isDir, isFile, readJson, readText, rmrf } from "../fsutil.js";
+import {
+  copyTree,
+  exists,
+  isDir,
+  isFile,
+  partition,
+  readJson,
+  readText,
+  rmrf,
+  SymlinkError,
+} from "../fsutil.js";
 import { python3 } from "../runtime.js";
 import { isView } from "../views.js";
 import type { GradeResult } from "./index.js";
@@ -51,6 +61,12 @@ function findRubrics(prof: string, tn: string): string | null {
   return walk(root);
 }
 
+/** Rubrics file of a `<profession>__<task>` key; the task name may itself contain "__". */
+export function rubricsFor(key: string): string | null {
+  const [prof, tn] = partition(key, "__");
+  return prof && tn ? findRubrics(prof, tn) : null;
+}
+
 export async function preflight(): Promise<string> {
   const body = JSON.stringify({
     model: ENV.JUDGE_MODEL,
@@ -67,6 +83,12 @@ export async function preflight(): Promise<string> {
       body,
       signal: AbortSignal.timeout(60_000),
     });
+    // A JSON error body (401, 404, 500, ...) parses fine, so check the status first: scoring
+    // against a judge that rejects every request would produce misleading zeros.
+    if (!r.ok) {
+      const detail = (await r.text().catch(() => "")).slice(0, 200);
+      return `jb judge ${ENV.JUDGE_MODEL} at ${ENV.JUDGE_API_BASE} returned HTTP ${r.status}: ${detail}`;
+    }
     await r.json();
     return "";
   } catch (e) {
@@ -97,8 +119,7 @@ export function grade(
 }
 
 function gradeOnce(key: string, deliverables: string, workers: number): GradeResult {
-  const [prof, tn] = key.split("__", 2);
-  const rub = prof && tn ? findRubrics(prof, tn) : null;
+  const rub = rubricsFor(key);
   if (!rub) {
     return { score: null, error: `no RUBRICS.json for ${key}`, grader: "jb/judge.py" };
   }
@@ -106,10 +127,15 @@ function gradeOnce(key: string, deliverables: string, workers: number): GradeRes
   try {
     const details = join(td, "details.json");
     const staged = join(td, "output");
-    copyTree(deliverables, staged, (rel) => {
-      const base = rel.split("/").pop() ?? rel;
-      return !isView(base);
-    });
+    try {
+      copyTree(deliverables, staged, (rel) => {
+        const base = rel.split("/").pop() ?? rel;
+        return !isView(base);
+      });
+    } catch (e) {
+      if (e instanceof SymlinkError) return { score: null, error: e.message, grader: "jb/judge.py" };
+      throw e;
+    }
     const cmd = [
       python3(),
       JUDGE,

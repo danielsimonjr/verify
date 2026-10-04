@@ -28,6 +28,16 @@ import {
 } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 
+/**
+ * Split at the first `sep`, like Python's `str.partition` without the separator.
+ * Returns [head, tail]; tail is "" when `sep` is absent. Do not use `split(sep, 2)` for this:
+ * the limit truncates the result, so "a__b__c".split("__", 2) is ["a", "b"] and loses "__c".
+ */
+export function partition(text: string, sep: string): [string, string] {
+  const i = text.indexOf(sep);
+  return i < 0 ? [text, ""] : [text.slice(0, i), text.slice(i + sep.length)];
+}
+
 export function readText(path: string, encoding: BufferEncoding = "utf8"): string {
   return readFileSync(path, { encoding });
 }
@@ -114,11 +124,43 @@ export function copyFile(src: string, dst: string): void {
   copyFileSync(src, dst);
 }
 
+/** A bundle staged for a grader holds a symlink. `path` is relative to the bundle root. */
+export class SymlinkError extends Error {
+  readonly path: string;
+
+  constructor(path: string) {
+    super(`deliverables contain a symlink: ${path}`);
+    this.name = "SymlinkError";
+    this.path = path;
+  }
+}
+
+/**
+ * Throw SymlinkError for the first symlink at or under `root` (the root itself included).
+ *
+ * Delivery validation (walkFiles) skips symlinks, so a link is never counted in a bundle. Staging
+ * must therefore refuse it: following it would copy whatever file or directory on the host it
+ * points at into the grader's input. Links are never followed here.
+ */
+export function assertNoSymlinks(root: string): void {
+  if (isSymlink(root)) throw new SymlinkError(".");
+  const walk = (dir: string, rel: string): void => {
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const entRel = rel ? `${rel}/${ent.name}` : ent.name;
+      if (ent.isSymbolicLink()) throw new SymlinkError(entRel);
+      if (ent.isDirectory()) walk(join(dir, ent.name), entRel);
+    }
+  };
+  walk(root, "");
+}
+
+/** Copy a bundle for staging. Symlinks are refused (SymlinkError), never dereferenced. */
 export function copyTree(src: string, dst: string, filter?: (rel: string) => boolean): void {
+  assertNoSymlinks(src);
   ensureDir(dst);
   cpSync(src, dst, {
     recursive: true,
-    dereference: true,
+    dereference: false,
     filter: (from) => {
       if (!filter) return true;
       const rel = relative(src, from);
