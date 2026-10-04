@@ -27,17 +27,18 @@ describe("source layout", () => {
 });
 
 // "bun run build" emits dist/harness/*.js, and package.json "bin" points at
-// dist/harness/cli.js. These tests build the real thing and run it under Node.
-describe("built layout (dist/harness)", () => {
-  beforeAll(() => {
-    const tsc = join(ROOT, "node_modules", "typescript", "bin", "tsc");
-    const r = spawnSync(process.execPath, [tsc, "-p", "tsconfig.json"], {
-      cwd: ROOT,
-      encoding: "utf8",
-    });
-    if (r.status !== 0) throw new Error(`tsc failed:\n${r.stdout}\n${r.stderr}`);
-  }, 120_000);
+// dist/harness/cli.js. The tests below build the real thing (the same tsc call as the "build"
+// script; dist/ is gitignored) and run it under Node.
+beforeAll(() => {
+  const tsc = join(ROOT, "node_modules", "typescript", "bin", "tsc");
+  const r = spawnSync(process.execPath, [tsc, "-p", "tsconfig.json"], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
+  if (r.status !== 0) throw new Error(`tsc failed:\n${r.stdout}\n${r.stderr}`);
+}, 120_000);
 
+describe("built layout (dist/harness)", () => {
   test("tsc preserves the shebang as the first line of dist/harness/cli.js", () => {
     expect(existsSync(DIST_CLI)).toBe(true);
     // Strict about the terminator: a "\r" here makes Linux look for an interpreter named "node\r".
@@ -73,5 +74,36 @@ describe("built layout (dist/harness)", () => {
     // These assets are not emitted into dist/, so the paths above must name real files at the root.
     expect(existsSync(got.PROMPTS_DIR!)).toBe(true);
     expect(existsSync(got.SKILLS_DIR!)).toBe(true);
+  });
+});
+
+// A package script that names a file or glob matching nothing "runs" without testing anything:
+// `node --test dist/harness/**/*.test.js` exited 0 with zero tests under Node, and errored under
+// bun's shell. Build first (the dist/ paths in "start" and "bin" need it), then check every path.
+describe("package.json scripts and bin point at real files", () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as {
+    scripts: Record<string, string>;
+    bin: Record<string, string>;
+  };
+
+  test("every harness/, dist/ or tests/ path in a script exists (globs must match something)", () => {
+    const checked: string[] = [];
+    for (const [name, cmd] of Object.entries(pkg.scripts)) {
+      for (const token of cmd.split(/\s+/)) {
+        if (!/^(harness|dist|tests)\//.test(token)) continue;
+        checked.push(`${name}: ${token}`);
+        const found = token.includes("*")
+          ? [...new Bun.Glob(token).scanSync({ cwd: ROOT })].length > 0
+          : existsSync(join(ROOT, token));
+        expect(found, `script "${name}" names ${token}, which matches nothing`).toBe(true);
+      }
+    }
+    expect(checked.length).toBeGreaterThan(5);
+  });
+
+  test("every bin target exists after a build", () => {
+    for (const target of Object.values(pkg.bin)) {
+      expect(existsSync(join(ROOT, target)), target).toBe(true);
+    }
   });
 });
