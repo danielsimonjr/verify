@@ -17,7 +17,17 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { benchRoot, TMP_DIR } from "../config.js";
-import { copyTree, exists, isDir, isFile, partition, readJson, readText, rmrf } from "../fsutil.js";
+import {
+  copyTree,
+  exists,
+  isDir,
+  isFile,
+  partition,
+  readJson,
+  readText,
+  rmrf,
+  SymlinkError,
+} from "../fsutil.js";
 import { python3 } from "../runtime.js";
 import { isView } from "../views.js";
 import type { GradeResult } from "./index.js";
@@ -117,10 +127,15 @@ function gradeOnce(key: string, deliverables: string, workers: number): GradeRes
   try {
     const details = join(td, "details.json");
     const staged = join(td, "output");
-    copyTree(deliverables, staged, (rel) => {
-      const base = rel.split("/").pop() ?? rel;
-      return !isView(base);
-    });
+    try {
+      copyTree(deliverables, staged, (rel) => {
+        const base = rel.split("/").pop() ?? rel;
+        return !isView(base);
+      });
+    } catch (e) {
+      if (e instanceof SymlinkError) return { score: null, error: e.message, grader: "jb/judge.py" };
+      throw e;
+    }
     const cmd = [
       python3(),
       JUDGE,

@@ -18,7 +18,16 @@ import { mkdtempSync, openSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { HARNESS_DIR, benchRoot, DATA, TMP_DIR } from "../config.js";
-import { copyTree, exists, isDir, partition, readText, rmrf } from "../fsutil.js";
+import {
+  assertNoSymlinks,
+  copyTree,
+  exists,
+  isDir,
+  partition,
+  readText,
+  rmrf,
+  SymlinkError,
+} from "../fsutil.js";
 import type { GradeResult } from "./index.js";
 
 const WB_PY = join(HARNESS_DIR, "grade", "wb.py");
@@ -212,6 +221,13 @@ export async function grade(
   }
   if (!isDir(deliverables)) {
     return { score: null, error: `no deliverables dir ${deliverables}`, grader: GRADER };
+  }
+  // Refuse a symlinked bundle before anything else touches Docker. copyTree below checks again.
+  try {
+    assertNoSymlinks(deliverables);
+  } catch (e) {
+    if (e instanceof SymlinkError) return { score: null, error: e.message, grader: GRADER };
+    throw e;
   }
   const image = imageFor(tname);
   if (!image) {

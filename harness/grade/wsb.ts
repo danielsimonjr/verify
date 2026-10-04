@@ -17,7 +17,17 @@ import { copyFileSync, cpSync, mkdtempSync, mkdirSync, readdirSync } from "node:
 import { dirname, join } from "node:path";
 
 import { benchRoot, TMP_DIR } from "../config.js";
-import { chmod, exists, isDir, readJson, readText, rmrf, writeText } from "../fsutil.js";
+import {
+  assertNoSymlinks,
+  chmod,
+  exists,
+  isDir,
+  readJson,
+  readText,
+  rmrf,
+  SymlinkError,
+  writeText,
+} from "../fsutil.js";
 import { isView } from "../views.js";
 import type { GradeResult } from "./index.js";
 
@@ -80,6 +90,7 @@ function stage(
   meta: Record<string, unknown>,
   trace?: string | null,
 ): void {
+  assertNoSymlinks(deliverables);
   const taskDir = join(td, key);
   mkdirSync(join(taskDir, "output"), { recursive: true });
   const tracePath =
@@ -196,7 +207,12 @@ export function grade(
   const stageRoot = mkdtempSync(join(TMP_DIR, "vh_wsb_"));
   try {
     chmod(stageRoot, 0o777);
-    stage(stageRoot, key, deliverables, meta, opts.trace);
+    try {
+      stage(stageRoot, key, deliverables, meta, opts.trace);
+    } catch (e) {
+      if (e instanceof SymlinkError) return { score: null, error: e.message, grader: GRADER };
+      throw e;
+    }
     spawnSync("chmod", ["-R", "a+rwX", stageRoot], { encoding: "utf8" });
     const tail = runJudge(stageRoot, 1, timeout);
     return parse(stageRoot, key, meta, tail);
@@ -221,8 +237,15 @@ export function gradeBatch(
         out[key] = { score: null, error: `no tasks/${key}/metadata.json`, grader: GRADER };
         continue;
       }
-      metas[key] = readJson<Record<string, unknown>>(metaSrc)!;
-      stage(stageRoot, key, deliverables, metas[key], trace);
+      const meta = readJson<Record<string, unknown>>(metaSrc)!;
+      try {
+        stage(stageRoot, key, deliverables, meta, trace);
+      } catch (e) {
+        if (!(e instanceof SymlinkError)) throw e;
+        out[key] = { score: null, error: e.message, grader: GRADER };
+        continue;
+      }
+      metas[key] = meta;
     }
     if (!Object.keys(metas).length) return out;
     spawnSync("chmod", ["-R", "a+rwX", stageRoot], { encoding: "utf8" });
