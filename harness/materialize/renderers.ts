@@ -328,19 +328,31 @@ function zipTarget(base: string, target: string): string {
   return target.startsWith("/") ? target.slice(1) : posix.join(posix.dirname(base), target);
 }
 
+/** A real cell address: column A..XFD, row 1..1048576 (the limits of the format). */
+function isCellRef(ref: string): boolean {
+  const m = /^([A-Z]{1,3})([1-9][0-9]{0,6})$/.exec(ref);
+  if (!m) return false;
+  let col = 0;
+  for (const ch of m[1]!) col = col * 26 + (ch.charCodeAt(0) - 64);
+  return col <= 16384 && Number(m[2]) <= 1_048_576;
+}
+
 /**
  * Cell notes read straight from the workbook's comment parts: sheet name -> cell ref -> text.
  * exceljs attaches a comment only to a cell that exists in the sheet XML, so a note on an
  * otherwise empty, unstyled cell (the usual way a template states its convention) never
  * reaches `cell.note`. Best effort: a workbook whose parts cannot be followed yields no extra notes.
  */
-async function sheetNotes(buf: Buffer): Promise<Map<string, Map<string, string>>> {
+export async function sheetNotes(buf: Buffer): Promise<Map<string, Map<string, string>>> {
   const out = new Map<string, Map<string, string>>();
   try {
     const zip = await JSZip.loadAsync(buf);
     const read = async (name: string) => {
       const f = zip.file(name);
-      return f ? COMMENT_PARSER.parse(await f.async("string")) : null;
+      if (!f) return null;
+      const xml = await f.async("string");
+      // An OOXML part never needs a DTD; refusing one rules out entity-expansion payloads.
+      return /<!DOCTYPE|<!ENTITY/i.test(xml) ? null : COMMENT_PARSER.parse(xml);
     };
     const wbXml = await read("xl/workbook.xml");
     const wbRels = await read("xl/_rels/workbook.xml.rels");
@@ -356,8 +368,9 @@ async function sheetNotes(buf: Buffer): Promise<Map<string, Map<string, string>>
         const cx = await read(zipTarget(sheetPath, r["@_Target"]!));
         const notes = out.get(sh["@_name"]!) ?? new Map<string, string>();
         for (const c of (cx?.comments?.commentList?.comment ?? []) as Record<string, unknown>[]) {
+          const ref = String(c["@_ref"] ?? "");
           const text = xmlText(c.text);
-          if (c["@_ref"] && text.trim()) notes.set(String(c["@_ref"]), text);
+          if (isCellRef(ref) && text.trim()) notes.set(ref, text);
         }
         out.set(sh["@_name"]!, notes);
       }
@@ -390,21 +403,30 @@ export async function renderCellsTsv(
     const buf = readFileSync(xlsxPath);
     await wb.xlsx.load(buf as never);
     sheetNames = wb.worksheets.map((ws) => ws.name);
+    // Each injected note creates a cell, so they count against the same cap as the output.
+    let injected = 0;
     for (const [name, notes] of await sheetNotes(buf)) {
       const ws = wb.getWorksheet(name);
       if (!ws) continue;
       for (const [ref, text] of notes) {
+        if (injected >= cap) break;
         const cell = ws.getCell(ref);
-        if (!noteText(cell.note).trim()) cell.note = text;
+        if (!noteText(cell.note).trim()) {
+          cell.note = text;
+          injected += 1;
+        }
       }
     }
 
     sheets: for (const ws of wb.worksheets) {
       // exceljs eachRow/eachCell ignore the callback's return value, so they cannot be stopped:
-      // walk the rows by index and guard each cell instead.
+      // walk the rows by index and guard each cell instead. findRow does not create the rows
+      // that are not there; getRow would allocate one per index up to the last row.
       const rows = ws.rowCount;
       for (let r = 1; r <= rows; r++) {
-        ws.getRow(r).eachCell({ includeEmpty: true }, (cell) => {
+        const row = ws.findRow(r);
+        if (!row) continue;
+        row.eachCell({ includeEmpty: true }, (cell) => {
           if (n >= cap) return;
           const note = cellNote(cell);
           const formula = cellFormula(cell);

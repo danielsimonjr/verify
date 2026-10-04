@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import {
   renderCellsTsv,
   renderOpencodeEvents,
   renderOpenaiMessages,
+  sheetNotes,
   wbToolResults,
 } from "../harness/materialize/renderers.ts";
 
@@ -245,5 +246,85 @@ describe("renderOpencodeEvents", () => {
 describe("renderOpenaiMessages", () => {
   test("empty content and tool_calls lists add nothing", () => {
     expect(renderOpenaiMessages([{ role: "assistant", content: [], tool_calls: [] }])).toBe("");
+  });
+});
+
+describe("sheetNotes (comment parts read directly)", () => {
+  async function zipWithComments(commentsXml: string): Promise<Buffer> {
+    const z = new JSZip();
+    z.file(
+      "xl/workbook.xml",
+      '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>',
+    );
+    z.file(
+      "xl/_rels/workbook.xml.rels",
+      '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
+    );
+    z.file(
+      "xl/worksheets/_rels/sheet1.xml.rels",
+      '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments7.xml"/></Relationships>',
+    );
+    z.file("xl/comments7.xml", commentsXml);
+    return z.generateAsync({ type: "nodebuffer" });
+  }
+  const wrap = (inner: string) => `<comments><commentList>${inner}</commentList></comments>`;
+
+  test("follows workbook -> sheet -> comments rels, whatever the part is called", async () => {
+    const buf = await zipWithComments(
+      wrap(
+        '<comment ref="B2"><text><r><rPr><b/></rPr><t>Ann:</t></r><r><t xml:space="preserve"> use &amp; check 007</t></r></text></comment>',
+      ),
+    );
+    const notes = await sheetNotes(buf);
+    expect(notes.get("S")?.get("B2")).toBe("Ann: use & check 007");
+  });
+
+  test("a ref that is not a real cell address is ignored", async () => {
+    const buf = await zipWithComments(
+      wrap(
+        ["A0", "ZZZZ1", "XFE1", "A1048577", "A1;DROP", "", "a1"]
+          .map((r) => `<comment ref="${r}"><text><t>bad</t></text></comment>`)
+          .join("") + '<comment ref="XFD1048576"><text><t>edge ok</t></text></comment>',
+      ),
+    );
+    const notes = await sheetNotes(buf);
+    expect([...(notes.get("S")?.keys() ?? [])]).toEqual(["XFD1048576"]);
+  });
+
+  test("a comment part with a DOCTYPE is not parsed", async () => {
+    const buf = await zipWithComments(
+      '<!DOCTYPE c [<!ENTITY a "aaaaaaaaaa">]>' + wrap('<comment ref="A1"><text><t>&a;&a;&a;</t></text></comment>'),
+    );
+    const notes = await sheetNotes(buf);
+    expect(notes.get("S")?.size ?? 0).toBe(0);
+  });
+
+  test("not a zip gives no notes and no throw", async () => {
+    expect((await sheetNotes(Buffer.from("not a zip"))).size).toBe(0);
+  });
+});
+
+describe("renderCellsTsv does not allocate a row per index", () => {
+  test("a sheet whose last row is a million rows down creates no rows while walking", async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("S");
+    ws.getCell("A1").value = "top";
+    ws.getCell("A1000000").value = "bottom";
+    const xlsx = join(dir, "tall.xlsx");
+    await wb.xlsx.writeFile(xlsx);
+
+    // getRow creates a Row for every index it is asked for; findRow does not.
+    const proto = Object.getPrototypeOf(new ExcelJS.Workbook().addWorksheet("probe"));
+    const getRow = spyOn(proto, "getRow");
+    const out = join(dir, "tall.tsv");
+    try {
+      expect(await renderCellsTsv(xlsx, out)).toBe(true);
+      expect(getRow).not.toHaveBeenCalled();
+    } finally {
+      getRow.mockRestore();
+    }
+    const text = readFileSync(out, "utf8");
+    expect(text).toContain("S!A1	top	");
+    expect(text).toContain("S!A1000000	bottom	");
   });
 });
