@@ -20,6 +20,7 @@
  */
 
 import {
+  ModelError,
   type ChatMessage,
   type ChatRequest,
   type ChatResponse,
@@ -189,17 +190,28 @@ export function flushToolCalls(tools: Map<number, ToolBuild>): StreamEvent[] {
   return events;
 }
 
+function openAiFrameError(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const err = (payload as Record<string, unknown>).error;
+  if (typeof err === "string" && err.trim()) return err.trim();
+  if (err && typeof err === "object") {
+    const message = (err as Record<string, unknown>).message;
+    if (typeof message === "string" && message.trim()) return message.trim();
+  }
+  return undefined;
+}
+
 export async function* parseOpenAiSseLines(lines: AsyncIterable<string>): AsyncGenerator<StreamEvent> {
   const tools = new Map<number, ToolBuild>();
   let finish: string | undefined;
   let usage: TokenUsage | undefined;
-  let done = false;
+  let sawTerminator = false;
   for await (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data:")) continue;
     const data = trimmed.slice(5).trim();
     if (data === "[DONE]") {
-      done = true;
+      sawTerminator = true;
       break;
     }
     let payload: unknown;
@@ -208,13 +220,24 @@ export async function* parseOpenAiSseLines(lines: AsyncIterable<string>): AsyncG
     } catch {
       continue;
     }
+    const failed = openAiFrameError(payload);
+    if (failed) {
+      throw new ModelError("llamacpp", "bad_response", `llama-server stream failed: ${failed}`);
+    }
     const pushed = pushOpenAiDelta(tools, payload);
-    if (pushed.finish) finish = pushed.finish;
+    if (pushed.finish) {
+      finish = pushed.finish;
+      sawTerminator = true;
+    }
     if (pushed.usage) usage = pushed.usage;
     for (const event of pushed.events) yield event;
   }
-  if (!done && finish === undefined && tools.size === 0) {
-    // A stream that ended without a terminator still flushes whatever it held.
+  if (!sawTerminator) {
+    throw new ModelError(
+      "llamacpp",
+      "bad_response",
+      "llama-server stream ended before finish_reason or [DONE]. The partial reply was discarded.",
+    );
   }
   for (const event of flushToolCalls(tools)) yield event;
   yield { type: "done", finishReason: finish, usage };

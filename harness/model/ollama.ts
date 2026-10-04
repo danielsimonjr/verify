@@ -16,10 +16,11 @@
  * Ollama native API (default http://127.0.0.1:11434).
  *
  * `/api/tags` and `/api/show` answer "is the server up?" and "is the model pulled?"
- * `/api/chat` carries tools, JSON mode (`format: "json"`), `options.num_ctx` and
- * token counts. Streaming is NDJSON. The OpenAI-compatible `/v1` endpoint is what
- * pi speaks during a verifier run; this client is the one that can see capabilities
- * and fail before a turn produces an empty ledger.
+ * `/api/ps` reports the context of a model that is already loaded; `num_ctx` in
+ * `ollama show` is the fallback. `/api/chat` carries tools, JSON mode (`format: "json"`),
+ * `options.num_ctx` and token counts. Streaming is NDJSON: each chunk's tool calls are
+ * new calls (a repeated id updates that call), and a stream without `done: true` is a
+ * failure. The OpenAI-compatible `/v1` endpoint is what pi speaks during a verifier run.
  */
 
 import { HttpClient, readLines, TransportError, type FetchLike } from "./http.js";
@@ -31,6 +32,7 @@ import {
 } from "./messages.js";
 import { openAiTool } from "./openai_chat.js";
 import {
+  ModelError,
   type Capabilities,
   type ChatMessage,
   type ChatRequest,
@@ -133,7 +135,7 @@ function safeObject(raw: string): unknown {
   }
 }
 
-function toolCallsOf(raw: unknown): ToolCall[] {
+function toolCallsOf(raw: unknown, fillMissingIds: boolean): ToolCall[] {
   if (!Array.isArray(raw)) return [];
   const out: ToolCall[] = [];
   for (let i = 0; i < raw.length; i++) {
@@ -143,8 +145,9 @@ function toolCallsOf(raw: unknown): ToolCall[] {
     const fn = (rec.function ?? {}) as Record<string, unknown>;
     const name = typeof fn.name === "string" ? fn.name : "";
     if (!name) continue;
+    const id = typeof rec.id === "string" && rec.id ? rec.id : "";
     out.push({
-      id: typeof rec.id === "string" && rec.id ? rec.id : `call_${i}`,
+      id: id || (fillMissingIds ? `call_${i}` : ""),
       name,
       arguments: argumentsToJson(fn.arguments),
     });
@@ -152,10 +155,26 @@ function toolCallsOf(raw: unknown): ToolCall[] {
   return out;
 }
 
+/** The context Ollama is actually using for a loaded model. `model_info` is not this. */
+export function parseOllamaRunningContext(body: unknown, wanted: string): number | undefined {
+  const models = Array.isArray((body as { models?: unknown } | null)?.models)
+    ? ((body as { models: unknown[] }).models)
+    : [];
+  for (const item of models) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const name = typeof rec.name === "string" ? rec.name : typeof rec.model === "string" ? rec.model : "";
+    if (!name || !ollamaModelPresent([name], wanted)) continue;
+    const ctx = rec.context_length;
+    if (typeof ctx === "number" && Number.isFinite(ctx) && ctx > 0) return ctx;
+  }
+  return undefined;
+}
+
 export function parseOllamaChat(body: unknown, fallbackModel: string): ChatResponse {
   const rec = (body ?? {}) as Record<string, unknown>;
   const message = (rec.message ?? {}) as Record<string, unknown>;
-  const toolCalls = toolCallsOf(message.tool_calls);
+  const toolCalls = toolCallsOf(message.tool_calls, true);
   const content = typeof message.content === "string" ? message.content : null;
   const model = typeof rec.model === "string" && rec.model ? rec.model : fallbackModel;
   const finish =
@@ -191,7 +210,7 @@ export function pushOllamaChunk(
   const text = typeof message.content === "string" ? message.content : "";
   return {
     text,
-    toolCalls: toolCallsOf(message.tool_calls),
+    toolCalls: toolCallsOf(message.tool_calls, false),
     done: rec.done === true,
     finish: typeof rec.done_reason === "string" ? rec.done_reason : undefined,
     usage: ollamaUsage(rec),
@@ -199,10 +218,41 @@ export function pushOllamaChunk(
   };
 }
 
+function ollamaFrameError(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const err = (payload as Record<string, unknown>).error;
+  if (typeof err === "string" && err.trim()) return err.trim();
+  return undefined;
+}
+
+/** Later chunks add calls. A repeated server id updates that call; missing ids get one counter for the whole stream. */
+function accumulateToolCalls(acc: ToolCall[], incoming: ToolCall[], seq: { n: number }): void {
+  for (const call of incoming) {
+    if (call.id) {
+      const existing = acc.find((item) => item.id === call.id);
+      if (existing) {
+        if (call.name) existing.name = call.name;
+        if (call.arguments && call.arguments !== "{}") existing.arguments = call.arguments;
+        continue;
+      }
+      acc.push({ ...call });
+      continue;
+    }
+    let id = `call_${seq.n}`;
+    while (acc.some((item) => item.id === id)) {
+      seq.n += 1;
+      id = `call_${seq.n}`;
+    }
+    seq.n += 1;
+    acc.push({ ...call, id });
+  }
+}
+
 export async function* parseOllamaNdjson(lines: AsyncIterable<string>): AsyncGenerator<StreamEvent> {
   let finish: string | undefined;
   let usage: TokenUsage | undefined;
-  let latestTools: ToolCall[] = [];
+  const toolCalls: ToolCall[] = [];
+  const seq = { n: 0 };
   let sawDone = false;
   for await (const line of lines) {
     const trimmed = line.trim();
@@ -213,9 +263,13 @@ export async function* parseOllamaNdjson(lines: AsyncIterable<string>): AsyncGen
     } catch {
       continue;
     }
+    const failed = ollamaFrameError(payload);
+    if (failed) {
+      throw new ModelError("ollama", "bad_response", `Ollama stream failed: ${failed}`);
+    }
     const chunk = pushOllamaChunk(payload);
     if (chunk.text) yield { type: "text", text: chunk.text };
-    if (chunk.toolCalls.length) latestTools = chunk.toolCalls;
+    if (chunk.toolCalls.length) accumulateToolCalls(toolCalls, chunk.toolCalls, seq);
     if (chunk.finish) finish = chunk.finish;
     if (chunk.usage) usage = chunk.usage;
     if (chunk.done) {
@@ -223,9 +277,15 @@ export async function* parseOllamaNdjson(lines: AsyncIterable<string>): AsyncGen
       break;
     }
   }
-  for (const call of latestTools) yield { type: "tool_call", toolCall: call };
-  if (!sawDone && finish === undefined) finish = latestTools.length ? "tool_calls" : undefined;
-  yield { type: "done", finishReason: finish, usage };
+  if (!sawDone) {
+    throw new ModelError(
+      "ollama",
+      "bad_response",
+      "Ollama stream ended before a terminal frame with done: true. The partial reply was discarded.",
+    );
+  }
+  for (const call of toolCalls) yield { type: "tool_call", toolCall: call };
+  yield { type: "done", finishReason: finish ?? (toolCalls.length ? "tool_calls" : undefined), usage };
 }
 
 export class OllamaBackend implements ModelBackend {
@@ -251,22 +311,38 @@ export class OllamaBackend implements ModelBackend {
     if (!ollamaModelPresent(names, this.model)) {
       throw modelMissingError("ollama", this.model, this.baseUrl);
     }
-    let capabilities: Capabilities = { tools: "unknown", json: true };
+    let tools: boolean | "unknown" = "unknown";
+    let numCtx: number | undefined;
     const show = await this.http.send(`${this.baseUrl}/api/show`, {
       method: "POST",
       body: { name: this.model },
     });
     if (show.status < 400) {
       const rec = (show.json ?? {}) as Record<string, unknown>;
-      const numCtx = parseOllamaNumCtx(rec.parameters);
-      capabilities = {
-        tools: parseOllamaToolCapability(rec.capabilities),
-        json: true,
-        contextSize: numCtx,
-      };
+      numCtx = parseOllamaNumCtx(rec.parameters);
+      tools = parseOllamaToolCapability(rec.capabilities);
     }
+    const running = await this.runningContext();
+    const capabilities: Capabilities = {
+      tools,
+      json: true,
+      contextSize: running ?? numCtx,
+    };
     this.capabilities = capabilities;
     return { model: this.model, capabilities, models: names };
+  }
+
+  /** Loaded context wins over `num_ctx`. A missing or failed `/api/ps` leaves the show value in place. */
+  private async runningContext(): Promise<number | undefined> {
+    let res;
+    try {
+      res = await this.http.send(`${this.baseUrl}/api/ps`, { method: "GET" });
+    } catch (err) {
+      if (err instanceof TransportError) throw transportFailure("ollama", this.baseUrl, err);
+      throw err;
+    }
+    if (res.status >= 400) return undefined;
+    return parseOllamaRunningContext(res.json, this.model);
   }
 
   async complete(req: ChatRequest): Promise<ChatResponse> {

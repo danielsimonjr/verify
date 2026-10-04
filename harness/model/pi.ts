@@ -22,12 +22,8 @@
  */
 
 import { ensureDir, writeJson } from "../fsutil.js";
-import {
-  DEFAULT_PI_CONTEXT,
-  DEFAULT_PI_MAX_TOKENS,
-  PI_PLACEHOLDER_API_KEY,
-  type LocalModelConfig,
-} from "./config.js";
+import { DEFAULT_PI_MAX_TOKENS, PI_PLACEHOLDER_API_KEY, type LocalModelConfig } from "./config.js";
+import { ModelError } from "./types.js";
 import { apiRoots } from "./url.js";
 
 export interface PiProviderRecord {
@@ -40,7 +36,14 @@ export function buildPiProvider(
   resolvedModel: string,
   contextWindow?: number,
 ): PiProviderRecord {
-  const window = contextWindow && contextWindow > 0 ? contextWindow : config.contextSize || DEFAULT_PI_CONTEXT;
+  const window = contextWindow && contextWindow > 0 ? contextWindow : config.contextSize;
+  if (window === undefined || !(window > 0)) {
+    throw new ModelError(
+      config.provider,
+      "unsupported",
+      `refusing to register ${config.provider} model '${resolvedModel}' without a verified context window`,
+    );
+  }
   let maxTokens = config.maxTokens ?? DEFAULT_PI_MAX_TOKENS;
   if (maxTokens > window) maxTokens = window;
   const sampling: Record<string, number> = {};
@@ -65,6 +68,9 @@ export function buildPiProvider(
       compat: {
         supportsDeveloperRole: false,
         supportsReasoningEffort: false,
+        // pi 0.84.4 sends max_completion_tokens unless told otherwise. Ollama's /v1
+        // adapter only maps max_tokens onto num_predict, so the output cap would be ignored.
+        maxTokensField: "max_tokens",
       },
       models: [model],
     },

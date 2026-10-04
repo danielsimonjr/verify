@@ -67,14 +67,42 @@ export function jsonUnsupportedError(provider: LocalProviderId, model: string, d
   );
 }
 
-export function ollamaContextUnverified(model: string, want: number): ModelError {
+export function contextUnknownError(provider: LocalProviderId, model: string, want?: number): ModelError {
+  if (provider === "ollama") {
+    const asked = want === undefined ? "" : ` --context-size ${want} cannot be guaranteed.`;
+    return new ModelError(
+      "ollama",
+      "unsupported",
+      `Ollama model '${model}' does not advertise num_ctx.${asked} ` +
+        `A loaded model reports its effective window as context_length on GET /api/ps; otherwise the harness reads the num_ctx parameter from ollama show. ` +
+        `The architecture context_length in model_info is not that window, and the harness will not invent one. ` +
+        `Set it with \`OLLAMA_CONTEXT_LENGTH=32768 ollama serve\`, or ` +
+        `\`printf 'FROM ${model}\\nPARAMETER num_ctx 32768\\n' | ollama create ${model}\`, then retry.`,
+    );
+  }
+  const asked = want === undefined ? "" : ` --context-size ${want} cannot be checked against the server.`;
   return new ModelError(
-    "ollama",
+    "llamacpp",
     "unsupported",
-    `Ollama model '${model}' does not advertise num_ctx, so --context-size ${want} cannot be guaranteed. ` +
-      `The verifier agent uses Ollama's OpenAI-compatible endpoint, which follows the model's configured context ` +
-      `rather than a per-request num_ctx. Set it with \`OLLAMA_CONTEXT_LENGTH=${want} ollama serve\`, or ` +
-      `\`printf 'FROM ${model}\\nPARAMETER num_ctx ${want}\\n' | ollama create ${model}\`, then retry.`,
+    `llama-server did not report n_ctx for model '${model}'.${asked} ` +
+      `Preflight reads GET /props?model=<id>, and GET /props only when that query returns 404. ` +
+      `Restart llama-server with \`-c 32768\` so n_ctx is present. The harness will not assume a context window.`,
+  );
+}
+
+/** pi 0.84.4 withholds this many tokens, so a window at or below the reserve cannot generate. */
+export const PI_CONTEXT_RESERVE = 4096;
+
+export function contextUnusableError(provider: LocalProviderId, model: string, window: number): ModelError {
+  const how =
+    provider === "ollama"
+      ? "Raise it with `OLLAMA_CONTEXT_LENGTH=32768 ollama serve` or a Modelfile PARAMETER num_ctx."
+      : "Restart llama-server with `-c 32768`.";
+  return new ModelError(
+    provider,
+    "unsupported",
+    `${provider} model '${model}' would be registered with a ${window}-token context window. ` +
+      `pi 0.84.4 reserves 4096 tokens, so a window of 4096 or less leaves no room for a reply. ${how}`,
   );
 }
 

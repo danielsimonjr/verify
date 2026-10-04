@@ -25,6 +25,7 @@ export const DEFAULT_RETRIES = 2;
 /** Placeholder pi stores so a keyless local server still appears selectable. Never sent by this client. */
 export const PI_PLACEHOLDER_API_KEY = "local";
 export const DEFAULT_PI_MAX_TOKENS = 8192;
+/** Recommended server context. Never substituted when the server does not advertise one. */
 export const DEFAULT_PI_CONTEXT = 32768;
 
 export interface LocalModelConfig {
@@ -87,7 +88,10 @@ export function resolveLocalConfig(input: LocalModelInput): LocalModelConfig {
     temperature: input.temperature ?? optionalNumber(env.VERIHARNESS_TEMPERATURE, "VERIHARNESS_TEMPERATURE"),
     topP: input.topP ?? optionalNumber(env.VERIHARNESS_TOP_P, "VERIHARNESS_TOP_P"),
     maxTokens: input.maxTokens ?? optionalNumber(env.VERIHARNESS_MAX_TOKENS, "VERIHARNESS_MAX_TOKENS"),
-    contextSize: input.contextSize ?? optionalNumber(env.VERIHARNESS_CONTEXT_SIZE, "VERIHARNESS_CONTEXT_SIZE"),
+    contextSize: positiveInteger(
+      input.contextSize ?? optionalNumber(env.VERIHARNESS_CONTEXT_SIZE, "VERIHARNESS_CONTEXT_SIZE"),
+      "context size",
+    ),
     timeoutMs: input.timeoutMs ?? timeoutFromEnv(env),
     retries: input.retries ?? retriesFromEnv(env),
   };
@@ -126,6 +130,12 @@ function optionalNumber(raw: string | undefined, name: string): number | undefin
   const n = Number(raw);
   if (!Number.isFinite(n)) throw new Error(`invalid ${name} '${raw}'`);
   return n;
+}
+
+function positiveInteger(value: number | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
+  return value;
 }
 
 function timeoutFromEnv(env: NodeJS.ProcessEnv): number {

@@ -17,9 +17,12 @@
  *
  * Works for single-model mode (`llama-server -m file.gguf`) and for the router
  * (`llama-server --models-dir ...`). Health, `/v1/models` and `/props` are the
- * preflight. Chat is `POST /v1/chat/completions` with SSE streaming. Context
- * length is fixed by the server's `-c` flag; this client refuses a requested
- * context larger than the one the server reports.
+ * preflight. Context is `n_ctx` from `GET /props?model=<id>`, falling back to
+ * `GET /props` when that query is 404. Chat is `POST /v1/chat/completions` with
+ * SSE streaming. A stream that ends without `finish_reason` or `[DONE]` is a
+ * failure. Context length is fixed by the server's `-c` flag; this client
+ * refuses a requested context larger than the one the server reports, and it
+ * does not invent a window when `n_ctx` is missing.
  */
 
 import { errorText, HttpClient, readLines, TransportError, type FetchLike } from "./http.js";
@@ -165,9 +168,8 @@ export class LlamaCppBackend implements ModelBackend {
       throw modelMissingError("llamacpp", this.model, this.baseUrl, why);
     }
     this.model = match.id;
-    let contextSize: number | undefined;
-    const props = await this.http.send(`${this.root}/props`, { method: "GET" });
-    if (props.status < 400) contextSize = parseLlamaContext(props.json);
+    const props = await this.readProps(this.model);
+    const contextSize = props.status < 400 ? parseLlamaContext(props.json) : undefined;
     const capabilities: Capabilities = { tools: "unknown", json: "unknown", contextSize };
     this.capabilities = capabilities;
     return { model: this.model, capabilities, models: listed.map((m) => m.id) };
@@ -204,6 +206,22 @@ export class LlamaCppBackend implements ModelBackend {
         assertRequiredTools("llamacpp", req, folded);
       }
       yield event;
+    }
+  }
+
+  /** Router builds expose per-model props. A 404 falls back to the single-model `/props`. */
+  private async readProps(model: string): Promise<{ status: number; json: unknown; text: string }> {
+    const scoped = await this.getQuiet(`${this.root}/props?model=${encodeURIComponent(model)}`);
+    if (scoped.status !== 404) return scoped;
+    return this.getQuiet(`${this.root}/props`);
+  }
+
+  private async getQuiet(url: string): Promise<{ status: number; json: unknown; text: string }> {
+    try {
+      return await this.http.send(url, { method: "GET" });
+    } catch (err) {
+      if (err instanceof TransportError) throw transportFailure("llamacpp", this.baseUrl, err);
+      throw err;
     }
   }
 

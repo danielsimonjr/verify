@@ -29,7 +29,13 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBackend, type BackendDeps, type LocalModelConfig } from "./config.js";
-import { contextTooSmallError, ollamaContextUnverified, toolsUnsupportedError } from "./messages.js";
+import {
+  PI_CONTEXT_RESERVE,
+  contextTooSmallError,
+  contextUnknownError,
+  contextUnusableError,
+  toolsUnsupportedError,
+} from "./messages.js";
 import { buildPiProvider, type PiProviderRecord } from "./pi.js";
 import { LlamaCppBackend } from "./llamacpp.js";
 import { OllamaBackend } from "./ollama.js";
@@ -83,23 +89,21 @@ export async function prepareLocalProvider(config: LocalModelConfig, deps: Prepa
 function enforceContext(config: LocalModelConfig, probe: ProbeResult, warnings: string[]): void {
   const have = probe.capabilities.contextSize;
   const want = config.contextSize;
-  if (want !== undefined && have !== undefined && want > have) {
+  if (have === undefined) {
+    throw contextUnknownError(config.provider, probe.model, want);
+  }
+  if (want !== undefined && want > have) {
     throw contextTooSmallError(config.provider, probe.model, have, want);
   }
-  if (config.provider === "ollama" && want !== undefined && have === undefined) {
-    throw ollamaContextUnverified(probe.model, want);
+  const window = want ?? have;
+  if (window <= PI_CONTEXT_RESERVE) {
+    throw contextUnusableError(config.provider, probe.model, window);
   }
-  if (config.provider === "llamacpp" && want !== undefined && have === undefined) {
+  if (window < 8192) {
     warnings.push(
-      `llama-server did not report n_ctx. --context-size ${want} is recorded for the agent, ` +
-        `but the server context is the \`-c\` it was started with. If that is smaller, requests fail.`,
-    );
-  }
-  if (have !== undefined && have < 8192 && want === undefined) {
-    warnings.push(
-      `${config.provider} model '${probe.model}' is configured with a ${have}-token context. ` +
-        `Verifier tasks are long; raise it (Ollama: OLLAMA_CONTEXT_LENGTH or a Modelfile num_ctx; ` +
-        `llama-server: -c) or pass --context-size once the server is actually that large.`,
+      `${config.provider} model '${probe.model}' is registered with a ${window}-token context. ` +
+        `pi can run that, but verifier tasks are long; raise it above 8192 ` +
+        `(Ollama: OLLAMA_CONTEXT_LENGTH or a Modelfile num_ctx; llama-server: -c).`,
     );
   }
 }

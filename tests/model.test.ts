@@ -7,6 +7,7 @@ import { main as cliMain } from "../harness/cli.ts";
 import { parseDriverArgv, main as driverMain } from "../harness/driver.ts";
 import { flagsForLane } from "../harness/runner.ts";
 import {
+  buildPiProvider,
   createBackend,
   materializePiHome,
   PI_PLACEHOLDER_API_KEY,
@@ -19,6 +20,7 @@ import {
   ollamaModelPresent,
   parseOllamaContextLength,
   parseOllamaNumCtx,
+  parseOllamaRunningContext,
   parseOllamaToolCapability,
 } from "../harness/model/ollama.ts";
 import { ModelError } from "../harness/model/types.ts";
@@ -76,6 +78,10 @@ function headersOf(hit: Hit): Headers {
   return new Headers(hit.init.headers);
 }
 
+function pathname(url: string): string {
+  return new URL(url).pathname;
+}
+
 const quiet = { cache: false as const, assumeTools: false as const, retryDelayMs: 0 };
 
 describe("local model config", () => {
@@ -109,6 +115,15 @@ describe("local model config", () => {
     expect(cfg.contextSize).toBe(32768);
     expect(() => resolveLocalConfig({ provider: "ollama", env: {} })).toThrow(/--model is required/);
     expect(() => resolveLocalConfig({ provider: "anthropic", model: "x", env: {} })).toThrow(/not a local backend/);
+    expect(() => resolveLocalConfig({ provider: "ollama", model: "q", contextSize: -1, env: {} })).toThrow(
+      /positive integer/,
+    );
+    expect(() => resolveLocalConfig({ provider: "ollama", model: "q", contextSize: 1.5, env: {} })).toThrow(
+      /positive integer/,
+    );
+    expect(() =>
+      resolveLocalConfig({ provider: "ollama", model: "q", env: { VERIHARNESS_CONTEXT_SIZE: "0" } }),
+    ).toThrow(/positive integer/);
   });
 
   test("ollama name and capability parsers", () => {
@@ -119,6 +134,8 @@ describe("local model config", () => {
     expect(parseOllamaToolCapability(["completion", "tools"])).toBe(true);
     expect(parseOllamaToolCapability(["completion"])).toBe(false);
     expect(parseOllamaToolCapability(undefined)).toBe("unknown");
+    expect(parseOllamaRunningContext({ models: [{ name: "qwen:latest", context_length: 8192 }] }, "qwen")).toBe(8192);
+    expect(parseOllamaRunningContext({ model_info: { "llama.context_length": 131072 } }, "qwen")).toBeUndefined();
   });
 
   test("llama.cpp model id matching", () => {
@@ -203,6 +220,63 @@ describe("ollama backend", () => {
     expect(events).toContainEqual({ type: "text", text: "llo" });
     expect(events[events.length - 1]).toMatchObject({ type: "done", finishReason: "stop", usage: { outputTokens: 2 } });
     expect(bodyOf(mock.hits[0]!).stream).toBe(true);
+  });
+
+  test("keeps every streamed tool call and updates a repeated id", async () => {
+    const mock = scripted(() =>
+      textStream(
+        [
+          '{"message":{"tool_calls":[{"id":"a","function":{"name":"read","arguments":{"path":"a"}}}]},"done":false}\n',
+          '{"message":{"tool_calls":[{"id":"a","function":{"name":"read","arguments":{"path":"ab"}}},{"function":{"name":"bash","arguments":{}}}]},"done":true,"done_reason":"tool_calls"}\n',
+        ],
+        200,
+        "application/x-ndjson",
+      ),
+    );
+    const backend = createBackend(
+      resolveLocalConfig({ provider: "ollama", model: "qwen", retries: 0, timeoutMs: 1000, env: {} }),
+      { fetch: mock.fetch },
+    );
+    const events = [];
+    for await (const event of backend.stream({ messages: [{ role: "user", content: "hi" }] })) events.push(event);
+    expect(events.filter((event) => event.type === "tool_call")).toEqual([
+      { type: "tool_call", toolCall: { id: "a", name: "read", arguments: '{"path":"ab"}' } },
+      { type: "tool_call", toolCall: { id: "call_0", name: "bash", arguments: "{}" } },
+    ]);
+  });
+
+  test("an error frame or a truncated stream is not a completed reply", async () => {
+    const crashed = scripted(() =>
+      textStream(['{"message":{"content":"he"},"done":false}\n{"error":"runner crashed"}\n'], 200, "application/x-ndjson"),
+    );
+    const crashedBackend = createBackend(
+      resolveLocalConfig({ provider: "ollama", model: "qwen", retries: 0, timeoutMs: 1000, env: {} }),
+      { fetch: crashed.fetch },
+    );
+    const crashedEvents = [];
+    await expect(
+      (async () => {
+        for await (const event of crashedBackend.stream({ messages: [{ role: "user", content: "hi" }] })) {
+          crashedEvents.push(event);
+        }
+      })(),
+    ).rejects.toMatchObject({ code: "bad_response" });
+    expect(crashedEvents.some((event) => event.type === "done")).toBe(false);
+
+    const truncated = scripted(() =>
+      textStream(['{"message":{"content":"he"},"done":false}\n'], 200, "application/x-ndjson"),
+    );
+    const truncatedBackend = createBackend(
+      resolveLocalConfig({ provider: "ollama", model: "qwen", retries: 0, timeoutMs: 1000, env: {} }),
+      { fetch: truncated.fetch },
+    );
+    await expect(
+      (async () => {
+        for await (const event of truncatedBackend.stream({ messages: [{ role: "user", content: "hi" }] })) {
+          void event;
+        }
+      })(),
+    ).rejects.toThrow(/done: true/);
   });
 
   test("server down, model missing, and refused features", async () => {
@@ -295,11 +369,12 @@ describe("llama.cpp backend", () => {
   }
 
   function route(hit: Hit, chat: () => Response): Response {
-    if (hit.url.endsWith("/health")) return jsonResponse({ status: "ok" });
-    if (hit.url.endsWith("/v1/models")) return jsonResponse({ data: [{ id: "model.gguf" }] });
-    if (hit.url.endsWith("/models")) return jsonResponse({ error: "no router" }, 404);
-    if (hit.url.endsWith("/props")) return jsonResponse({ default_generation_settings: { n_ctx: 32768 } });
-    if (hit.url.endsWith("/chat/completions")) return chat();
+    const path = pathname(hit.url);
+    if (path === "/health") return jsonResponse({ status: "ok" });
+    if (path === "/v1/models") return jsonResponse({ data: [{ id: "model.gguf" }] });
+    if (path === "/models") return jsonResponse({ error: "no router" }, 404);
+    if (path === "/props") return jsonResponse({ default_generation_settings: { n_ctx: 32768 } });
+    if (path === "/v1/chat/completions") return chat();
     return jsonResponse({ error: `unexpected ${hit.url}` }, 500);
   }
 
@@ -386,6 +461,39 @@ describe("llama.cpp backend", () => {
     expect(mock.hits.filter((hit) => hit.url.endsWith("/chat/completions"))).toHaveLength(2);
   });
 
+  test("an error frame, a truncated stream, and finish_reason without [DONE]", async () => {
+    const crashed = llamaBackend((hit) =>
+      route(hit, () => textStream(['data: {"error":{"message":"context exceeded"}}\n'])),
+    );
+    const crashedEvents = [];
+    await expect(
+      (async () => {
+        for await (const event of crashed.backend.stream({ messages: [{ role: "user", content: "hi" }] })) {
+          crashedEvents.push(event);
+        }
+      })(),
+    ).rejects.toThrow(/context exceeded/);
+    expect(crashedEvents.some((event) => event.type === "done")).toBe(false);
+
+    const truncated = llamaBackend((hit) =>
+      route(hit, () => textStream(['data: {"choices":[{"delta":{"content":"he"}}]}\n'])),
+    );
+    await expect(
+      (async () => {
+        for await (const event of truncated.backend.stream({ messages: [{ role: "user", content: "hi" }] })) {
+          void event;
+        }
+      })(),
+    ).rejects.toThrow(/finish_reason or \[DONE\]/);
+
+    const finished = llamaBackend((hit) =>
+      route(hit, () => textStream(['data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n'])),
+    );
+    const events = [];
+    for await (const event of finished.backend.stream({ messages: [{ role: "user", content: "hi" }] })) events.push(event);
+    expect(events[events.length - 1]).toMatchObject({ type: "done", finishReason: "stop" });
+  });
+
   test("server down, still loading, wrong model, and tool rejection", async () => {
     const down = scripted(() => refused());
     const downBackend = createBackend(
@@ -445,10 +553,11 @@ describe("llama.cpp backend", () => {
   test("a basename resolves to the server id used in later requests", async () => {
     const { backend, mock } = llamaBackend(
       (hit) => {
-        if (hit.url.endsWith("/health")) return jsonResponse({ status: "ok" });
-        if (hit.url.endsWith("/v1/models")) return jsonResponse({ data: [{ id: "/w/model.gguf" }] });
-        if (hit.url.endsWith("/models")) return jsonResponse({}, 404);
-        if (hit.url.endsWith("/props")) return jsonResponse({ n_ctx: 8192 });
+        const path = pathname(hit.url);
+        if (path === "/health") return jsonResponse({ status: "ok" });
+        if (path === "/v1/models") return jsonResponse({ data: [{ id: "/w/model.gguf" }] });
+        if (path === "/models") return jsonResponse({}, 404);
+        if (path === "/props") return jsonResponse({ n_ctx: 8192 });
         return jsonResponse({
           choices: [{ finish_reason: "stop", message: { role: "assistant", content: "ok" } }],
         });
@@ -460,6 +569,31 @@ describe("llama.cpp backend", () => {
     await backend.complete({ messages: [{ role: "user", content: "hi" }] });
     const chat = mock.hits.find((hit) => hit.url.endsWith("/chat/completions"))!;
     expect(bodyOf(chat).model).toBe("/w/model.gguf");
+    const props = mock.hits.find((hit) => pathname(hit.url) === "/props")!;
+    expect(new URL(props.url).searchParams.get("model")).toBe("/w/model.gguf");
+  });
+
+  test("props falls back to the unscoped endpoint when the model query is 404", async () => {
+    let props = 0;
+    const { backend, mock } = llamaBackend((hit) => {
+      const path = pathname(hit.url);
+      if (path === "/health") return jsonResponse({ status: "ok" });
+      if (path === "/v1/models") return jsonResponse({ data: [{ id: "model.gguf" }] });
+      if (path === "/models") return jsonResponse({}, 404);
+      if (path === "/props") {
+        props += 1;
+        if (props === 1) {
+          expect(new URL(hit.url).searchParams.get("model")).toBe("model.gguf");
+          return jsonResponse({ error: "unsupported" }, 404);
+        }
+        expect(new URL(hit.url).search).toBe("");
+        return jsonResponse({ n_ctx: 16384 });
+      }
+      return jsonResponse({ error: "no chat" }, 500);
+    });
+    const probe = await backend.probe();
+    expect(probe.capabilities.contextSize).toBe(16384);
+    expect(mock.hits.filter((hit) => pathname(hit.url) === "/props")).toHaveLength(2);
   });
 });
 
@@ -489,6 +623,7 @@ describe("preflight and pi registry", () => {
       baseUrl: "http://127.0.0.1:11434/v1",
       api: "openai-completions",
       apiKey: PI_PLACEHOLDER_API_KEY,
+      compat: { maxTokensField: "max_tokens", supportsDeveloperRole: false, supportsReasoningEffort: false },
     });
     expect(prepared.piProvider.config.models).toEqual([
       expect.objectContaining({
@@ -573,6 +708,116 @@ describe("preflight and pi registry", () => {
       ),
     ).rejects.toThrow(/does not advertise num_ctx/);
   });
+
+  test("a loaded Ollama context wins over num_ctx, and a failed /api/ps does not", async () => {
+    const loaded = scripted((hit) => {
+      if (hit.url.endsWith("/api/tags")) return jsonResponse({ models: [{ name: "qwen" }] });
+      if (hit.url.endsWith("/api/show")) {
+        return jsonResponse({ capabilities: ["tools"], parameters: "num_ctx 32768" });
+      }
+      if (hit.url.endsWith("/api/ps")) return jsonResponse({ models: [{ name: "qwen:latest", context_length: 8192 }] });
+      return jsonResponse({ error: "no chat" }, 500);
+    });
+    const prepared = await prepareLocalProvider(
+      resolveLocalConfig({ provider: "ollama", model: "qwen", retries: 0, timeoutMs: 1000, env: {} }),
+      { fetch: loaded.fetch, ...quiet },
+    );
+    expect(prepared.probe.capabilities.contextSize).toBe(8192);
+    expect(prepared.piProvider.config.models).toEqual([expect.objectContaining({ contextWindow: 8192 })]);
+
+    const down = scripted((hit) => {
+      if (hit.url.endsWith("/api/tags")) return jsonResponse({ models: [{ name: "qwen" }] });
+      if (hit.url.endsWith("/api/show")) {
+        return jsonResponse({ capabilities: ["tools"], parameters: "num_ctx 32768" });
+      }
+      return jsonResponse({ error: "ps down" }, 500);
+    });
+    const fallback = await prepareLocalProvider(
+      resolveLocalConfig({ provider: "ollama", model: "qwen", retries: 0, timeoutMs: 1000, env: {} }),
+      { fetch: down.fetch, ...quiet },
+    );
+    expect(fallback.probe.capabilities.contextSize).toBe(32768);
+  });
+
+  test("unknown, tiny, and merely short contexts", async () => {
+    const unknown = scripted((hit) => {
+      if (hit.url.endsWith("/api/tags")) return jsonResponse({ models: [{ name: "qwen" }] });
+      if (hit.url.endsWith("/api/ps")) return jsonResponse({ models: [] });
+      return jsonResponse({ capabilities: ["tools"], model_info: { "llama.context_length": 131072 } });
+    });
+    await expect(
+      prepareLocalProvider(
+        resolveLocalConfig({ provider: "ollama", model: "qwen", retries: 0, timeoutMs: 1000, env: {} }),
+        { fetch: unknown.fetch, ...quiet },
+      ),
+    ).rejects.toThrow(/does not advertise num_ctx/);
+
+    for (const size of [2048, 4096]) {
+      const tiny = scripted((hit) => {
+        if (hit.url.endsWith("/api/tags")) return jsonResponse({ models: [{ name: "qwen" }] });
+        if (hit.url.endsWith("/api/ps")) return jsonResponse({ models: [] });
+        return jsonResponse({ capabilities: ["tools"], parameters: `num_ctx ${size}` });
+      });
+      await expect(
+        prepareLocalProvider(
+          resolveLocalConfig({ provider: "ollama", model: "qwen", retries: 0, timeoutMs: 1000, env: {} }),
+          { fetch: tiny.fetch, ...quiet },
+        ),
+      ).rejects.toThrow(/4096/);
+    }
+
+    const requested = scripted((hit) => {
+      if (hit.url.endsWith("/api/tags")) return jsonResponse({ models: [{ name: "qwen" }] });
+      if (hit.url.endsWith("/api/ps")) return jsonResponse({ models: [] });
+      return jsonResponse({ capabilities: ["tools"], parameters: "num_ctx 32768" });
+    });
+    await expect(
+      prepareLocalProvider(
+        resolveLocalConfig({
+          provider: "ollama",
+          model: "qwen",
+          contextSize: 2048,
+          retries: 0,
+          timeoutMs: 1000,
+          env: {},
+        }),
+        { fetch: requested.fetch, ...quiet },
+      ),
+    ).rejects.toThrow(/2048-token context window/);
+
+    const short = scripted((hit) => {
+      if (hit.url.endsWith("/api/tags")) return jsonResponse({ models: [{ name: "qwen" }] });
+      if (hit.url.endsWith("/api/ps")) return jsonResponse({ models: [] });
+      return jsonResponse({ capabilities: ["tools"], parameters: "num_ctx 5000" });
+    });
+    const prepared = await prepareLocalProvider(
+      resolveLocalConfig({ provider: "ollama", model: "qwen", retries: 0, timeoutMs: 1000, env: {} }),
+      { fetch: short.fetch, ...quiet },
+    );
+    expect(prepared.warnings.join(" ")).toContain("5000");
+    expect(prepared.piProvider.config.models).toEqual([expect.objectContaining({ contextWindow: 5000 })]);
+
+    expect(() =>
+      buildPiProvider(resolveLocalConfig({ provider: "ollama", model: "qwen", env: {} }), "qwen"),
+    ).toThrow(/verified context window/);
+  });
+
+  test("llama-server without n_ctx fails preflight", async () => {
+    const mock = scripted((hit) => {
+      const path = pathname(hit.url);
+      if (path === "/health") return jsonResponse({ status: "ok" });
+      if (path === "/v1/models") return jsonResponse({ data: [{ id: "model.gguf" }] });
+      if (path === "/models") return jsonResponse({}, 404);
+      if (path === "/props") return jsonResponse({});
+      return jsonResponse({ error: "no chat" }, 500);
+    });
+    await expect(
+      prepareLocalProvider(
+        resolveLocalConfig({ provider: "llamacpp", model: "model.gguf", retries: 0, timeoutMs: 1000, env: {} }),
+        { fetch: mock.fetch, ...quiet },
+      ),
+    ).rejects.toThrow(/did not report n_ctx/);
+  });
 });
 
 describe("runner flag merge", () => {
@@ -588,6 +833,12 @@ describe("runner flag merge", () => {
       ["--model", "b", "--thinking", "high"],
     );
     expect(kept).toEqual(["--provider", "ollama", "--model", "b", "--thinking", "high"]);
+    expect(flagValue(["--provider", "vertex-litellm", "--provider=ollama"], "--provider")).toBe("ollama");
+    const equals = flagsForLane("opus", ["--provider=ollama", "--model", "qwen"]);
+    expect(equals).toEqual(["--provider", "ollama", "--model", "qwen"]);
+    expect(equals).not.toContain("vertex-litellm");
+    expect(equals).not.toContain("--thinking");
+    expect(flagValue(equals, "--provider")).toBe("ollama");
   });
 });
 

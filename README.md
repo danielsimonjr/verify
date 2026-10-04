@@ -209,7 +209,7 @@ Host-specific locations are environment variables (see `harness/config.ts`):
 | `VERIHARNESS_IMAGE_<BENCH>`, `VERIHARNESS_IMAGE_SB2_GRADER` | image overrides (see "Native environments" and`harness/grade/sb2.ts`)           | per bench                                           |
 | `VERIHARNESS_OLLAMA_BASE_URL`, `OLLAMA_HOST`                | Ollama server                                                                     | `http://127.0.0.1:11434`                            |
 | `VERIHARNESS_LLAMACPP_BASE_URL`, `LLAMA_BASE_URL`           | llama-server                                                                      | `http://127.0.0.1:8080`                             |
-| `VERIHARNESS_TEMPERATURE`, `VERIHARNESS_TOP_P`, `VERIHARNESS_MAX_TOKENS`, `VERIHARNESS_CONTEXT_SIZE` | local-model request options                                            | unset (server default; context must already be configured) |
+| `VERIHARNESS_TEMPERATURE`, `VERIHARNESS_TOP_P`, `VERIHARNESS_MAX_TOKENS`, `VERIHARNESS_CONTEXT_SIZE` | local-model request options                                            | unset (the server must advertise a context window above 4096) |
 | `VERIHARNESS_MODEL_TIMEOUT`                                 | preflight HTTP timeout, seconds                                                   | `180`                                               |
 
 `<data>/_worlds/` holds the task environments that accompany the pools: the

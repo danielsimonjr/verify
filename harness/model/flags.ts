@@ -14,40 +14,59 @@
 
 import { canonicalLocalProvider } from "./config.js";
 
+/** Split `--key=value` into `--key` `value`. Repeated calls leave an already-split argv unchanged. */
+export function normalizeArgv(argv: string[]): string[] {
+  const out: string[] = [];
+  for (const arg of argv) {
+    if (arg.startsWith("--") && arg.includes("=")) {
+      const eq = arg.indexOf("=");
+      const key = arg.slice(0, eq);
+      const value = arg.slice(eq + 1);
+      if (key.length > 2) out.push(key);
+      if (value !== "") out.push(value);
+      continue;
+    }
+    out.push(arg);
+  }
+  return out;
+}
+
+/** Last value wins, including a later `--flag=value` form. */
 export function flagValue(argv: string[], flag: string): string | undefined {
-  const index = argv.indexOf(flag);
-  if (index < 0) return undefined;
-  const next = argv[index + 1];
-  if (next === undefined || next.startsWith("--")) return undefined;
-  return next;
+  const normalized = normalizeArgv(argv);
+  let found: string | undefined;
+  for (let i = 0; i < normalized.length; i++) {
+    if (normalized[i] !== flag) continue;
+    const next = normalized[i + 1];
+    found = next === undefined || next.startsWith("--") ? undefined : next;
+  }
+  return found;
 }
 
 /**
  * Append `extra` flags, dropping any earlier copy of the same flag (and its value).
+ * `--key=value` is normalized first, so an override written that way still replaces the lane flag.
  * Switching a lane onto a local provider also drops the lane's `--thinking` value:
  * most local models reject a thinking level, and carrying it would fail the turn
  * for a reason that does not mention the model.
  */
 export function withModelOverride(base: string[], extra: string[]): string[] {
-  const extraFlags = new Set(extra.filter((arg) => arg.startsWith("--")));
+  const extraNorm = normalizeArgv(extra);
+  const baseNorm = normalizeArgv(base);
+  const extraFlags = new Set(extraNorm.filter((arg) => arg.startsWith("--")));
   const dropThinking =
     extraFlags.has("--provider") &&
     !extraFlags.has("--thinking") &&
-    canonicalLocalProvider(flagValue(extra, "--provider")) !== undefined;
+    canonicalLocalProvider(flagValue(extraNorm, "--provider")) !== undefined;
   const out: string[] = [];
-  for (let i = 0; i < base.length; i++) {
-    const arg = base[i]!;
-    if (dropThinking && arg === "--thinking") {
-      const next = base[i + 1];
-      if (next !== undefined && !next.startsWith("--")) i++;
-      continue;
-    }
-    if (extraFlags.has(arg)) {
-      const next = base[i + 1];
+  for (let i = 0; i < baseNorm.length; i++) {
+    const arg = baseNorm[i]!;
+    if ((dropThinking && arg === "--thinking") || extraFlags.has(arg)) {
+      const next = baseNorm[i + 1];
       if (next !== undefined && !next.startsWith("--")) i++;
       continue;
     }
     out.push(arg);
   }
-  return [...out, ...extra];
+  return [...out, ...extraNorm];
 }
