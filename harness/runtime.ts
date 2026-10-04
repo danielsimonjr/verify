@@ -21,21 +21,24 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
 
-export function isMain(metaUrl: string): boolean {
-  const meta = import.meta as ImportMeta & { main?: boolean };
-  if (typeof meta.main === "boolean" && meta.url === metaUrl) {
-    return meta.main;
-  }
-  const argv1 = process.argv[1];
+/**
+ * True when the module at `metaUrl` is the program's entry file.
+ *
+ * Node sets `import.meta.url` to the real path of the entry but leaves `process.argv[1]` as the path
+ * it was started with. `npm i -g` links the bin, so both sides go through `realpathSync.native`:
+ * that follows links and gives one spelling of a Windows path whatever case the shell passed.
+ * `argv1` is a parameter so a test can name the link.
+ */
+export function isMain(metaUrl: string, argv1: string | undefined = process.argv[1]): boolean {
   if (!argv1) return false;
   try {
-    return metaUrl === pathToFileURL(resolve(argv1)).href;
+    return realpathSync.native(fileURLToPath(metaUrl)) === realpathSync.native(resolve(argv1));
   } catch {
     return false;
   }
