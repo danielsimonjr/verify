@@ -21,6 +21,7 @@ import { parseArgs } from "node:util";
 import * as config from "./config.js";
 import { exists, isDir, mtime, readText, rmrf, walkFiles, writeJson } from "./fsutil.js";
 import { flagValue, withModelOverride } from "./model/flags.js";
+import { PyRandom, pyRound } from "./pyrandom.js";
 import { harnessCommand, isMain } from "./runtime.js";
 import { renderViews } from "./views.js";
 
@@ -140,19 +141,14 @@ export function flagsForLane(lane: string, driverArgs: string[]): string[] {
   return withModelOverride(config.LANES[lane] ?? [], driverArgs);
 }
 
-/** Match Python random.Random(seed).sample (Fisher–Yates on a seeded LCG). */
-function seededSample<T>(keys: T[], n: number, seed: number): T[] {
-  const copy = [...keys];
-  let s = seed >>> 0;
-  const rand = () => {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s / 0x100000000;
-  };
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    [copy[i], copy[j]] = [copy[j]!, copy[i]!];
-  }
-  return copy.slice(0, n);
+/** The same elements, in the same order, as Python's `random.Random(seed).sample(keys, n)`. */
+export function seededSample<T>(keys: readonly T[], n: number, seed: number): T[] {
+  return new PyRandom(seed).sample(keys, n);
+}
+
+/** Python's `max(1, round(n * fraction))`: `round` takes ties to the even integer. */
+export function fractionCount(n: number, fraction: number): number {
+  return Math.max(1, pyRound(n * fraction));
 }
 
 function selectKeys(dataDir: string, bench: string, pool: string, args: RunnerArgs): string[] {
@@ -177,8 +173,8 @@ function selectKeys(dataDir: string, bench: string, pool: string, args: RunnerAr
   if (args.sample && args.sample < keys.length) {
     keys = seededSample(keys, args.sample, args.seed).sort();
   }
-  if (args.fraction > 0 && args.fraction < 1) {
-    keys = seededSample(keys, Math.max(1, Math.round(keys.length * args.fraction)), args.seed).sort();
+  if (args.fraction > 0 && args.fraction < 1 && keys.length) {
+    keys = seededSample(keys, fractionCount(keys.length, args.fraction), args.seed).sort();
   }
   return keys;
 }
@@ -209,6 +205,19 @@ function driverProcesses(): Record<string, number> {
     return seen;
   }
   return seen;
+}
+
+/**
+ * Parse an integer flag the way argparse's `type=int` did. `Number()` turns a typo into NaN,
+ * which a seed or a cap then carries silently into the run.
+ */
+function intOption(name: string, raw: string | undefined, fallback: number, min = -Infinity): number {
+  if (raw === undefined) return fallback;
+  if (!/^[+-]?\d+$/.test(raw.trim())) throw new Error(`--${name} must be an integer, got '${raw}'`);
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n)) throw new Error(`--${name} is out of range: '${raw}'`);
+  if (n < min) throw new Error(`--${name} must be at least ${min}, got ${n}`);
+  return n;
 }
 
 function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
@@ -271,7 +280,7 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
       limit: Number(values.limit ?? 0),
       sample: Number(values.sample ?? 0),
       fraction: Number(values.fraction ?? 0),
-      seed: Number(values.seed ?? 0),
+      seed: intOption("seed", values.seed, 0),
       turnTimeout: values["turn-timeout"] ? Number(values["turn-timeout"]) : undefined,
       taskTimeout: values["task-timeout"] ? Number(values["task-timeout"]) : undefined,
       skipInflight: Number(values["skip-inflight"] ?? 45),

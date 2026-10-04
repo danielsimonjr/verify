@@ -51,3 +51,16 @@ describe("runner --lane", () => {
     expect(inherited.stderr).toMatch(/names no lane/);
   });
 });
+
+describe("runner --seed", () => {
+  // The sampler needs an integer seed, as the original argparse type=int required. Number()
+  // turned a typo into NaN and the run went on with a seed nobody chose.
+  for (const bad of ["abc", "1.5", "", "1e3", "0x10", "9007199254740993"]) {
+    test(`rejects '${bad}'`, async () => {
+      const hit = await runner(["--cells", "sb2:flash", "--run-name", "r", "--seed", bad]);
+      expect(hit.code).toBe(2);
+      expect(hit.stderr).toMatch(/--seed/);
+      expect(hit.runs).toEqual([]);
+    });
+  }
+});
