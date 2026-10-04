@@ -1,9 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { hasSessionFile, isTransient } from "../harness/driver.ts";
+import { changedFiles, completeBundle, hasSessionFile, isTransient, rolloutDir, validateDelivery } from "../harness/driver.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "vd-driver-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -40,5 +40,54 @@ describe("hasSessionFile", () => {
     expect(hasSessionFile(dir)).toBe(false);
     writeFileSync(join(dir, "2026.jsonl"), "{}\n");
     expect(hasSessionFile(dir)).toBe(true);
+  });
+});
+
+/** A workspace with rollout r1 (one file), an empty out/deliverables, and a file that sits OUTSIDE rollouts/. */
+function makeWs(name: string): string {
+  const ws = join(scratch, name);
+  mkdirSync(join(ws, "rollouts", "r1", "deliverables"), { recursive: true });
+  mkdirSync(join(ws, "out", "deliverables"), { recursive: true });
+  mkdirSync(join(ws, "deliverables"), { recursive: true });
+  writeFileSync(join(ws, "rollouts", "r1", "deliverables", "answer.txt"), "r1 answer");
+  writeFileSync(join(ws, "deliverables", "outside.txt"), "not a rollout's file");
+  return ws;
+}
+
+describe("rolloutDir", () => {
+  const ws = makeWs("ws-rolloutdir");
+  writeFileSync(join(ws, "rollouts", "afile"), "x");
+
+  test("a real rollout directory is accepted", () => {
+    expect(rolloutDir(ws, "r1")).toBe(join(ws, "rollouts", "r1"));
+  });
+
+  test.each(["", ".", "..", "r1/..", "../rollouts/r1", "r1/deliverables", "nope", "afile"])(
+    "%j is not a rollout",
+    (base) => {
+      expect(rolloutDir(ws, base)).toBeNull();
+    },
+  );
+});
+
+describe("a base that is not a rollout name never reads from outside rollouts/", () => {
+  test("completeBundle copies nothing for '..' (it used to restore files from <ws>/deliverables)", () => {
+    const ws = makeWs("ws-complete");
+    expect(completeBundle(ws, "..")).toEqual([]);
+    expect(existsSync(join(ws, "out", "deliverables", "outside.txt"))).toBe(false);
+  });
+
+  test("validateDelivery names the problem instead of comparing against the wrong directory", () => {
+    const ws = makeWs("ws-validate");
+    const verdict = validateDelivery(ws, "..");
+    expect(verdict.valid).toBe(false);
+    expect(String(verdict.reason)).toContain("rollout");
+  });
+
+  test("a genuine base is still completed and validated", () => {
+    const ws = makeWs("ws-genuine");
+    expect(completeBundle(ws, "r1")).toEqual(["answer.txt"]);
+    expect(validateDelivery(ws, "r1")).toMatchObject({ valid: true, n_base: 1, n_out: 1 });
+    expect(changedFiles(ws, "r1")).toEqual([]);
   });
 });

@@ -171,6 +171,17 @@ export function baseOf(finish: Record<string, unknown>): string {
   return name.toLowerCase() === "" || ["none", "null"].includes(name.toLowerCase()) ? "none" : name;
 }
 
+/**
+ * `<ws>/rollouts/<base>` when `base` names one real rollout directory, else null. The base comes
+ * from finish.json, which a model wrote, so it must be a single path segment: "..", "r1/.." and
+ * "a/b" would otherwise point a read, a copy or a comparison at something that is not a rollout.
+ */
+export function rolloutDir(ws: string, base: string): string | null {
+  if (base === "" || base === "." || base === ".." || basename(base) !== base) return null;
+  const dir = join(ws, "rollouts", base);
+  return isDir(dir) ? dir : null;
+}
+
 class Pi {
   ws: string;
   piBin: string;
@@ -407,11 +418,12 @@ export function validateDelivery(ws: string, base: string): Record<string, unkno
     }
     return { valid: true, n_base: 0, n_out: nonempty.length, added: nonempty.slice(0, 20) };
   }
-  const baseDir = join(ws, "rollouts", base, "deliverables");
-  if (!isDir(baseDir)) {
+  const baseRoot = rolloutDir(ws, base);
+  const baseDir = baseRoot === null ? null : join(baseRoot, "deliverables");
+  if (baseDir === null || !isDir(baseDir)) {
     return {
       valid: false,
-      reason: `base rollout '${base}' has no deliverables dir (base must be a rollout name)`,
+      reason: `base rollout '${base}' has no deliverables dir (base must be the name of a rollout)`,
     };
   }
   const need = bundleFiles(baseDir);
@@ -438,7 +450,6 @@ export function validateDelivery(ws: string, base: string): Record<string, unkno
 
 export function completeBundle(ws: string, base: string): string[] {
   const out = join(ws, "out", "deliverables");
-  const baseDir = join(ws, "rollouts", base, "deliverables");
   if (isDir(out)) {
     for (const p of walkFiles(out)) {
       if (isView(basename(p))) {
@@ -446,7 +457,9 @@ export function completeBundle(ws: string, base: string): string[] {
       }
     }
   }
-  if (base === "none" || !isDir(baseDir)) {
+  const baseRoot = base === "none" ? null : rolloutDir(ws, base);
+  const baseDir = baseRoot === null ? null : join(baseRoot, "deliverables");
+  if (baseDir === null || !isDir(baseDir)) {
     return [];
   }
   const restored: string[] = [];
@@ -468,13 +481,13 @@ function digestFile(p: string): string {
 
 export function changedFiles(ws: string, base: string): string[] {
   const out = join(ws, "out", "deliverables");
-  const baseDir = join(ws, "rollouts", base, "deliverables");
+  const baseRoot = rolloutDir(ws, base);
   if (!isDir(out)) return [];
   return [...bundleFiles(out)]
     .filter((rel) => {
       const outP = join(out, rel);
-      const baseP = join(baseDir, rel);
-      return !isFile(baseP) || digestFile(outP) !== digestFile(baseP);
+      const baseP = baseRoot === null ? null : join(baseRoot, "deliverables", rel);
+      return baseP === null || !isFile(baseP) || digestFile(outP) !== digestFile(baseP);
     })
     .sort();
 }
