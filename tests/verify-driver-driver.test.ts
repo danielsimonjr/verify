@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
 import {
+  agentEnv,
   changedFiles,
   completeBundle,
   hasSessionFile,
@@ -168,6 +169,65 @@ describe("resolveSkills", () => {
     if (process.platform !== "win32") return; // on POSIX a backslash is an ordinary file-name character
     const winPath = join(scratch, "winskill").replaceAll("/", "\\");
     expect(resolveSkills([winPath])[0]).toBe(winPath);
+  });
+});
+
+describe("agentEnv: what the verifier session inherits", () => {
+  const host = {
+    PATH: "/usr/bin",
+    HOME: "/home/u",
+    GEMINI_API_KEY: "provider-key-the-agent-may-need",
+    GOOGLE_CLOUD_PROJECT: "proj",
+    VERIHARNESS_DATA: "/data",
+    VERIHARNESS_OLLAMA_BASE_URL: "http://127.0.0.1:11434",
+    JB_JUDGE_API_KEY: "judge-secret",
+    JB_JUDGE_API_BASE: "http://judge",
+    JB_JUDGE_MODEL: "m",
+    APEX_JUDGE_MODEL: "m",
+    APEX_GRADING_DIR: "/bench/apex/grading",
+    JUDGE_API_KEY: "judge-secret-2",
+    JUDGE_BASE_URL: "http://judge",
+    JUDGE_MODEL: "m",
+    WB_LITELLM_API_KEY: "wb-secret",
+    WB_LITELLM_BASE_URL: "http://wb",
+    VERIHARNESS_BENCH_ROOT: "/bench",
+    VERIHARNESS_WB_INDEX: "/bench/wb_index.json",
+    VERIHARNESS_IMAGE_SB2_GRADER: "img",
+  };
+
+  test("grader credentials and answer-key locations do not reach the session", () => {
+    const env = agentEnv(host);
+    for (const name of [
+      "JB_JUDGE_API_KEY",
+      "JB_JUDGE_API_BASE",
+      "JB_JUDGE_MODEL",
+      "APEX_JUDGE_MODEL",
+      "APEX_GRADING_DIR",
+      "JUDGE_API_KEY",
+      "JUDGE_BASE_URL",
+      "JUDGE_MODEL",
+      "WB_LITELLM_API_KEY",
+      "WB_LITELLM_BASE_URL",
+      "VERIHARNESS_BENCH_ROOT",
+      "VERIHARNESS_WB_INDEX",
+      "VERIHARNESS_IMAGE_SB2_GRADER",
+    ]) {
+      expect(name in env).toBe(false);
+    }
+  });
+
+  test("what the session needs is kept, and the caller's environment is not modified", () => {
+    const before = { ...host };
+    const env = agentEnv(host);
+    expect(env).toMatchObject({
+      PATH: "/usr/bin",
+      HOME: "/home/u",
+      GEMINI_API_KEY: "provider-key-the-agent-may-need",
+      GOOGLE_CLOUD_PROJECT: "proj",
+      VERIHARNESS_DATA: "/data",
+      VERIHARNESS_OLLAMA_BASE_URL: "http://127.0.0.1:11434",
+    });
+    expect(host).toEqual(before);
   });
 });
 

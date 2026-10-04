@@ -139,6 +139,18 @@ export function isTransient(stderr: string): boolean {
   );
 }
 
+/**
+ * Variables only the graders read: judge endpoints and keys, and the location of the benchmark
+ * checkouts that hold the answer keys. The jail hides the filesystem but a child inherits the
+ * environment whole, so a verifier could print these.
+ */
+const GRADER_ONLY_ENV = /^(JB_JUDGE_|APEX_|JUDGE_|WB_LITELLM_|VERIHARNESS_(BENCH_ROOT|WB_INDEX|IMAGE_))/;
+
+/** The environment for a verifier session: the host's, minus what only a grader may see. */
+export function agentEnv(host: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(host).filter(([name]) => !GRADER_ONLY_ENV.test(name)));
+}
+
 /** True when pi has left a session file in `dir`; false when it left none or the dir does not exist. */
 export function hasSessionFile(dir: string): boolean {
   if (!isDir(dir)) return false;
@@ -239,7 +251,7 @@ class Pi {
   }
 
   async turn(message: string, timeout: number, continueSession: boolean, tag = ""): Promise<boolean> {
-    const env = { ...process.env };
+    const env = agentEnv(process.env);
     if (this.piHome) env.PI_CODING_AGENT_DIR = this.piHome;
     else env.PI_CODING_AGENT_DIR ??= config.PI_HOME;
     env.GOOGLE_CLOUD_LOCATION ??= "global";
