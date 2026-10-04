@@ -20,7 +20,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 import * as config from "../config.js";
-import { exists, isDir, readText } from "../fsutil.js";
+import { exists, isDir, partition, readText } from "../fsutil.js";
 
 const NODE = join(config.HARNESS_DIR, "vendor", "node-v22", "bin");
 
@@ -68,6 +68,12 @@ function imageEnv(tag: string): Record<string, string> {
   }
 }
 
+/** Task name of a WorkBuddy workspace, which is named `<domain>__<task>`; the task may contain "__". */
+export function wbTaskName(wsPath: string): string {
+  const name = basename(wsPath);
+  return partition(name, "__")[1] || name;
+}
+
 export function imageFor(ws: string): string | null {
   if (!dockerAvailable()) return null;
   const wsPath = resolve(ws);
@@ -75,7 +81,7 @@ export function imageFor(ws: string): string | null {
   const override = process.env[`VERIHARNESS_IMAGE_${bench.toUpperCase()}`];
   if (override) return override;
   if (bench === "wb") {
-    const taskName = basename(wsPath).split("__", 2)[1] ?? basename(wsPath);
+    const taskName = wbTaskName(wsPath);
     const marker = join(config.DATA, "_worlds", "wb", taskName, ".exported");
     if (!exists(marker)) return null;
     const base = readText(marker).trim();

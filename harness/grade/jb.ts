@@ -17,7 +17,7 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { benchRoot, TMP_DIR } from "../config.js";
-import { copyTree, exists, isDir, isFile, readJson, readText, rmrf } from "../fsutil.js";
+import { copyTree, exists, isDir, isFile, partition, readJson, readText, rmrf } from "../fsutil.js";
 import { python3 } from "../runtime.js";
 import { isView } from "../views.js";
 import type { GradeResult } from "./index.js";
@@ -49,6 +49,12 @@ function findRubrics(prof: string, tn: string): string | null {
     return null;
   };
   return walk(root);
+}
+
+/** Rubrics file of a `<profession>__<task>` key; the task name may itself contain "__". */
+export function rubricsFor(key: string): string | null {
+  const [prof, tn] = partition(key, "__");
+  return prof && tn ? findRubrics(prof, tn) : null;
 }
 
 export async function preflight(): Promise<string> {
@@ -97,8 +103,7 @@ export function grade(
 }
 
 function gradeOnce(key: string, deliverables: string, workers: number): GradeResult {
-  const [prof, tn] = key.split("__", 2);
-  const rub = prof && tn ? findRubrics(prof, tn) : null;
+  const rub = rubricsFor(key);
   if (!rub) {
     return { score: null, error: `no RUBRICS.json for ${key}`, grader: "jb/judge.py" };
   }

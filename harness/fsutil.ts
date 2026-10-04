@@ -28,6 +28,16 @@ import {
 } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 
+/**
+ * Split at the first `sep`, like Python's `str.partition` without the separator.
+ * Returns [head, tail]; tail is "" when `sep` is absent. Do not use `split(sep, 2)` for this:
+ * the limit truncates the result, so "a__b__c".split("__", 2) is ["a", "b"] and loses "__c".
+ */
+export function partition(text: string, sep: string): [string, string] {
+  const i = text.indexOf(sep);
+  return i < 0 ? [text, ""] : [text.slice(0, i), text.slice(i + sep.length)];
+}
+
 export function readText(path: string, encoding: BufferEncoding = "utf8"): string {
   return readFileSync(path, { encoding });
 }
