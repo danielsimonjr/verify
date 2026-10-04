@@ -1,0 +1,47 @@
+# The repo had no CI at all. Every PR therefore merged on the author's local
+# word, and a test that only passed on the author's machine sat broken on main
+# undetected (tests/harness.test.ts asserted the checkout path contained
+# "workspace"). A clean-clone runner is what catches that class of defect.
+#
+# The live Ollama and llama.cpp checks are NOT run here. They self-gate on
+# VERIHARNESS_LIVE_OLLAMA / VERIHARNESS_LIVE_LLAMACPP, which are deliberately
+# left unset: a hosted runner has no local model server, and on the development
+# machine the GPU is committed to other work. Those two tests stay skipped, and
+# that is their intended state in CI.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: CI only needs to read the repo.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Typecheck & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.2"
+
+      # --frozen-lockfile so a manifest change without a lockfile update fails
+      # here rather than resolving to something the lockfile never recorded.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test
