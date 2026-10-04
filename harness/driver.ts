@@ -39,6 +39,7 @@ import {
   writeJson as writeJsonFs,
 } from "./fsutil.js";
 import { Native, imageFor } from "./env/index.js";
+import { canonicalLocalProvider, materializePiHome, prepareLocalProvider, resolveLocalConfig } from "./model/index.js";
 import { isMain } from "./runtime.js";
 import { isView } from "./views.js";
 
@@ -161,6 +162,7 @@ class Pi {
   useJail: boolean;
   deadline: number;
   native: Native | null;
+  piHome: string | null;
 
   constructor(
     ws: string,
@@ -169,6 +171,7 @@ class Pi {
     useJail: boolean,
     deadline: number,
     native: Native | null = null,
+    piHome: string | null = null,
   ) {
     this.ws = ws;
     this.piBin = piBin;
@@ -176,6 +179,7 @@ class Pi {
     this.useJail = useJail;
     this.deadline = deadline;
     this.native = native;
+    this.piHome = piHome;
   }
 
   withSession(name: string): Pi {
@@ -184,7 +188,7 @@ class Pi {
     const flags = [...this.flags];
     const idx = flags.indexOf("--session-dir");
     flags[idx + 1] = sessionDir;
-    return new Pi(this.ws, this.piBin, flags, this.useJail, this.deadline, this.native);
+    return new Pi(this.ws, this.piBin, flags, this.useJail, this.deadline, this.native, this.piHome);
   }
 
   get sessionDir(): string {
@@ -193,7 +197,7 @@ class Pi {
   }
 
   inNative(native: Native): Pi {
-    return new Pi(this.ws, this.piBin, this.flags, this.useJail, this.deadline, native);
+    return new Pi(this.ws, this.piBin, this.flags, this.useJail, this.deadline, native, this.piHome);
   }
 
   _cmd(message: string, continueSession: boolean, env: NodeJS.ProcessEnv): [string[], string | null] {
@@ -209,7 +213,8 @@ class Pi {
 
   async turn(message: string, timeout: number, continueSession: boolean, tag = ""): Promise<boolean> {
     const env = { ...process.env };
-    env.PI_CODING_AGENT_DIR ??= config.PI_HOME;
+    if (this.piHome) env.PI_CODING_AGENT_DIR = this.piHome;
+    else env.PI_CODING_AGENT_DIR ??= config.PI_HOME;
     env.GOOGLE_CLOUD_LOCATION ??= "global";
     env.PI_SKIP_VERSION_CHECK ??= "1";
     env.VERIHARNESS_DATA = config.DATA;
@@ -497,6 +502,13 @@ export interface DriverArgs {
   turnTimeout: number;
   nudgeTimeout: number;
   taskTimeout: number;
+  baseUrl?: string;
+  contextSize?: number;
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  /** HTTP timeout for local-model preflight, in seconds. */
+  requestTimeout?: number;
 }
 
 async function investigate(
@@ -667,7 +679,14 @@ function resolveSkills(names: string[]): string[] {
   return names.map((s) => (s.includes("/") ? s : resolve(join(config.SKILLS_DIR, s))));
 }
 
-function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs } | { error: string } {
+function optionalNumber(name: string, raw: string | undefined): number | undefined | { error: string } {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return { error: `invalid ${name} '${raw}'` };
+  return n;
+}
+
+export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs } | { error: string } {
   const skillsFromArgv: string[] = [];
   const passthrough: string[] = [];
   for (let i = 0; i < argv.length; i++) {
@@ -695,6 +714,12 @@ function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs } | { e
         "turn-timeout": { type: "string", default: "1800" },
         "nudge-timeout": { type: "string", default: "600" },
         "task-timeout": { type: "string", default: "3600" },
+        "base-url": { type: "string" },
+        "context-size": { type: "string" },
+        temperature: { type: "string" },
+        "max-tokens": { type: "string" },
+        "top-p": { type: "string" },
+        "request-timeout": { type: "string" },
       },
     });
     if (values.help) {
@@ -711,11 +736,22 @@ function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs } | { e
     if (!(contract in CONTRACTS)) {
       return { error: `invalid contract ${contract}` };
     }
+    const contextSize = optionalNumber("context-size", values["context-size"] as string | undefined);
+    if (contextSize && typeof contextSize === "object") return contextSize;
+    const temperature = optionalNumber("temperature", values.temperature as string | undefined);
+    if (temperature && typeof temperature === "object") return temperature;
+    const maxTokens = optionalNumber("max-tokens", values["max-tokens"] as string | undefined);
+    if (maxTokens && typeof maxTokens === "object") return maxTokens;
+    const topP = optionalNumber("top-p", values["top-p"] as string | undefined);
+    if (topP && typeof topP === "object") return topP;
+    const requestTimeout = optionalNumber("request-timeout", values["request-timeout"] as string | undefined);
+    if (requestTimeout && typeof requestTimeout === "object") return requestTimeout;
+    const provider = canonicalLocalProvider(values.provider as string | undefined) ?? (values.provider as string | undefined);
     return {
       ws: positionals[0]!,
       args: {
         contract,
-        provider: values.provider as string | undefined,
+        provider,
         model: values.model as string | undefined,
         thinking: values.thinking as string | undefined,
         skill: skillsFromArgv,
@@ -726,6 +762,12 @@ function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs } | { e
         turnTimeout: Number(values["turn-timeout"] ?? 1800),
         nudgeTimeout: Number(values["nudge-timeout"] ?? 600),
         taskTimeout: Number(values["task-timeout"] ?? 3600),
+        baseUrl: values["base-url"] as string | undefined,
+        contextSize: contextSize as number | undefined,
+        temperature: temperature as number | undefined,
+        maxTokens: maxTokens as number | undefined,
+        topP: topP as number | undefined,
+        requestTimeout: requestTimeout as number | undefined,
       },
     };
   } catch (e) {
@@ -739,8 +781,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     if (parsed.error === "HELP") {
       process.stdout.write(
         "usage: veriharness driver <ws> [--contract artifact|pick-only] [--provider P] [--model M] " +
-          "[--thinking T] [--skill NAME]... [--no-skills] [--skills-mode mounted|auto] " +
-          "[--env jail|none|native|native-full] [--turn-timeout S] [--nudge-timeout S] [--task-timeout S]\n",
+          "[--thinking T] [--base-url URL] [--context-size N] [--temperature N] [--max-tokens N] [--top-p N] " +
+          "[--request-timeout S] [--skill NAME]... [--no-skills] [--skills-mode mounted|auto] " +
+          "[--env jail|none|native|native-full] [--turn-timeout S] [--nudge-timeout S] [--task-timeout S]\n" +
+          "local providers: --provider ollama (default http://127.0.0.1:11434) or --provider llamacpp " +
+          "(default http://127.0.0.1:8080). Both need --model. No API key.\n",
       );
       return 0;
     }
@@ -765,6 +810,38 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     .replace("{{N}}", String(nRollouts))
     .replace("{{OUTPUT_CONTRACT}}", CONTRACTS[args.contract]!);
   writeFileSync(join(ws, "MISSION.md"), mission, "utf8");
+
+  let localPiHome: string | null = null;
+  if (canonicalLocalProvider(args.provider)) {
+    try {
+      const prepared = await prepareLocalProvider(
+        resolveLocalConfig({
+          provider: args.provider,
+          model: args.model,
+          baseUrl: args.baseUrl,
+          temperature: args.temperature,
+          topP: args.topP,
+          maxTokens: args.maxTokens,
+          contextSize: args.contextSize,
+          timeoutMs: args.requestTimeout === undefined ? undefined : args.requestTimeout * 1000,
+        }),
+      );
+      args.provider = prepared.config.provider;
+      args.model = prepared.model;
+      localPiHome = join(ws, ".pi");
+      materializePiHome(localPiHome, prepared.piProvider);
+      for (const warning of prepared.warnings) log(ws, `local model: ${warning}`);
+      log(
+        ws,
+        `local model ${prepared.config.provider} ${prepared.model} at ${prepared.config.baseUrl} ` +
+          `tools=${String(prepared.probe.capabilities.tools)}`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`error: ${message}\n`);
+      return 2;
+    }
+  }
 
   const flags = [
     "--no-context-files",
@@ -806,7 +883,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     log(ws, "no isolation (--env none): sessions run directly on the host");
   }
 
-  let pi = new Pi(ws, args.piBin, flags, useJail, Date.now() / 1000 + args.taskTimeout);
+  let pi = new Pi(ws, args.piBin, flags, useJail, Date.now() / 1000 + args.taskTimeout, null, localPiHome);
 
   const nativeImage =
     args.env === "native" || args.env === "native-full" ? imageFor(ws) : null;

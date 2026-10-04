@@ -1,0 +1,340 @@
+// Copyright 2026 The VeriHarness Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+/**
+ * Ollama native API (default http://127.0.0.1:11434).
+ *
+ * `/api/tags` and `/api/show` answer "is the server up?" and "is the model pulled?"
+ * `/api/chat` carries tools, JSON mode (`format: "json"`), `options.num_ctx` and
+ * token counts. Streaming is NDJSON. The OpenAI-compatible `/v1` endpoint is what
+ * pi speaks during a verifier run; this client is the one that can see capabilities
+ * and fail before a turn produces an empty ledger.
+ */
+
+import { HttpClient, readLines, TransportError, type FetchLike } from "./http.js";
+import {
+  guardKnownFeatures,
+  httpFailure,
+  modelMissingError,
+  transportFailure,
+} from "./messages.js";
+import { openAiTool } from "./openai_chat.js";
+import {
+  type Capabilities,
+  type ChatMessage,
+  type ChatRequest,
+  type ChatResponse,
+  type ModelBackend,
+  type ProbeResult,
+  type StreamEvent,
+  type TokenUsage,
+  type ToolCall,
+  argumentsToJson,
+  assertJsonContent,
+  assertRequiredTools,
+  foldEvents,
+} from "./types.js";
+
+export interface OllamaDeps {
+  fetch?: FetchLike;
+  timeoutMs: number;
+  retries: number;
+  retryDelayMs?: number;
+}
+
+export function ollamaModelPresent(names: string[], wanted: string): boolean {
+  const has = (name: string) => names.some((n) => n === name);
+  if (has(wanted)) return true;
+  if (!wanted.includes(":") && has(`${wanted}:latest`)) return true;
+  if (wanted.endsWith(":latest") && has(wanted.slice(0, -":latest".length))) return true;
+  return false;
+}
+
+export function parseOllamaNumCtx(parameters: unknown): number | undefined {
+  if (typeof parameters !== "string") return undefined;
+  const match = parameters.match(/(?:^|\n)\s*num_ctx\s+(\d+)/);
+  return match ? Number(match[1]) : undefined;
+}
+
+export function parseOllamaContextLength(info: unknown): number | undefined {
+  if (!info || typeof info !== "object") return undefined;
+  let max = 0;
+  for (const [key, value] of Object.entries(info as Record<string, unknown>)) {
+    if (key.endsWith(".context_length") && typeof value === "number" && value > max) max = value;
+  }
+  return max || undefined;
+}
+
+export function parseOllamaToolCapability(capabilities: unknown): boolean | "unknown" {
+  if (!Array.isArray(capabilities)) return "unknown";
+  return capabilities.some((item) => String(item).toLowerCase() === "tools") ? true : false;
+}
+
+export function buildOllamaChatBody(model: string, req: ChatRequest): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model,
+    messages: req.messages.map(toOllamaMessage),
+    stream: Boolean(req.stream),
+  };
+  const options: Record<string, unknown> = {};
+  if (req.temperature !== undefined) options.temperature = req.temperature;
+  if (req.topP !== undefined) options.top_p = req.topP;
+  if (req.maxTokens !== undefined) options.num_predict = req.maxTokens;
+  if (req.contextSize !== undefined) options.num_ctx = req.contextSize;
+  if (Object.keys(options).length) body.options = options;
+  if (req.tools?.length) {
+    body.tools = req.tools.map(openAiTool);
+    if (req.toolChoice) body.tool_choice = req.toolChoice;
+  }
+  if (req.json) body.format = "json";
+  return body;
+}
+
+function toOllamaMessage(message: ChatMessage): Record<string, unknown> {
+  if (message.role === "tool") {
+    const out: Record<string, unknown> = { role: "tool", content: message.content ?? "" };
+    if (message.name) out.tool_name = message.name;
+    if (message.toolCallId) out.tool_call_id = message.toolCallId;
+    return out;
+  }
+  if (message.role === "assistant" && message.toolCalls?.length) {
+    return {
+      role: "assistant",
+      content: message.content ?? "",
+      tool_calls: message.toolCalls.map((call) => ({
+        id: call.id,
+        type: "function",
+        function: {
+          name: call.name,
+          arguments: safeObject(call.arguments),
+        },
+      })),
+    };
+  }
+  return { role: message.role, content: message.content ?? "" };
+}
+
+function safeObject(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function toolCallsOf(raw: unknown): ToolCall[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ToolCall[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i];
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const fn = (rec.function ?? {}) as Record<string, unknown>;
+    const name = typeof fn.name === "string" ? fn.name : "";
+    if (!name) continue;
+    out.push({
+      id: typeof rec.id === "string" && rec.id ? rec.id : `call_${i}`,
+      name,
+      arguments: argumentsToJson(fn.arguments),
+    });
+  }
+  return out;
+}
+
+export function parseOllamaChat(body: unknown, fallbackModel: string): ChatResponse {
+  const rec = (body ?? {}) as Record<string, unknown>;
+  const message = (rec.message ?? {}) as Record<string, unknown>;
+  const toolCalls = toolCallsOf(message.tool_calls);
+  const content = typeof message.content === "string" ? message.content : null;
+  const model = typeof rec.model === "string" && rec.model ? rec.model : fallbackModel;
+  const finish =
+    typeof rec.done_reason === "string" ? rec.done_reason : toolCalls.length ? "tool_calls" : "stop";
+  const usage = ollamaUsage(rec);
+  return {
+    model,
+    finishReason: finish,
+    usage,
+    message: {
+      role: "assistant",
+      content: content && content.length ? content : null,
+      toolCalls: toolCalls.length ? toolCalls : undefined,
+    },
+  };
+}
+
+function ollamaUsage(rec: Record<string, unknown>): TokenUsage | undefined {
+  const input = rec.prompt_eval_count;
+  const output = rec.eval_count;
+  if (typeof input !== "number" && typeof output !== "number") return undefined;
+  return {
+    inputTokens: typeof input === "number" ? input : 0,
+    outputTokens: typeof output === "number" ? output : 0,
+  };
+}
+
+export function pushOllamaChunk(
+  payload: unknown,
+): { text: string; toolCalls: ToolCall[]; done: boolean; finish?: string; usage?: TokenUsage; model?: string } {
+  const rec = (payload ?? {}) as Record<string, unknown>;
+  const message = (rec.message ?? {}) as Record<string, unknown>;
+  const text = typeof message.content === "string" ? message.content : "";
+  return {
+    text,
+    toolCalls: toolCallsOf(message.tool_calls),
+    done: rec.done === true,
+    finish: typeof rec.done_reason === "string" ? rec.done_reason : undefined,
+    usage: ollamaUsage(rec),
+    model: typeof rec.model === "string" ? rec.model : undefined,
+  };
+}
+
+export async function* parseOllamaNdjson(lines: AsyncIterable<string>): AsyncGenerator<StreamEvent> {
+  let finish: string | undefined;
+  let usage: TokenUsage | undefined;
+  let latestTools: ToolCall[] = [];
+  let sawDone = false;
+  for await (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    const chunk = pushOllamaChunk(payload);
+    if (chunk.text) yield { type: "text", text: chunk.text };
+    if (chunk.toolCalls.length) latestTools = chunk.toolCalls;
+    if (chunk.finish) finish = chunk.finish;
+    if (chunk.usage) usage = chunk.usage;
+    if (chunk.done) {
+      sawDone = true;
+      break;
+    }
+  }
+  for (const call of latestTools) yield { type: "tool_call", toolCall: call };
+  if (!sawDone && finish === undefined) finish = latestTools.length ? "tool_calls" : undefined;
+  yield { type: "done", finishReason: finish, usage };
+}
+
+export class OllamaBackend implements ModelBackend {
+  readonly id = "ollama" as const;
+  readonly model: string;
+  readonly baseUrl: string;
+  private readonly http: HttpClient;
+  private capabilities: Capabilities | undefined;
+
+  constructor(model: string, baseUrl: string, deps: OllamaDeps) {
+    this.model = model;
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.http = new HttpClient(deps);
+  }
+
+  remember(capabilities: Capabilities): void {
+    this.capabilities = capabilities;
+  }
+
+  async probe(): Promise<ProbeResult> {
+    const tags = await this.getJson("/api/tags");
+    const names = modelNames(tags.json);
+    if (!ollamaModelPresent(names, this.model)) {
+      throw modelMissingError("ollama", this.model, this.baseUrl);
+    }
+    let capabilities: Capabilities = { tools: "unknown", json: true };
+    const show = await this.http.send(`${this.baseUrl}/api/show`, {
+      method: "POST",
+      body: { name: this.model },
+    });
+    if (show.status < 400) {
+      const rec = (show.json ?? {}) as Record<string, unknown>;
+      const numCtx = parseOllamaNumCtx(rec.parameters);
+      capabilities = {
+        tools: parseOllamaToolCapability(rec.capabilities),
+        json: true,
+        contextSize: numCtx,
+      };
+    }
+    this.capabilities = capabilities;
+    return { model: this.model, capabilities, models: names };
+  }
+
+  async complete(req: ChatRequest): Promise<ChatResponse> {
+    guardKnownFeatures("ollama", this.model, req, this.capabilities?.tools, this.capabilities?.json);
+    const body = buildOllamaChatBody(this.model, { ...req, stream: false });
+    const res = await this.post("/api/chat", body, req.timeoutMs);
+    const parsed = parseOllamaChat(res, this.model);
+    if (req.json && !parsed.message.toolCalls?.length) assertJsonContent("ollama", parsed.message.content);
+    assertRequiredTools("ollama", req, parsed);
+    return parsed;
+  }
+
+  async *stream(req: ChatRequest): AsyncGenerator<StreamEvent> {
+    guardKnownFeatures("ollama", this.model, req, this.capabilities?.tools, this.capabilities?.json);
+    const body = buildOllamaChatBody(this.model, { ...req, stream: true });
+    const events: StreamEvent[] = [];
+    const res = await this.http.send(`${this.baseUrl}/api/chat`, {
+      method: "POST",
+      body,
+      timeoutMs: req.timeoutMs,
+      stream: true,
+    });
+    if (res.status >= 400 || !res.stream) {
+      throw httpFailure("ollama", this.model, this.baseUrl, res.status, res.text, res.json);
+    }
+    for await (const event of parseOllamaNdjson(readLines(res.stream))) {
+      events.push(event);
+      if (event.type === "done") {
+        const folded = foldEvents(this.model, events);
+        if (req.json && !folded.message.toolCalls?.length) assertJsonContent("ollama", folded.message.content);
+        assertRequiredTools("ollama", req, folded);
+      }
+      yield event;
+    }
+  }
+
+  private async getJson(path: string): Promise<{ status: number; json: unknown; text: string }> {
+    try {
+      const res = await this.http.send(`${this.baseUrl}${path}`, { method: "GET" });
+      if (res.status >= 400) throw httpFailure("ollama", this.model, this.baseUrl, res.status, res.text, res.json);
+      return res;
+    } catch (err) {
+      if (err instanceof TransportError) throw transportFailure("ollama", this.baseUrl, err);
+      throw err;
+    }
+  }
+
+  private async post(path: string, body: unknown, timeoutMs?: number): Promise<unknown> {
+    try {
+      const res = await this.http.send(`${this.baseUrl}${path}`, { method: "POST", body, timeoutMs });
+      if (res.status >= 400) throw httpFailure("ollama", this.model, this.baseUrl, res.status, res.text, res.json);
+      return res.json;
+    } catch (err) {
+      if (err instanceof TransportError) throw transportFailure("ollama", this.baseUrl, err);
+      throw err;
+    }
+  }
+}
+
+function modelNames(body: unknown): string[] {
+  const rec = (body ?? {}) as Record<string, unknown>;
+  const models = Array.isArray(rec.models) ? rec.models : [];
+  const names: string[] = [];
+  for (const item of models) {
+    if (!item || typeof item !== "object") continue;
+    const recItem = item as Record<string, unknown>;
+    const name = recItem.name ?? recItem.model;
+    if (typeof name === "string" && name) names.push(name);
+  }
+  return names;
+}

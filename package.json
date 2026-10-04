@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Same-model verification harness for long-horizon workspace agents",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danielsimonjr/verify.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.19.0"

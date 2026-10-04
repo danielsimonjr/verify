@@ -28,6 +28,7 @@ commands:
   materialize   build task workspaces from an archive
   grade         grade one deliverables directory
   env-derive    derive WorkBuddy images with the tool stack
+  model-check   probe a local Ollama or llama.cpp server
 `;
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
@@ -59,6 +60,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
     case "env-derive": {
       const m = await import("./env/derive.js");
+      return m.main(rest);
+    }
+    case "model-check": {
+      const m = await import("./model/check.js");
       return m.main(rest);
     }
     default:

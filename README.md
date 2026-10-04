@@ -51,6 +51,7 @@ these numbers is released (see [Data](#data)).
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
 - [Setup](#setup)
+- [Local models](#local-models)
 - [Usage](#usage)
 - [Benchmarks and grading](#benchmarks-and-grading)
 - [Data](#data)
@@ -110,6 +111,7 @@ harness/
   runner.ts        many tasks: global work pool with per-model and per-benchmark caps; resumable
   score.ts         score a run against the archived pool (selection and final scores)
   config.ts        locations and model lanes; all host specifics come from the environment
+  model/           local backends (Ollama, llama.cpp): HTTP client, preflight, pi registry
   views.ts         plain-text views rendered beside binary artifacts (.cells.tsv, .text.txt)
   prompts/         CHARTER (system prompt), MISSION, the two investigation playbooks and
                    record formats, ADJUDICATE, REPAIR
@@ -179,6 +181,22 @@ driver to use other models, for example
   export VERTEX_PROJECT=<your-gcp-project>       # and optionally VERTEX_LOCATION
   ```
 
+* **Local models** (`ollama`, `llamacpp`): no API key. Ollama defaults to
+  `http://127.0.0.1:11434`; llama.cpp's `llama-server` defaults to
+  `http://127.0.0.1:8080`. The harness checks that the server is up, the model
+  is pulled or loaded, and tool calling works, then points pi at that server's
+  OpenAI-compatible endpoint. Setup, context length and the failure messages
+  are in [docs/local-models.md](docs/local-models.md).
+
+  ```bash
+  bun harness/cli.ts model-check --provider ollama --model qwen2.5-coder:7b
+  bun harness/cli.ts driver <task-dir> --provider ollama --model qwen2.5-coder:7b --env none
+  bun harness/cli.ts driver <task-dir> --provider llamacpp --model model.gguf --env none
+  ```
+
+The source repository is [danielsimonjr/verify](https://github.com/danielsimonjr/verify)
+(renamed from `veriharness`). Package, CLI and import names are unchanged.
+
 Host-specific locations are environment variables (see `harness/config.ts`):
 
 | Variable                                                        | Meaning                                                                           | Default                                             |
@@ -189,12 +207,29 @@ Host-specific locations are environment variables (see `harness/config.ts`):
 | `VERIHARNESS_TMP`                                             | staging directory for the graders' containers (bind-mounted, so a real directory) | `/var/tmp`                                        |
 | `VERIHARNESS_WB_INDEX`                                        | index of archived WorkBuddy run directories (materialize only)                    | `<bench root>/benchmarks/workbuddy/wb_index.json` |
 | `VERIHARNESS_IMAGE_<BENCH>`, `VERIHARNESS_IMAGE_SB2_GRADER` | image overrides (see "Native environments" and`harness/grade/sb2.ts`)           | per bench                                           |
+| `VERIHARNESS_OLLAMA_BASE_URL`, `OLLAMA_HOST`                | Ollama server                                                                     | `http://127.0.0.1:11434`                            |
+| `VERIHARNESS_LLAMACPP_BASE_URL`, `LLAMA_BASE_URL`           | llama-server                                                                      | `http://127.0.0.1:8080`                             |
+| `VERIHARNESS_TEMPERATURE`, `VERIHARNESS_TOP_P`, `VERIHARNESS_MAX_TOKENS`, `VERIHARNESS_CONTEXT_SIZE` | local-model request options                                            | unset (server default; context must already be configured) |
+| `VERIHARNESS_MODEL_TIMEOUT`                                 | preflight HTTP timeout, seconds                                                   | `180`                                               |
 
 `<data>/_worlds/` holds the task environments that accompany the pools: the
 APEX world archives and the WorkBuddy task repositories with their image
 markers. The materializers link into it, grading and native mode read it, and
 the jail exposes it read-only. It is produced together with the pools and is
 not part of this repository.
+
+## Local models
+
+Ollama and llama.cpp run next to the hosted lanes. Both need `--model` and neither needs an API key. The harness refuses to start when the server is down, the model is missing, or tool calling does not work, because a verifier turn that cannot call tools does not write a ledger. Details, including context length and the in-process GGUF tradeoff, are in [docs/local-models.md](docs/local-models.md).
+
+```bash
+ollama serve && ollama pull qwen2.5-coder:7b
+bun harness/cli.ts model-check --provider ollama --model qwen2.5-coder:7b
+bun harness/cli.ts driver <task-dir> --provider ollama --model qwen2.5-coder:7b --temperature 0.2 --env none
+
+llama-server -m model.gguf --host 127.0.0.1 --port 8080 --jinja -c 32768
+bun harness/cli.ts driver <task-dir> --provider llamacpp --model model.gguf --env none
+```
 
 ## Usage
 
