@@ -121,3 +121,101 @@ describe("runner path segments", () => {
     }
   });
 });
+
+describe("runner --cell-cap", () => {
+  // A cap of 0 or NaN makes `inUseCell < cellCap` false forever: the cell never starts and the
+  // loop wakes every 3 s for nothing. An unknown key is a typo that would silently do nothing.
+  const bad = [
+    "sb2=0",
+    "sb2=abc",
+    "sb2=",
+    "sb2",
+    "=3",
+    "nosuch=3",
+    "sb2=1.5",
+    "sb2=-1",
+    "sb2=3=4",
+    "sb2=1e2",
+    "sb2=2,wb=0",
+    "default=0",
+    "SB2=3",
+  ];
+  for (const spec of bad) {
+    test(`rejects ${JSON.stringify(spec)}`, async () => {
+      const hit = await runner(["--cells", "sb2:flash", "--run-name", "r", "--cell-cap", spec]);
+      expect(hit.code).toBe(2);
+      expect(hit.stderr).toMatch(/--cell-cap/);
+      expect(hit.runs).toEqual([]);
+    });
+  }
+
+  test("accepts bench keys and default, with spaces and a trailing comma", async () => {
+    const { result } = await captureStderr(() =>
+      within(
+        main(["--cells", "sb2:flash", "--run-name", "r", "--cell-cap", "sb2=2, default=3,"], {
+          dataDir: sb.dataDir,
+          runsDir: sb.runsDir,
+          driverCommand: () => [process.execPath, "-e", ""],
+        }),
+        5000,
+      ),
+    );
+    expect(result).toBe(1); // the empty driver writes no finish.json; the caps were accepted
+    const run = JSON.parse(readFileSync(join(sb.runsDir, "r", "sb2_flash", "run.json"), "utf8"));
+    expect(run.cell_cap).toBe(2);
+  });
+});
+
+describe("runner numeric options", () => {
+  // Number("abc") is NaN and every one of these then fails quietly: a lane max of NaN or 0 starts
+  // no task, and a NaN --sample or --fraction means "no sampling": the whole task set runs.
+  const bad: [string, string][] = [
+    ["--max-flash", "0"],
+    ["--max-flash", "abc"],
+    ["--max-opus", "-1"],
+    ["--max-opus", "2.5"],
+    ["--limit", "-1"],
+    ["--limit", "x"],
+    ["--sample", "1.5"],
+    ["--sample", "-3"],
+    ["--sample", "ten"],
+    ["--fraction", "abc"],
+    ["--fraction", "NaN"],
+    ["--fraction", "1.5"],
+    ["--fraction", "-0.1"],
+    ["--fraction", ""],
+    ["--skip-inflight", "x"],
+    ["--skip-inflight", "-5"],
+    ["--turn-timeout", "0"],
+    ["--turn-timeout", "abc"],
+    ["--task-timeout", "-1"],
+  ];
+  for (const [flag, value] of bad) {
+    test(`${flag} ${JSON.stringify(value)} is rejected`, async () => {
+      const hit = await runner(["--cells", "sb2:flash", "--run-name", "r", flag, value]);
+      expect(hit.code).toBe(2);
+      expect(hit.stderr).toContain(flag);
+      expect(hit.runs).toEqual([]);
+    });
+  }
+
+  test("valid values are accepted and recorded", async () => {
+    const { result } = await captureStderr(() =>
+      within(
+        main(
+          [
+            "--cells", "sb2:flash", "--run-name", "r",
+            "--max-flash", "3", "--max-opus", "4", "--limit", "5", "--sample", "0", "--fraction", "1",
+            "--skip-inflight", "0", "--turn-timeout", "60", "--task-timeout", "600",
+          ],
+          { dataDir: sb.dataDir, runsDir: sb.runsDir, driverCommand: () => [process.execPath, "-e", ""] },
+        ),
+        5000,
+      ),
+    );
+    expect(result).toBe(1);
+    const run = JSON.parse(readFileSync(join(sb.runsDir, "r", "sb2_flash", "run.json"), "utf8"));
+    expect(run.lane_max).toMatchObject({ flash: 3, opus: 4 });
+    expect(run.driver_args).toEqual(expect.arrayContaining(["--turn-timeout", "60", "--task-timeout", "600"]));
+  });
+});

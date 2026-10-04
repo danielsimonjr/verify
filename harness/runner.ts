@@ -112,7 +112,7 @@ interface RunnerArgs {
   lane?: string;
   maxFlash: number;
   maxOpus: number;
-  cellCap: string;
+  caps: Record<string, number>;
   only: string[];
   onlyFile?: string;
   limit: number;
@@ -179,13 +179,36 @@ function selectKeys(dataDir: string, bench: string, pool: string, args: RunnerAr
   return keys;
 }
 
+/**
+ * Parse `bench=N,...` (key `default` for the rest) over the default caps. A cap that is not an
+ * integer of at least 1 would make `inUseCell < cap` false forever: the cell never starts and
+ * the scheduler loop wakes every few seconds for nothing. An unknown key would do nothing.
+ */
 function parseCaps(spec: string): Record<string, number> {
   const caps = { ...DEFAULT_CELL_CAP };
-  for (const item of (spec || "").split(",").filter(Boolean)) {
-    const [k, v] = item.split("=");
-    caps[k.trim()] = parseInt(v!, 10);
+  for (const item of spec.split(",").filter((s) => s.trim())) {
+    const eq = item.indexOf("=");
+    const key = (eq < 0 ? item : item.slice(0, eq)).trim();
+    const raw = eq < 0 ? "" : item.slice(eq + 1).trim();
+    if (key !== "default" && !(config.BENCHES as readonly string[]).includes(key)) {
+      throw new Error(`--cell-cap: unknown key '${key}' (use a bench: ${config.BENCHES.join(", ")}; or default)`);
+    }
+    if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+      throw new Error(`--cell-cap: '${key}' needs an integer of at least 1, got '${raw}'`);
+    }
+    caps[key] = Number(raw);
   }
   return caps;
+}
+
+/** `--fraction`: a number from 0 to 1. A typo parsed as NaN would mean "no sampling", the full set. */
+function fractionOption(raw: string | undefined): number {
+  if (raw === undefined) return 0;
+  const n = Number(raw);
+  if (raw.trim() === "" || !Number.isFinite(n) || n < 0 || n > 1) {
+    throw new Error(`--fraction must be a number from 0 to 1, got '${raw}'`);
+  }
+  return n;
 }
 
 function driverProcesses(): Record<string, number> {
@@ -272,18 +295,18 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
       runName: String(values["run-name"]),
       contract: String(values.contract ?? "artifact"),
       lane: values.lane as string | undefined,
-      maxFlash: Number(values["max-flash"] ?? DEFAULT_LANE_MAX.flash),
-      maxOpus: Number(values["max-opus"] ?? DEFAULT_LANE_MAX.opus),
-      cellCap: String(values["cell-cap"] ?? ""),
+      maxFlash: intOption("max-flash", values["max-flash"], DEFAULT_LANE_MAX.flash!, 1),
+      maxOpus: intOption("max-opus", values["max-opus"], DEFAULT_LANE_MAX.opus!, 1),
+      caps: parseCaps(String(values["cell-cap"] ?? "")),
       only,
       onlyFile: values["only-file"] as string | undefined,
-      limit: Number(values.limit ?? 0),
-      sample: Number(values.sample ?? 0),
-      fraction: Number(values.fraction ?? 0),
+      limit: intOption("limit", values.limit, 0, 0),
+      sample: intOption("sample", values.sample, 0, 0),
+      fraction: fractionOption(values.fraction),
       seed: intOption("seed", values.seed, 0),
-      turnTimeout: values["turn-timeout"] ? Number(values["turn-timeout"]) : undefined,
-      taskTimeout: values["task-timeout"] ? Number(values["task-timeout"]) : undefined,
-      skipInflight: Number(values["skip-inflight"] ?? 45),
+      turnTimeout: values["turn-timeout"] === undefined ? undefined : intOption("turn-timeout", values["turn-timeout"], 0, 1),
+      taskTimeout: values["task-timeout"] === undefined ? undefined : intOption("task-timeout", values["task-timeout"], 0, 1),
+      skipInflight: intOption("skip-inflight", values["skip-inflight"], 45, 0),
       skill,
       noSkills: Boolean(values["no-skills"]),
       skillsMode: String(values["skills-mode"] ?? "mounted"),
@@ -405,7 +428,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
     }
   }
 
-  const caps = parseCaps(args.cellCap);
+  const caps = args.caps;
   const laneMax: Record<string, number> = Object.fromEntries(
     Object.keys(config.LANES).map((lane) => [lane, Math.max(...Object.values(DEFAULT_LANE_MAX))]),
   );
