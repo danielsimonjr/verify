@@ -14,9 +14,9 @@
 
 /** Batch runner: drive materialized tasks through the driver with one global work pool. */
 
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import * as config from "./config.js";
 import { exists, isDir, mtime, readText, rmrf, walkFiles, writeJson } from "./fsutil.js";
@@ -50,14 +50,37 @@ function lastActivity(ws: string): number {
 /** The command that runs one task. Tests replace it with a stub; production runs the driver. */
 type DriverCommand = (ws: string, flags: string[]) => string[];
 
-function runTask(
+/**
+ * Run a command to completion with its output going to `outFd`, and resolve to its exit code.
+ * The child runs asynchronously: a blocking spawn would hold the event loop for the whole task
+ * and let no other task start.
+ */
+function runToExit(cmd: string[], outFd: number): Promise<number> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (rc: number) => {
+      if (!settled) {
+        settled = true;
+        resolve(rc);
+      }
+    };
+    const child = spawn(cmd[0]!, cmd.slice(1), { cwd: config.REPO, stdio: ["ignore", outFd, outFd] });
+    child.once("error", (e) => {
+      writeSync(outFd, `spawn failed: ${e.message}\n`);
+      finish(1);
+    });
+    child.once("close", (code) => finish(code ?? 1));
+  });
+}
+
+async function runTask(
   src: string,
   ws: string,
   lane: string,
   driverArgs: string[],
   skipInflightMin: number,
   driverCommand: DriverCommand = (w, flags) => harnessCommand(import.meta.url, "driver", [w, ...flags]),
-): string {
+): Promise<string> {
   if (exists(join(ws, "finish.json"))) {
     return "skip";
   }
@@ -68,17 +91,13 @@ function runTask(
     rmrf(ws);
   }
   cpSync(src, ws, { recursive: true });
-  renderViews(join(ws, "workspace"));
-  renderViews(join(ws, "rollouts"));
+  // The driver and its verifier read these views as evidence, so they must exist before launch.
+  await Promise.all([renderViews(join(ws, "workspace")), renderViews(join(ws, "rollouts"))]);
   const cmd = driverCommand(ws, flagsForLane(lane, driverArgs));
   const outFd = openSync(join(ws, "run.out"), "w");
   let rc = 1;
   try {
-    const hit = spawnSync(cmd[0]!, cmd.slice(1), {
-      cwd: config.REPO,
-      stdio: ["ignore", outFd, outFd],
-    });
-    rc = hit.status ?? 1;
+    rc = await runToExit(cmd, outFd);
   } finally {
     closeSync(outFd);
   }
@@ -290,6 +309,8 @@ export interface RunnerDeps {
   dataDir?: string;
   runsDir?: string;
   driverCommand?: DriverCommand;
+  /** Milliseconds between scheduling passes while tasks wait for capacity (default 3000). */
+  pollMs?: number;
 }
 
 export async function main(argv: string[] = process.argv.slice(2), deps: RunnerDeps = {}): Promise<number> {
@@ -429,7 +450,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
   const work = async (bench: string, pool: string, cellDir: string, key: string) => {
     let status: string;
     try {
-      status = runTask(
+      status = await runTask(
         join(dataDir, bench, pool, "tasks", key),
         join(cellDir, key),
         laneOf[pool]!,
@@ -487,7 +508,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
     }
     pending = rest;
     if (pending.length) {
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, deps.pollMs ?? 3000));
     }
   }
   await Promise.all([...active]);
