@@ -25,8 +25,6 @@ export const DEFAULT_RETRIES = 2;
 /** Placeholder pi stores so a keyless local server still appears selectable. Never sent by this client. */
 export const PI_PLACEHOLDER_API_KEY = "local";
 export const DEFAULT_PI_MAX_TOKENS = 8192;
-/** Recommended server context. Never substituted when the server does not advertise one. */
-export const DEFAULT_PI_CONTEXT = 32768;
 
 export interface LocalModelConfig {
   provider: LocalProviderId;
@@ -87,13 +85,16 @@ export function resolveLocalConfig(input: LocalModelInput): LocalModelConfig {
     baseUrl: normalizeBaseUrl(input.baseUrl ?? baseUrlFromEnv(provider, env)),
     temperature: input.temperature ?? optionalNumber(env.VERIHARNESS_TEMPERATURE, "VERIHARNESS_TEMPERATURE"),
     topP: input.topP ?? optionalNumber(env.VERIHARNESS_TOP_P, "VERIHARNESS_TOP_P"),
-    maxTokens: input.maxTokens ?? optionalNumber(env.VERIHARNESS_MAX_TOKENS, "VERIHARNESS_MAX_TOKENS"),
+    maxTokens: positiveInteger(
+      input.maxTokens ?? optionalNumber(env.VERIHARNESS_MAX_TOKENS, "VERIHARNESS_MAX_TOKENS"),
+      "max tokens",
+    ),
     contextSize: positiveInteger(
       input.contextSize ?? optionalNumber(env.VERIHARNESS_CONTEXT_SIZE, "VERIHARNESS_CONTEXT_SIZE"),
       "context size",
     ),
-    timeoutMs: input.timeoutMs ?? timeoutFromEnv(env),
-    retries: input.retries ?? retriesFromEnv(env),
+    timeoutMs: input.timeoutMs === undefined ? timeoutFromEnv(env) : positiveTimeout(input.timeoutMs),
+    retries: input.retries === undefined ? retriesFromEnv(env) : nonNegativeInteger(input.retries, "retries"),
   };
 }
 
@@ -136,6 +137,17 @@ function positiveInteger(value: number | undefined, name: string): number | unde
   if (value === undefined) return undefined;
   if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
   return value;
+}
+
+function nonNegativeInteger(value: number, name: string): number {
+  if (!Number.isInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer`);
+  return value;
+}
+
+/** A zero or negative timeout aborts every request at once, so it is an input error, not "no limit". */
+function positiveTimeout(ms: number): number {
+  if (!Number.isFinite(ms) || ms <= 0) throw new Error("request timeout must be positive");
+  return ms;
 }
 
 function timeoutFromEnv(env: NodeJS.ProcessEnv): number {

@@ -102,7 +102,8 @@ function enforceContext(config: LocalModelConfig, probe: ProbeResult, warnings: 
   if (window < 8192) {
     warnings.push(
       `${config.provider} model '${probe.model}' is registered with a ${window}-token context. ` +
-        `pi can run that, but verifier tasks are long; raise it above 8192 ` +
+        `pi withholds ${PI_CONTEXT_RESERVE} tokens plus the prompt from that window, so replies can be ` +
+        `cut to a few tokens and verifier tasks are long; raise it above 8192 ` +
         `(Ollama: OLLAMA_CONTEXT_LENGTH or a Modelfile num_ctx; llama-server: -c).`,
     );
   }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -635,12 +635,16 @@ describe("preflight and pi registry", () => {
     ]);
     expect(mock.hits.some((hit) => hit.url.endsWith("/api/chat"))).toBe(false);
     const dir = mkdtempSync(join(tmpdir(), "vh-pi-"));
-    materializePiHome(dir, prepared.piProvider);
-    const written = JSON.parse(readFileSync(join(dir, "models.json"), "utf8")) as {
-      providers: Record<string, { apiKey?: string }>;
-    };
-    expect(written.providers.ollama?.apiKey).toBe("local");
-    expect(written.providers["vertex-litellm"]).toBeUndefined();
+    try {
+      materializePiHome(dir, prepared.piProvider);
+      const written = JSON.parse(readFileSync(join(dir, "models.json"), "utf8")) as {
+        providers: Record<string, { apiKey?: string }>;
+      };
+      expect(written.providers.ollama?.apiKey).toBe("local");
+      expect(written.providers["vertex-litellm"]).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("missing tools and a text-only probe fail instead of continuing", async () => {
