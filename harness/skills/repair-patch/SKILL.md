@@ -12,7 +12,7 @@ turned into nothing: a hunk header fixed up by hand, and a patch regenerated fro
 so "new file" sections became "modify" sections that a pristine repository rejects.
 
 1. No authorised change -> copy the base's patch byte for byte. Stop.
-2. Otherwise never edit patch text. `python3 <evidence-patch dir>/scripts/patchlab.py build --base workspace/repo --out /tmp/fix base=<base patch>`;
+2. Otherwise never edit patch text. `node <evidence-patch dir>/scripts/patchlab.js build --base workspace/repo --out /tmp/fix base=<base patch>`;
    edit files in `/tmp/fix/base`; then in that tree
    `git add -A && git diff --cached --binary HEAD > out/deliverables/agent.patch`
    (HEAD is the pristine commit the script made - the diff must be against

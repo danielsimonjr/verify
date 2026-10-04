@@ -13,8 +13,9 @@
 # limitations under the License.
 #
 # A plain document-work environment for benchmarks whose original world is a set of
-# files (mounted read-only under the data root): Python with the document libraries
-# the skills use, plus LibreOffice for spreadsheet recalculation.
+# files (mounted read-only under the data root): LibreOffice for spreadsheet
+# recalculation, plus Python libraries models still reach for. Skill CLIs run on
+# the mounted Node 22 runtime.
 #   docker build -f harness/env/Dockerfile.apex -t veriharness-docs .
 FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends libreoffice-calc libreoffice-writer libreoffice-impress curl git sqlite3 poppler-utils zip unzip xxd \

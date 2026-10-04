@@ -10,15 +10,15 @@ Reading the diffs tells you what the authors intended. Running them tells you wh
 they do. Do both; a position about behaviour that was never executed
 is recorded as unexecuted.
 
-Script (run with `python3`; path relative to this directory):
+Scripts (path relative to this directory; production: `node scripts/<name>.js`, development: `bun scripts/<name>.ts`):
 
-- `scripts/patchlab.py build --base workspace/repo --out /tmp/lab [--jobs 4] r01=rollouts/r01/deliverables/agent.patch ...`
+- `scripts/patchlab.js build --base workspace/repo --out /tmp/lab [--jobs 4] r01=rollouts/r01/deliverables/agent.patch ...`
   makes `/tmp/lab/_base` (a real copy, symlinks resolved, committed in a throwaway
   git repo) and `/tmp/lab/rNN` = base + that candidate's patch. It drops cache /
   dependency / binary-stub sections, tries strict apply, then --recount, then
   --3way, then patch(1), and writes `build.json` (applied, mode, files, skipped,
   stderr). All candidates build in seconds.
-- `scripts/patchlab.py run --out /tmp/lab [--timeout 300] [--jobs 4] [--only r01,r02] [--tag T] -- CMD`
+- `scripts/patchlab.js run --out /tmp/lab [--timeout 300] [--jobs 4] [--only r01,r02] [--tag T] -- CMD`
   runs the same shell command with cwd = each tree, `_base` included, in parallel,
   prints one line per tree and keeps the full output in `/tmp/lab/<name>.<T>.log`.
 
@@ -91,7 +91,7 @@ Build the trees as above, then look at the page the way its reader gets it: serv
 ONLY the directory the task names as the output location (not the repository root)
 over http and open it in a headless browser.
 
-- `scripts/pageprobe.py TREE/<output dir> [--page index.html] [--mobile] [--click 12] [--out DIR]`
+- `scripts/pageprobe.js TREE/<output dir> [--page index.html] [--mobile] [--click 12] [--out DIR]`
   serves the directory on a free local port, loads the page in headless Chromium
   and prints JSON: requests that failed or left the served root, console errors and
   uncaught exceptions, text length, counts of buttons / inputs / svg children /

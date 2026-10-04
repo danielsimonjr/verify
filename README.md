@@ -105,11 +105,12 @@ delivered bundle must contain every file of its base under the same name.
 
 ```
 harness/
-  driver.py        one task: the four turns above
-  runner.py        many tasks: global work pool with per-model and per-benchmark caps; resumable
-  score.py         score a run against the archived pool (selection and final scores)
-  config.py        locations and model lanes; all host specifics come from the environment
-  views.py         plain-text views rendered beside binary artifacts (.cells.tsv, .text.txt)
+  cli.ts           command dispatcher (driver, runner, score, materialize, grade, env-derive)
+  driver.ts        one task: the four turns above
+  runner.ts        many tasks: global work pool with per-model and per-benchmark caps; resumable
+  score.ts         score a run against the archived pool (selection and final scores)
+  config.ts        locations and model lanes; all host specifics come from the environment
+  views.ts         plain-text views rendered beside binary artifacts (.cells.tsv, .text.txt)
   prompts/         CHARTER (system prompt), MISSION, the two investigation playbooks and
                    record formats, ADJUDICATE, REPAIR
   skills/          the skill library (evidence-*, resolve-*, falsify-*, repair-*)
@@ -121,16 +122,37 @@ harness/
   pi-home/         the agent runtime's model registry (models.json)
 ```
 
+Development runs the TypeScript sources with [Bun](https://bun.sh). Production compiles them
+(`npm run build`) and runs the emitted JavaScript with Node.js 22.19+. Skill CLIs follow the
+same split: `bun scripts/<name>.ts` while iterating, `node scripts/<name>.js` (via the launcher)
+after a build.
+
 ## Setup
 
-Requirements: Linux with unprivileged user namespaces (for the jail), Python
-3.10+, Node.js 22.19+ and npm (for the agent runtime), git, curl, `uv` (for the
+Requirements: Linux with unprivileged user namespaces (for the jail), [Bun](https://bun.sh)
+1.1+ for development, Node.js 22.19+ for production and the agent runtime, Python
+3.10+ (LiteLLM, WorkBuddy/SB2 grade bridges, benchmark setup), git, curl, `uv` (for the
 benchmark checkouts), and Docker for the graders and the optional native
 environments.
 
 ```bash
-pip install -r requirements.txt
+bun install                          # or: npm install
+pip install -r requirements.txt      # remaining Python bridges and setup helpers
 harness/scripts/setup_pi.sh          # installs the pinned pi agent runtime into harness/vendor/
+```
+
+Harness commands:
+
+```bash
+# development (Bun, TypeScript sources)
+bun harness/cli.ts driver <task-dir> --provider google-vertex --model gemini-3.5-flash --thinking high
+bun harness/cli.ts runner --run-name demo --cells sb2:opus apex:opus
+bun harness/cli.ts score runs/demo/sb2_opus --workers 24
+bun harness/cli.ts materialize <bench>
+
+# production (Node, compiled)
+npm run build
+node dist/harness/cli.js driver <task-dir> --provider google-vertex --model gemini-3.5-flash --thinking high
 ```
 
 The harness drives the open-source [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
@@ -139,7 +161,7 @@ OpenAI, Google AI Studio, Vertex AI, OpenAI-compatible endpoints and others);
 no Google account or service is required. A *lane*
 is the verifier model; by default a pool is verified by the model that
 generated it. The two lanes used in the paper are defined in
-`harness/config.py` (`LANES`); edit them or pass `--provider`/`--model` to the
+`harness/config.ts` (`LANES`); edit them or pass `--provider`/`--model` to the
 driver to use other models, for example
 `--provider anthropic --model claude-opus-4-8` with `ANTHROPIC_API_KEY` set.
 
@@ -157,7 +179,7 @@ driver to use other models, for example
   export VERTEX_PROJECT=<your-gcp-project>       # and optionally VERTEX_LOCATION
   ```
 
-Host-specific locations are environment variables (see `harness/config.py`):
+Host-specific locations are environment variables (see `harness/config.ts`):
 
 | Variable                                                        | Meaning                                                                           | Default                                             |
 | --------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------- |
@@ -166,7 +188,7 @@ Host-specific locations are environment variables (see `harness/config.py`):
 | `VERIHARNESS_BENCH_ROOT`                                      | upstream benchmark checkouts and archived rollouts (materialize and grade only)   | unset                                               |
 | `VERIHARNESS_TMP`                                             | staging directory for the graders' containers (bind-mounted, so a real directory) | `/var/tmp`                                        |
 | `VERIHARNESS_WB_INDEX`                                        | index of archived WorkBuddy run directories (materialize only)                    | `<bench root>/benchmarks/workbuddy/wb_index.json` |
-| `VERIHARNESS_IMAGE_<BENCH>`, `VERIHARNESS_IMAGE_SB2_GRADER` | image overrides (see "Native environments" and`harness/grade/sb2.py`)           | per bench                                           |
+| `VERIHARNESS_IMAGE_<BENCH>`, `VERIHARNESS_IMAGE_SB2_GRADER` | image overrides (see "Native environments" and`harness/grade/sb2.ts`)           | per bench                                           |
 
 `<data>/_worlds/` holds the task environments that accompany the pools: the
 APEX world archives and the WorkBuddy task repositories with their image
@@ -187,7 +209,7 @@ not part of this repository.
 <data>/<bench>/<pool>/meta.json       archived per-rollout scores; never visible to the verifier
 ```
 
-`python3 -m harness.materialize <bench>` builds these from an archive of
+`bun harness/cli.ts materialize <bench>` (or `node dist/harness/cli.js materialize <bench>`) builds these from an archive of
 rollouts. The adapters encode the archive layout our pools were generated
 into; to verify your own rollouts, produce the layout above directly or write
 an adapter that yields `materialize.base.Task` objects.
@@ -195,7 +217,7 @@ an adapter that yields `materialize.base.Task` objects.
 **Run one task.**
 
 ```bash
-python3 -m harness.driver <task-dir> --provider google-vertex --model gemini-3.5-flash --thinking high
+bun harness/cli.ts driver <task-dir> --provider google-vertex --model gemini-3.5-flash --thinking high
 ```
 
 The driver writes the two investigation records (`elim/`, `fals/`,
@@ -212,11 +234,11 @@ through the driver with per-lane and per-benchmark concurrency caps. It is
 resumable: finished tasks are skipped, unfinished ones re-staged.
 
 ```bash
-python3 -m harness.runner --run-name demo --cells sb2:opus apex:opus
-python3 -m harness.score runs/demo/sb2_opus --workers 24
+bun harness/cli.ts runner --run-name demo --cells sb2:opus apex:opus
+bun harness/cli.ts score runs/demo/sb2_opus --workers 24
 ```
 
-`score.py` reports the single-rollout mean, the selection score, the final
+`score.ts` reports the single-rollout mean, the selection score, the final
 score after revision, and the selection oracle. `--select-only` uses only the
 archived scores and needs no grader; otherwise the delivered bundle and the
 unrevised base are re-graded in the same pass and
@@ -250,7 +272,7 @@ The three LLM judges (`wb`, `wsb`, `jb`) need an OpenAI-compatible endpoint
 that you provide: the `.env` templates default to `http://127.0.0.1:4100` and
 `jb` to `JB_JUDGE_API_BASE`; the proxy in `harness/scripts/litellm.yaml` serves
 only the verifier lane and can be extended with the judge models.
-`harness/grade/<bench>.py` documents, per benchmark, which upstream entry
+`harness/grade/<bench>.ts` documents, per benchmark, which upstream entry
 point is wrapped. Scoring refuses to start when a judge is unreachable
 (`preflight`), because the upstream judges report a failed call as a 0.0 score
 rather than an error, and it warns when re-grading the archived bases does not reproduce
@@ -269,7 +291,7 @@ It contains the rendered trajectory the verifier saw and the files each
 rollout delivered, with each benchmark's own grader score and a key that maps
 to the official task id; no benchmark inputs, rubrics or answer keys are
 included, so the task workspaces are rebuilt from the upstream benchmarks
-(see the dataset card). `python3 -m harness.materialize` is the adapter that
+(see the dataset card). `bun harness/cli.ts materialize` is the adapter that
 produced the pool from our run archives; to verify the released rollouts,
 place them in the task-workspace layout described under [Usage](#usage).
 
@@ -279,7 +301,7 @@ Verifier sessions run inside `harness/scripts/jail_run.sh`, a mount-namespace
 jail (`unshare -r -m -p`, no privileges needed): the task workspace is the
 only visible project state, `spec/`, `workspace/` and `rollouts/` are
 read-only, the rest of `$HOME`, the data root, `/tmp` and `/var/tmp` are
-hidden, the Python installation is read-only, and container runtimes are
+hidden, host Python and Node stay read-only, and container runtimes are
 masked. Archived scores and benchmark answer keys are therefore unreachable
 from a session. There is no network namespace, so model endpoints stay
 reachable. Graders run on the host after the verifier batch, never inside
@@ -303,15 +325,15 @@ read-only), the agent runtime and skills read-only, and the host network,
 which is the same exposure the jail has.
 
 ```bash
-python3 -m harness.runner --run-name demo --cells jb:opus --driver-arg=--env --driver-arg=native
+bun harness/cli.ts runner --run-name demo --cells jb:opus --driver-arg=--env --driver-arg=native
 ```
 
-Images are resolved per benchmark (`harness/env/__init__.py`); each can be
+Images are resolved per benchmark (`harness/env/index.ts`); each can be
 overridden with `VERIHARNESS_IMAGE_<BENCH>`:
 
 | Bench           | Default image                                                                                                                                                             |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `wb`          | each task's own exported environment image, or its`vh/<name>` derivative when built with `python3 -m harness.env.derive` (the task image plus the harness tool stack) |
+| `wb`          | each task's own exported environment image, or its`vh/<name>` derivative when built with `bun harness/cli.ts env-derive` (the task image plus the harness tool stack) |
 | `sb2`, `jb` | `veriharness-office`: `docker build -f harness/env/Dockerfile.office -t veriharness-office .` (on top of the SpreadsheetBench image)                                  |
 | `wsb`         | `workspace-bench:local` (the benchmark's image)                                                                                                                         |
 | `apex`        | `veriharness-docs`: `docker build -f harness/env/Dockerfile.apex -t veriharness-docs .`                                                                               |
@@ -322,7 +344,7 @@ runtime, so the agent runs on a self-contained Node.js 22 placed under
 `curl -L https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-x64.tar.xz | tar -xJ -C harness/vendor && mv harness/vendor/node-v22.19.0-linux-x64 harness/vendor/node-v22`). And
 a task image must carry the libraries the skills use, or the verifier's
 revisions degrade: keep the tool stack in the image, not only the task's own
-dependencies (`harness/env/derive.py` adds it to WorkBuddy's task images).
+dependencies (`harness/env/derive.ts` adds it to WorkBuddy's task images).
 
 ## Operating notes
 

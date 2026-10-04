@@ -22,8 +22,9 @@
 #   - harness/vendor, harness/pi-home, harness/skills
 #   - $VERIHARNESS_DATA/_worlds     (shared environment stores, ro)
 #   - ~/.cache/ms-playwright        (an installed headless browser, ro, if present)
-# The Python installation stays visible but read-only: a verifier that pip-installs a
-# candidate would otherwise redirect imports for every other task on the machine.
+# The host Python (task pytest / patch lab) and Node (skill CLIs, pi) stay visible
+# but read-only: a verifier that pip- or npm-installs a candidate would otherwise
+# redirect imports for every other task on the machine.
 # Everything else under $HOME, the data root, /tmp and /var/tmp is covered by tmpfs.
 # There is no network namespace: the local model proxy and provider egress keep working.
 #
@@ -107,7 +108,7 @@ for bin in /usr/bin/docker /usr/local/bin/docker /usr/bin/podman /usr/bin/nerdct
   [ -e "$bin" ] && mount --bind /dev/null "$bin" 2>/dev/null || true
 done
 
-# The interpreter is shared with the host and with every other task: read-only, and no
+# Interpreters are shared with the host and with every other task: read-only, and no
 # installs. Test plugins that reseed or cache across runs are disabled for repeatability.
 case "$PY_PREFIX" in /usr|/|"") ;; *)
   if [ -d "$PY_PREFIX" ]; then

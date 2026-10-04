@@ -12,7 +12,7 @@ A workbook edited with openpyxl is not finished when it is saved.
 - **Cached values vanish.** openpyxl writes the formula and drops the cached value; every
   dependent is stale until something recalculates, and whoever opens the file reads cached values.
   Always recalculate after editing:
-  `python3 scripts/xlsx_recalc.py out/deliverables/<file>.xlsx --baseline rollouts/<base>/deliverables/<file>.xlsx --inplace`
+  `node scripts/xlsx_recalc.js out/deliverables/<file>.xlsx --baseline rollouts/<base>/deliverables/<file>.xlsx --inplace` (or `bun scripts/xlsx_recalc.ts` in development)
   It runs headless LibreOffice on a copy, prints every cell whose cached value changed versus
   the baseline (with its formula), reports formulas still without a value, and replaces the
   file (the previous version is kept as `out/recalc/<file>.pre-recalc.xlsx`, outside the bundle).

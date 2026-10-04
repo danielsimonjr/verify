@@ -5,14 +5,14 @@ description: Use when a claim you are checking turns on what a PowerPoint deck (
 
 # Slide deck evidence
 
-Scripts (run with `python3`; paths are relative to this directory):
+Scripts (paths relative to this directory; production: `node scripts/<name>.js`, development: `bun scripts/<name>.ts`):
 
-- `scripts/pptx_text.py FILE [--slides 3,5-7] [--no-notes]` — every slide in order:
+- `scripts/pptx_text.js FILE [--slides 3,5-7] [--no-notes]` — every slide in order:
   title, each text frame, each table as tab-separated rows, chart type with categories
   and series values, speaker notes. Pictures, charts whose data cannot be read, and
   unreadable shapes are printed as such — a line like `[picture …]` or `[shape …:
   UNREADABLE]` means the slide holds content this pass did not capture.
-- `scripts/pptx_render.py FILE [--dpi 110]` — one PNG per slide under
+- `scripts/pptx_render.js FILE [--dpi 110]` — one PNG per slide under
   /tmp/pptx_render/<name>/ for the `read` tool. Judge layout, pictures, embedded
   charts and anything the text pass marked unreadable from these.
 

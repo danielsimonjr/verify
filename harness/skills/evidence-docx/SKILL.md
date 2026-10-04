@@ -5,14 +5,14 @@ description: Use when a claim you are checking turns on what a Word document (.d
 
 # Word document evidence
 
-Scripts (run with `python3`; paths are relative to this directory):
+Scripts (paths relative to this directory; production: `node scripts/<name>.js`, development: `bun scripts/<name>.ts`):
 
-- `scripts/docx_text.py FILE [--tables]` — paragraphs in reading order, each
+- `scripts/docx_text.js FILE [--tables]` — paragraphs in reading order, each
   prefixed with its style (Heading 1, List Paragraph, …); with `--tables`, every
   table is dumped afterwards as rows of tab-separated cells, in document order.
   Text inside tables is not repeated in the paragraph stream, so a number that
   "isn't in the document" may be in a table.
-- `scripts/docx_changes.py FILE` — tracked insertions and deletions (author,
+- `scripts/docx_changes.js FILE` — tracked insertions and deletions (author,
   date, text) and comments (author, anchored text, comment text), read from the
   OOXML parts directly. A document with pending revisions reads differently
   depending on whether they are accepted; say which reading you used.

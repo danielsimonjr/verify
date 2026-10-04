@@ -5,28 +5,28 @@ description: Use when a claim you are checking turns on the contents of a spread
 
 # Spreadsheet evidence
 
-Scripts (run with `python3`; paths are relative to this directory):
+Scripts (paths relative to this directory; production: `node scripts/<name>.js`, development: `bun scripts/<name>.ts`):
 
-- `scripts/xlsx_dump.py FILE [SHEET] [RANGE]` — formulas and cached values side by
+- `scripts/xlsx_dump.js FILE [SHEET] [RANGE]` — formulas and cached values side by
   side, preceded by the workbook's calculation settings (iterative calculation
   on/off). Without RANGE each sheet is cut after its first 200 rows; pass a
   RANGE, or `--all`, for the rest. A cached value is what the last Excel/LibreOffice save computed; a
   formula with no cached value was never calculated.
-- `scripts/xlsx_diff.py A.xlsx B.xlsx` — every cell whose formula or value differs,
+- `scripts/xlsx_diff.js A.xlsx B.xlsx` — every cell whose formula or value differs,
   per sheet, plus a separate section for formatting differences (font colour,
   bold, fill, number format). The first thing to run between an input workbook
   and a rollout's output, and between two rollouts' outputs.
-- `scripts/xlsx_gaps.py FILE` — structural incompleteness the workbook itself evidences,
+- `scripts/xlsx_gaps.js FILE` — structural incompleteness the workbook itself evidences,
   with the witness for each: a computed row whose formula stops before the period block
   ends, a formula that reads an empty cell in an otherwise populated row, an error value
   and the blanks it reads, a labelled row left blank beside a same-shape row that is filled.
   A gap is where to look, not proof that a cell must be filled: check it against the task
   and the sheet's own layout.
-- `scripts/xlsx_forks.py A.xlsx B.xlsx ...` — every cell the candidates store differently,
+- `scripts/xlsx_forks.js A.xlsx B.xlsx ...` — every cell the candidates store differently,
   grouped into camps with who holds each, flagged by kind (sign, blank, formula shape,
   value). A locator for disagreements; settle each from the input workbook's notes, labels
   and filled sibling rows.
-- `scripts/xlsx_render.py FILE` — renders every sheet, charts included, to PNG
+- `scripts/xlsx_render.js FILE` — renders every sheet, charts included, to PNG
   pages under /tmp/xlsx_render/ for the `read` tool. Judge charts and layout from
   the rendered page, not from the chart XML.
 
