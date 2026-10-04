@@ -64,6 +64,9 @@ describe("launchSkill under Node", () => {
         "await launchSkill(import.meta.url);\n",
     );
     writeFileSync(join(compiledDir, "hello.js"), 'console.log("compiled-skill-ran");\n');
+    // The repo's package.json declares "type": "module". Without one here, Node walks up from the
+    // temp dir to whatever package.json an ancestor holds and warns on stderr when it is typeless.
+    writeFileSync(join(tmp, "package.json"), '{ "type": "module" }\n');
   });
   afterAll(() => {
     rmSync(tmp, { recursive: true, force: true });
