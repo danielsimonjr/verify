@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
+
 import { extractWords, loadPdf } from "../harness/skills/_shared/pdf.ts";
 import { findPython, importProbe, pythonCandidates, sibling } from "../harness/skills/_shared/python.ts";
 
@@ -27,6 +29,14 @@ function byText(words: { text: string }[], text: string) {
   if (!w) throw new Error(`no word ${text} in ${JSON.stringify(words)}`);
   return w as (typeof words)[number] & { top: number; x0: number; x1: number };
 }
+
+describe("pdf.js worker", () => {
+  // Node's ESM loader rejects a bare "C:\...\pdf.worker.mjs" ("absolute paths must be valid
+  // file:// URLs"), which made every pdf script die under `node` on Windows.
+  test("workerSrc is a file URL", () => {
+    expect(GlobalWorkerOptions.workerSrc).toMatch(/^file:\/\/\/.+pdf\.worker\.mjs$/);
+  });
+});
 
 describe("pdf words: top-left origin", () => {
   test("upright page: top is measured from the top and lines read top to bottom", async () => {

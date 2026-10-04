@@ -20,10 +20,12 @@ import {
 } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
-GlobalWorkerOptions.workerSrc = require.resolve(
-  "pdfjs-dist/legacy/build/pdf.worker.mjs",
-);
+// A file URL, not a path: Node's ESM loader rejects "C:\..." on Windows.
+GlobalWorkerOptions.workerSrc = pathToFileURL(
+  require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs"),
+).href;
 
 export async function loadPdf(path: string) {
   const data = new Uint8Array(readFileSync(path));
