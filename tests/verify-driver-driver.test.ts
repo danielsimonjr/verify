@@ -1,9 +1,19 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
-import { changedFiles, completeBundle, hasSessionFile, isTransient, rolloutDir, validateDelivery } from "../harness/driver.ts";
+import {
+  changedFiles,
+  completeBundle,
+  hasSessionFile,
+  isTransient,
+  parseDriverArgv,
+  renderSkills,
+  resolveSkills,
+  rolloutDir,
+  validateDelivery,
+} from "../harness/driver.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "vd-driver-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -89,5 +99,130 @@ describe("a base that is not a rollout name never reads from outside rollouts/",
     expect(completeBundle(ws, "r1")).toEqual(["answer.txt"]);
     expect(validateDelivery(ws, "r1")).toMatchObject({ valid: true, n_base: 1, n_out: 1 });
     expect(changedFiles(ws, "r1")).toEqual([]);
+  });
+});
+
+describe("parseDriverArgv: numbers that become timers", () => {
+  const argsOf = (...flags: string[]) => parseDriverArgv(["ws", ...flags]);
+
+  test("defaults are unchanged", () => {
+    expect(argsOf()).toMatchObject({ args: { turnTimeout: 1800, nudgeTimeout: 600, taskTimeout: 3600, env: "jail" } });
+  });
+
+  test.each([
+    ["--turn-timeout", "abc"],
+    ["--turn-timeout", "0"],
+    ["--turn-timeout", "-5"],
+    ["--turn-timeout", ""],
+    ["--turn-timeout", "Infinity"],
+    ["--nudge-timeout", "abc"],
+    ["--nudge-timeout", "0"],
+    ["--task-timeout", "NaN"],
+    ["--task-timeout", "-1"],
+  ])("%s %j is refused (a NaN budget used to kill the turn after 1 ms)", (flag, value) => {
+    const parsed = argsOf(flag, value);
+    expect(parsed).toHaveProperty("error");
+    expect((parsed as { error: string }).error).toContain(flag.slice(2));
+  });
+
+  test("a positive number of seconds, fractional or not, is accepted", () => {
+    expect(argsOf("--turn-timeout", "0.5", "--nudge-timeout", "30")).toMatchObject({
+      args: { turnTimeout: 0.5, nudgeTimeout: 30 },
+    });
+  });
+});
+
+describe("parseDriverArgv: --env and --skill", () => {
+  test.each(["jail", "none", "native", "native-full"])("--env %s is accepted", (env) => {
+    expect(parseDriverArgv(["ws", "--env", env])).toMatchObject({ args: { env } });
+  });
+
+  test("an unknown --env is refused instead of silently meaning the jail", () => {
+    const parsed = parseDriverArgv(["ws", "--env", "nonee"]);
+    expect((parsed as { error: string }).error).toContain("--env");
+  });
+
+  test("--skill needs a value", () => {
+    expect((parseDriverArgv(["ws", "--skill"]) as { error: string }).error).toContain("--skill");
+    expect((parseDriverArgv(["ws", "--skill", "--no-skills"]) as { error: string }).error).toContain("--skill");
+  });
+
+  test("repeated --skill values are kept in order", () => {
+    expect(parseDriverArgv(["ws", "--skill", "a", "--skill", "b"])).toMatchObject({ args: { skill: ["a", "b"] } });
+  });
+});
+
+describe("resolveSkills", () => {
+  test("a bare name is a skill of the harness", () => {
+    expect(resolveSkills(["evidence-xlsx"])[0]).toMatch(/harness[\\/]skills[\\/]evidence-xlsx$/);
+  });
+
+  test("a path is made absolute, because pi runs with the workspace as its cwd", () => {
+    const out = resolveSkills(["rel/skill", join(scratch, "abs", "skill")]);
+    expect(out[0]).toBe(resolve("rel/skill"));
+    expect(isAbsolute(out[0]!)).toBe(true);
+    expect(out[1]).toBe(join(scratch, "abs", "skill"));
+  });
+
+  test("a Windows-style path is a path, not a name under the skills directory", () => {
+    if (process.platform !== "win32") return; // on POSIX a backslash is an ordinary file-name character
+    const winPath = join(scratch, "winskill").replaceAll("/", "\\");
+    expect(resolveSkills([winPath])[0]).toBe(winPath);
+  });
+});
+
+describe("renderSkills: which skills mount", () => {
+  function skill(root: string, name: string, front: string): string {
+    const dir = join(root, "skills", name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), `---\n${front}\n---\nBODY-${name}\n`);
+    return dir;
+  }
+  function wsWith(root: string, files: string[]): string {
+    const ws = join(root, "ws");
+    for (const f of files) {
+      const parts = f.split("/");
+      mkdirSync(join(ws, "rollouts", ...parts.slice(0, -1)), { recursive: true });
+      writeFileSync(join(ws, "rollouts", ...parts), "x");
+    }
+    return ws;
+  }
+
+  test("applies-to is matched against the files rollouts delivered", () => {
+    const root = join(scratch, "skills-a");
+    const ws = wsWith(root, ["r1/deliverables/data.xlsx"]);
+    const xl = skill(root, "xl", "description: d\napplies-to: *.xlsx");
+    const dx = skill(root, "dx", "description: d\napplies-to: *.docx");
+    const text = renderSkills([xl, dx], ws, "elim");
+    expect(text).toContain("BODY-xl");
+    expect(text).not.toContain("BODY-dx");
+  });
+
+  test("a trajectory file is not a deliverable, even when the workspace path says 'deliverables'", () => {
+    const root = join(scratch, "deliverables", "skills-b");
+    const ws = wsWith(root, ["r1/trajectory/agent.json", "r1/deliverables/answer.md"]);
+    const json = skill(root, "js", "description: d\napplies-to: *.json");
+    const md = skill(root, "md", "description: d\napplies-to: *.md");
+    const text = renderSkills([json, md], ws, "elim");
+    expect(text).toContain("BODY-md");
+    expect(text).not.toContain("BODY-js");
+  });
+
+  test("a harness view (.text.txt, .cells.tsv) is not a delivered file", () => {
+    const root = join(scratch, "skills-c");
+    const ws = wsWith(root, ["r1/deliverables/report.docx", "r1/deliverables/report.docx.text.txt"]);
+    const txt = skill(root, "tx", "description: d\napplies-to: *.txt");
+    const docx = skill(root, "dx", "description: d\napplies-to: *.docx");
+    const text = renderSkills([txt, docx], ws, "elim");
+    expect(text).toContain("BODY-dx");
+    expect(text).not.toContain("BODY-tx");
+  });
+
+  test("a nested deliverable counts, and phase restricts the turn", () => {
+    const root = join(scratch, "skills-d");
+    const ws = wsWith(root, ["r2/deliverables/sub/dir/deep.pdf"]);
+    const pdf = skill(root, "pdf", "description: d\napplies-to: *.pdf\nphase: repair");
+    expect(renderSkills([pdf], ws, "repair")).toContain("BODY-pdf");
+    expect(renderSkills([pdf], ws, "elim")).toBe("");
   });
 });

@@ -350,8 +350,13 @@ export function renderSkills(
   const rolloutsDir = join(ws, "rollouts");
   const delivered = new Set<string>();
   if (isDir(rolloutsDir)) {
+    // <rollout>/deliverables/**, as the Python globbed it. Matching "/deliverables/" anywhere in the
+    // absolute path never matched on Windows (backslashes) and matched EVERY file, trajectories
+    // included, when the workspace itself sat under a directory called "deliverables". The harness's
+    // own rendered views are not deliverables either (CHARTER.md says never to count one).
     for (const p of walkFiles(rolloutsDir)) {
-      if (p.includes("/deliverables/")) {
+      const parts = posixRel(rolloutsDir, p).split("/");
+      if (parts.length >= 3 && parts[1] === "deliverables" && !isView(basename(p))) {
         delivered.add(basename(p));
       }
     }
@@ -678,8 +683,14 @@ async function deliver(
   log(ws, `repair: ${JSON.stringify(repairBlock).slice(0, 600)}`);
 }
 
-function resolveSkills(names: string[]): string[] {
-  return names.map((s) => (s.includes("/") ? s : resolve(join(config.SKILLS_DIR, s))));
+/**
+ * Skill names become absolute paths. A bare name lives under the harness skills directory; anything
+ * with a separator (either kind, so a Windows path counts) is a path. It is made absolute because
+ * pi runs with the workspace as its cwd, so a relative path would name a different place to pi than
+ * to this process, which reads the same SKILL.md to render it.
+ */
+export function resolveSkills(names: string[]): string[] {
+  return names.map((s) => (/[\\/]/.test(s) ? resolve(s) : resolve(join(config.SKILLS_DIR, s))));
 }
 
 function optionalNumber(name: string, raw: string | undefined): number | undefined | { error: string } {
@@ -689,13 +700,33 @@ function optionalNumber(name: string, raw: string | undefined): number | undefin
   return n;
 }
 
+/**
+ * A timeout in seconds: finite and above zero. Number("abc") is NaN, and a NaN budget reached
+ * setTimeout, which fires at once, so the turn was killed after one millisecond with nothing logged
+ * to say why; 0 and negative values skipped every turn as "deadline reached".
+ */
+function positiveSeconds(name: string, raw: string | undefined, fallback: number): number | { error: string } {
+  const text = raw ?? String(fallback);
+  const n = text.trim() === "" ? Number.NaN : Number(text);
+  if (!Number.isFinite(n) || n <= 0) {
+    return { error: `invalid ${name} '${text}' (expected a positive number of seconds)` };
+  }
+  return n;
+}
+
+const ENVS = ["jail", "none", "native", "native-full"] as const;
+
 export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs } | { error: string } {
   const skillsFromArgv: string[] = [];
   const passthrough: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    if (a === "--skill") {
-      skillsFromArgv.push(argv[++i]!);
+    if (a === "--skill" || a.startsWith("--skill=")) {
+      const value = a === "--skill" ? argv[++i] : a.slice("--skill=".length);
+      if (value === undefined || value === "" || value.startsWith("--")) {
+        return { error: "--skill needs a skill name or path" };
+      }
+      skillsFromArgv.push(value);
     } else {
       passthrough.push(a);
     }
@@ -736,9 +767,19 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
       return { error: `invalid skills-mode ${skillsMode}` };
     }
     const contract = String(values.contract ?? "artifact");
-    if (!(contract in CONTRACTS)) {
+    if (!Object.hasOwn(CONTRACTS, contract)) {
       return { error: `invalid contract ${contract}` };
     }
+    const env = String(values.env ?? "jail");
+    if (!ENVS.includes(env as (typeof ENVS)[number])) {
+      return { error: `invalid --env '${env}' (expected ${ENVS.join("|")})` };
+    }
+    const turnTimeout = positiveSeconds("--turn-timeout", values["turn-timeout"] as string | undefined, 1800);
+    if (typeof turnTimeout === "object") return turnTimeout;
+    const nudgeTimeout = positiveSeconds("--nudge-timeout", values["nudge-timeout"] as string | undefined, 600);
+    if (typeof nudgeTimeout === "object") return nudgeTimeout;
+    const taskTimeout = positiveSeconds("--task-timeout", values["task-timeout"] as string | undefined, 3600);
+    if (typeof taskTimeout === "object") return taskTimeout;
     const contextSize = optionalNumber("context-size", values["context-size"] as string | undefined);
     if (contextSize && typeof contextSize === "object") return contextSize;
     const temperature = optionalNumber("temperature", values.temperature as string | undefined);
@@ -761,10 +802,10 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
         noSkills: Boolean(values["no-skills"]),
         skillsMode,
         piBin: String(values["pi-bin"]),
-        env: String(values.env ?? "jail"),
-        turnTimeout: Number(values["turn-timeout"] ?? 1800),
-        nudgeTimeout: Number(values["nudge-timeout"] ?? 600),
-        taskTimeout: Number(values["task-timeout"] ?? 3600),
+        env,
+        turnTimeout,
+        nudgeTimeout,
+        taskTimeout,
         baseUrl: values["base-url"] as string | undefined,
         contextSize: contextSize as number | undefined,
         temperature: temperature as number | undefined,
