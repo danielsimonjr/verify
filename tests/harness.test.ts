@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ExcelJS from "exceljs";
@@ -13,7 +13,7 @@ import { main as cliMain } from "../harness/cli.ts";
 
 describe("config", () => {
   test("repo contains harness/", () => {
-    expect(REPO.endsWith("workspace") || REPO.includes("workspace")).toBe(true);
+    expect(existsSync(join(REPO, "harness"))).toBe(true);
     expect(BENCHES).toContain("sb2");
     expect(LANES.flash.join(" ")).toContain("gemini-3.5-flash");
   });
