@@ -73,6 +73,12 @@ export async function preflight(): Promise<string> {
       body,
       signal: AbortSignal.timeout(60_000),
     });
+    // A JSON error body (401, 404, 500, ...) parses fine, so check the status first: scoring
+    // against a judge that rejects every request would produce misleading zeros.
+    if (!r.ok) {
+      const detail = (await r.text().catch(() => "")).slice(0, 200);
+      return `jb judge ${ENV.JUDGE_MODEL} at ${ENV.JUDGE_API_BASE} returned HTTP ${r.status}: ${detail}`;
+    }
     await r.json();
     return "";
   } catch (e) {
