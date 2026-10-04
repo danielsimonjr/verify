@@ -14,8 +14,8 @@
 
 /** Shared materialization machinery for all benchmarks. */
 
-import { copyFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { copyFileSync, renameSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { DATA, benchRoot } from "../config.js";
 import {
@@ -26,10 +26,45 @@ import {
   rmrf,
   symlinkDir,
   walkFiles,
-  writeJson,
   writeText,
 } from "../fsutil.js";
 import { renderViews } from "../views.js";
+
+/** A command-line mistake: the caller prints the message and exits 2. */
+export class UsageError extends Error {}
+
+/**
+ * Parse a JSON file that must exist and be valid. `readJson` in fsutil returns null for both,
+ * which callers then read as "empty" or trip over; adapters and graders want the path in the error.
+ */
+export function readJsonStrict<T = unknown>(path: string): T {
+  let raw: string;
+  try {
+    raw = readText(path);
+  } catch (e) {
+    throw new Error(`cannot read ${path}: ${(e as Error).message}`);
+  }
+  try {
+    return JSON.parse(raw) as T;
+  } catch (e) {
+    throw new Error(`invalid JSON in ${path}: ${(e as Error).message}`);
+  }
+}
+
+/** Reject anything that is not one plain path segment before it is joined under a root and deleted. */
+export function assertSegment(label: string, value: string): void {
+  if (!value || value === "." || value === ".." || /[\\/\0]/.test(value)) {
+    throw new Error(`${label} must be a single path segment, got ${JSON.stringify(value)}`);
+  }
+}
+
+/** Write JSON through a temp file and a rename, so a crash never leaves a half-written file. */
+function writeJsonAtomic(path: string, obj: unknown): void {
+  ensureDir(dirname(path));
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(obj, null, 1), "utf8");
+  renameSync(tmp, path);
+}
 
 export type TextOrFn = string | (() => string);
 
@@ -61,7 +96,7 @@ export function isLeakBlocked(name: string): boolean {
 }
 
 export function copyFile(src: string, dst: string, lenient = false): void {
-  if (isLeakBlocked(src.split("/").pop() ?? src)) {
+  if (isLeakBlocked(basename(src))) {
     if (!lenient) {
       throw new Error(`leak blocklist refuses to copy: ${src}`);
     }
@@ -76,8 +111,7 @@ export function copyTree(src: string, dst: string): void {
   for (const p of files) {
     const rel = posixRel(src, p);
     if (rel.split("/").some((part) => BLOCK_DIRS.has(part))) continue;
-    const base = p.split("/").pop() ?? p;
-    if (isLeakBlocked(base)) continue;
+    if (isLeakBlocked(basename(p))) continue;
     copyFile(p, join(dst, rel));
   }
 }
@@ -119,8 +153,14 @@ export async function writeTask(
   bench: string,
   pool: string,
   task: Task,
+  dataRoot: string = DATA,
 ): Promise<Record<string, unknown>> {
-  const ws = join(DATA, bench, pool, "tasks", task.key);
+  // The task directory is deleted before it is rewritten: every segment must be a plain name,
+  // or a key like ".." would wipe the whole pool (and its meta.json).
+  assertSegment("bench", bench);
+  assertSegment("pool", pool);
+  assertSegment("task key", task.key);
+  const ws = join(dataRoot, bench, pool, "tasks", task.key);
   rmrf(ws);
   ensureDir(join(ws, "spec"));
   writeText(join(ws, "spec", "task.md"), task.spec);
@@ -172,33 +212,34 @@ export async function writeTask(
 
 export type TaskIterable = Iterable<Task> | AsyncIterable<Task>;
 
-async function collectTasks(it: TaskIterable): Promise<Task[]> {
-  const out: Task[] = [];
-  if (it && typeof (it as AsyncIterable<Task>)[Symbol.asyncIterator] === "function") {
-    for await (const t of it as AsyncIterable<Task>) out.push(t);
-  } else {
-    for (const t of it as Iterable<Task>) out.push(t);
-  }
-  return out;
-}
-
-function parseCliArgs(argv: string[], pools: string[]) {
+export function parseCliArgs(argv: string[], pools: string[]) {
   let pool = "all";
   const only: string[] = [];
   let limit: number | undefined;
   for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--pool" && argv[i + 1]) {
-      pool = argv[++i]!;
-    } else if (a === "--only" && argv[i + 1]) {
-      only.push(argv[++i]!);
-    } else if (a === "--limit" && argv[i + 1]) {
-      limit = parseInt(argv[++i]!, 10);
+    const a = argv[i]!;
+    const value = (): string => {
+      const v = argv[++i];
+      if (v === undefined) throw new UsageError(`${a} needs a value`);
+      return v;
+    };
+    if (a === "--pool") {
+      pool = value();
+    } else if (a === "--only") {
+      only.push(value());
+    } else if (a === "--limit") {
+      const v = value();
+      if (!/^\d+$/.test(v)) {
+        throw new UsageError(`--limit must be a non-negative integer, got ${JSON.stringify(v)}`);
+      }
+      limit = Number(v);
+    } else {
+      throw new UsageError(`unknown argument ${JSON.stringify(a)}`);
     }
   }
   const poolList = pool === "all" ? pools : [pool];
   if (!poolList.every((p) => pools.includes(p))) {
-    throw new Error(`invalid --pool ${pool}; choices: ${pools.join(", ")}, all`);
+    throw new UsageError(`invalid --pool ${pool}; choices: ${pools.join(", ")}, all`);
   }
   return { poolList, only: only.length ? new Set(only) : null, limit };
 }
@@ -208,34 +249,40 @@ export async function runCli(
   pools: string[],
   iterTasks: (pool: string) => TaskIterable,
   argv: string[] = [],
+  dataRoot: string = DATA,
 ): Promise<number> {
   const { poolList, only, limit } = parseCliArgs(argv, pools);
   for (const pool of poolList) {
-    const metaFile = join(DATA, bench, pool, "meta.json");
+    const metaFile = join(dataRoot, bench, pool, "meta.json");
     const merged: Record<string, unknown> = exists(metaFile)
-      ? (JSON.parse(readText(metaFile)) as Record<string, unknown>)
+      ? readJsonStrict<Record<string, unknown>>(metaFile)
       : {};
     let done = 0;
-    const tasks = await collectTasks(iterTasks(pool));
-    for (const task of tasks) {
-      if (only && !only.has(task.key)) continue;
-      if (limit !== undefined && done >= limit) break;
-      const marker = join(DATA, bench, pool, ".done", task.key);
-      if (exists(marker)) {
-        done += 1;
-        continue;
+    // Tasks are pulled one at a time, so --limit and --only stop the adapter's work early and a
+    // failure on a later task cannot undo the earlier ones.
+    if (limit !== 0) {
+      for await (const task of iterTasks(pool)) {
+        if (only && !only.has(task.key)) continue;
+        const marker = join(dataRoot, bench, pool, ".done", task.key);
+        // A marker alone is not "done": the label -> seed map and the scores live in meta.json.
+        if (exists(marker) && task.key in merged) {
+          done += 1;
+        } else if (Object.keys(task.rollouts).length >= 2) {
+          merged[task.key] = await writeTask(bench, pool, task, dataRoot);
+          // Persist the meta BEFORE the marker, so a crash can never leave a task marked done
+          // whose scores were never saved.
+          writeJsonAtomic(metaFile, merged);
+          ensureDir(dirname(marker));
+          writeFileSync(marker, "", "utf8");
+          done += 1;
+          console.log(
+            `[${bench}/${pool}] ${done}: ${task.key} (${Object.keys(task.rollouts).length} rollouts)`,
+          );
+        }
+        if (limit !== undefined && done >= limit) break;
       }
-      if (Object.keys(task.rollouts).length < 2) continue;
-      merged[task.key] = await writeTask(bench, pool, task);
-      ensureDir(dirname(marker));
-      writeFileSync(marker, "", "utf8");
-      done += 1;
-      console.log(
-        `[${bench}/${pool}] ${done}: ${task.key} (${Object.keys(task.rollouts).length} rollouts)`,
-      );
     }
-    ensureDir(dirname(metaFile));
-    writeJson(metaFile, merged);
+    writeJsonAtomic(metaFile, merged);
     console.log(`[${bench}/${pool}] total ${done}; meta: ${metaFile}`);
   }
   return 0;

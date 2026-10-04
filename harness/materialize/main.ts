@@ -20,7 +20,7 @@
 
 import { BENCHES, type Bench } from "../config.js";
 import { isMain } from "../runtime.js";
-import { runCli, type TaskIterable } from "./base.js";
+import { UsageError, runCli, type TaskIterable } from "./base.js";
 
 const ADAPTERS: Record<Bench, () => Promise<{ POOLS: Record<string, unknown>; iterTasks: (pool: string) => TaskIterable }>> = {
   apex: () => import("./apex.js"),
@@ -40,7 +40,15 @@ export async function main(argv: string[]): Promise<number> {
   }
   const adapter = await ADAPTERS[bench as Bench]!();
   const pools = Object.keys(adapter.POOLS);
-  return runCli(bench, pools, adapter.iterTasks, argv.slice(1));
+  try {
+    return await runCli(bench, pools, adapter.iterTasks, argv.slice(1));
+  } catch (e) {
+    if (e instanceof UsageError) {
+      process.stderr.write(`materialize: ${e.message}\n`);
+      return 2;
+    }
+    throw e;
+  }
 }
 
 if (isMain(import.meta.url)) {
