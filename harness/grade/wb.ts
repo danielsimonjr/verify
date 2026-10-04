@@ -70,11 +70,11 @@ function wbEnv(): Record<string, string> {
 
 function imageFor(tname: string): string | null {
   const mark = join(WORLDS, tname, ".exported");
-  const images = spawnSync("docker", ["images", "--format", "{{.Repository}}"], {
+  // stdout is null when the docker binary cannot be started; that means "no images", not a crash.
+  const listed = spawnSync("docker", ["images", "--format", "{{.Repository}}"], {
     encoding: "utf8",
-  })
-    .stdout.split("\n")
-    .filter(Boolean);
+  });
+  const images = (listed.stdout ?? "").split("\n").filter(Boolean);
   if (exists(mark)) {
     const cand = readText(mark).trim();
     if (images.includes(cand)) return cand;

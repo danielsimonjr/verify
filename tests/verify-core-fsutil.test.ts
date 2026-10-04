@@ -10,41 +10,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import { assertNoSymlinks, copyTree, SymlinkError } from "../harness/fsutil.ts";
+import { guardedEnv, runGrader as runGraderIn } from "./fixtures/verify-core/grader-process.ts";
 
-// Each grader call runs in a subprocess (tests/fixtures/verify-core/run-grader.ts) with its own
-// environment: the stand-in bench checkout, a scratch staging directory, and an EMPTY PATH so no
-// `docker` or `python3` can start. A grader must refuse a symlinked bundle before it gets near a
-// container or a judge; if a regression lets one through, the spawn fails with ENOENT instead of
-// reaching a real daemon.
-const BENCH_ROOT = resolve(import.meta.dir, "fixtures", "verify-core", "bench");
-const RUN_GRADER = resolve(import.meta.dir, "fixtures", "verify-core", "run-grader.ts");
-
-function guardedEnv(stageDir: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    VERIHARNESS_BENCH_ROOT: BENCH_ROOT,
-    VERIHARNESS_TMP: stageDir,
-  };
-  for (const k of Object.keys(env)) if (k.toLowerCase() === "path") env[k] = "";
-  return env;
-}
-
-function runGrader(bench: string, fn: string, args: unknown[]): Record<string, any> {
-  const stageDir = join(tmp, "stage");
-  mkdirSync(stageDir, { recursive: true });
-  const r = spawnSync(process.execPath, [RUN_GRADER, bench, fn, JSON.stringify(args)], {
-    encoding: "utf8",
-    env: guardedEnv(stageDir),
-  });
-  const line = (r.stdout ?? "").split("\n").find((l) => l.startsWith("RESULT "));
-  if (!line) {
-    throw new Error(`grader subprocess gave no result (status ${r.status}):\n${r.stdout}\n${r.stderr}`);
-  }
-  return JSON.parse(line.slice("RESULT ".length));
-}
+/** Run a grader in a guarded subprocess (see grader-process.ts). */
+const runGrader = (bench: string, fn: string, args: unknown[]) => runGraderIn(tmp, bench, fn, args);
 
 let tmp: string;
 let src: string;
