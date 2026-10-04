@@ -24,7 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import * as config from "./config.js";
 import {
@@ -40,7 +40,7 @@ import {
 } from "./fsutil.js";
 import { Native, imageFor } from "./env/index.js";
 import { canonicalLocalProvider, materializePiHome, prepareLocalProvider, resolveLocalConfig } from "./model/index.js";
-import { isMain } from "./runtime.js";
+import { isMain, runWithBudget } from "./runtime.js";
 import { isView } from "./views.js";
 
 export { readJsonFs as readJson, writeJsonFs as writeJson };
@@ -128,6 +128,22 @@ const TRANSIENT = [
   "socket hang up",
 ];
 const RETRY_BACKOFF = [30, 90, 180];
+
+/**
+ * True when a failed turn's stderr names a provider or transport fault worth a retry. A status
+ * code only counts as a whole number: "41503 tokens" and "0.429" are not a 503 or a 429.
+ */
+export function isTransient(stderr: string): boolean {
+  return TRANSIENT.some((sig) =>
+    /^\d+$/.test(sig) ? new RegExp(`(?<![\\d.])${sig}(?!\\d)`).test(stderr) : stderr.includes(sig),
+  );
+}
+
+/** True when pi has left a session file in `dir`; false when it left none or the dir does not exist. */
+export function hasSessionFile(dir: string): boolean {
+  if (!isDir(dir)) return false;
+  return readdirSync(dir, { withFileTypes: true }).some((e) => e.isFile() && e.name.endsWith(".jsonl"));
+}
 
 let logLock = false;
 
@@ -221,7 +237,7 @@ class Pi {
 
     for (let attempt = 0; attempt < RETRY_BACKOFF.length + 1; attempt++) {
       const budget = Math.min(timeout, this.deadline - Date.now() / 1000);
-      if (budget <= 0) {
+      if (!(budget > 0)) {
         log(this.ws, `${tag}task deadline reached before turn start; skipping turn`);
         return false;
       }
@@ -231,60 +247,34 @@ class Pi {
           `${this.native ? ", native " + this.native.image : ""})`,
       );
       const [cmd, container] = this._cmd(message, continueSession, env);
-      const proc = spawn(cmd[0]!, cmd.slice(1), {
+      const run = await runWithBudget(cmd, {
         cwd: this.ws,
         env,
-        detached: true,
-        stdio: ["ignore", "ignore", "pipe"],
-      });
-      let stderr = "";
-      proc.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8");
+        budgetMs: budget * 1000,
+        onKill: container && this.native ? () => this.native!.kill(container) : undefined,
       });
 
-      const finished = await new Promise<{ ok: boolean; timedOut: boolean }>((resolveP) => {
-        const timer = setTimeout(() => {
-          try {
-            if (proc.pid) process.kill(-proc.pid, "SIGKILL");
-          } catch {
-            proc.kill("SIGKILL");
-          }
-          resolveP({ ok: false, timedOut: true });
-        }, budget * 1000);
-        proc.on("close", (code) => {
-          clearTimeout(timer);
-          resolveP({ ok: code === 0, timedOut: false });
-        });
-        proc.on("error", () => {
-          clearTimeout(timer);
-          resolveP({ ok: false, timedOut: false });
-        });
-      });
-
-      if (finished.timedOut) {
-        await new Promise<void>((r) => proc.on("close", () => r()));
-        if (container && this.native) {
-          this.native.kill(container);
-        }
-        log(this.ws, `${tag}pi turn timed out after ${Math.floor(budget)}s (process group killed)`);
+      if (run.spawnError !== undefined) {
+        log(this.ws, `${tag}pi did not start: ${run.spawnError} (command: ${cmd[0]})`);
+        return false;
+      }
+      if (run.timedOut) {
+        log(this.ws, `${tag}pi turn timed out after ${Math.floor(budget)}s (process tree killed)`);
         return false;
       }
 
-      const rc = proc.exitCode ?? 1;
+      const rc = run.code ?? 1;
       log(this.ws, `${tag}pi exited rc=${rc}`);
       if (rc === 0) {
         return true;
       }
-      log(this.ws, `${tag}pi stderr (tail): ${stderr.slice(-2000)}`);
-      if (!TRANSIENT.some((sig) => stderr.includes(sig)) || attempt === RETRY_BACKOFF.length) {
+      log(this.ws, `${tag}pi stderr (tail): ${run.stderr.slice(-2000)}`);
+      if (!isTransient(run.stderr) || attempt === RETRY_BACKOFF.length) {
         return false;
       }
       log(this.ws, `${tag}transient provider error; retrying in ${RETRY_BACKOFF[attempt]}s`);
       await new Promise((r) => setTimeout(r, RETRY_BACKOFF[attempt]! * 1000));
-      const sessionDir = this.sessionDir;
-      continueSession = readdirSync(sessionDir, { withFileTypes: true }).some(
-        (e) => e.isFile() && e.name.endsWith(".jsonl"),
-      );
+      continueSession = hasSessionFile(this.sessionDir);
     }
     return false;
   }
