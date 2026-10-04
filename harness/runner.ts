@@ -20,6 +20,7 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import * as config from "./config.js";
 import { exists, isDir, mtime, readText, rmrf, walkFiles, writeJson } from "./fsutil.js";
+import { flagValue, withModelOverride } from "./model/flags.js";
 import { harnessCommand, isMain } from "./runtime.js";
 import { renderViews } from "./views.js";
 
@@ -65,7 +66,7 @@ function runTask(
   cpSync(src, ws, { recursive: true });
   renderViews(join(ws, "workspace"));
   renderViews(join(ws, "rollouts"));
-  const cmd = harnessCommand(import.meta.url, "driver", [ws, ...config.LANES[lane]!, ...driverArgs]);
+  const cmd = harnessCommand(import.meta.url, "driver", [ws, ...flagsForLane(lane, driverArgs)]);
   const outFd = openSync(join(ws, "run.out"), "w");
   let rc = 1;
   try {
@@ -101,6 +102,19 @@ interface RunnerArgs {
   noSkills: boolean;
   skillsMode: string;
   driverArg: string[];
+  provider?: string;
+  model?: string;
+  baseUrl?: string;
+  contextSize?: string;
+  temperature?: string;
+  maxTokens?: string;
+  topP?: string;
+  requestTimeout?: string;
+}
+
+/** Lane flags, then driver flags, with later copies of the same option winning. */
+export function flagsForLane(lane: string, driverArgs: string[]): string[] {
+  return withModelOverride(config.LANES[lane] ?? [], driverArgs);
 }
 
 /** Match Python random.Random(seed).sample (Fisher–Yates on a seeded LCG). */
@@ -207,6 +221,14 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
         "skip-inflight": { type: "string", default: "45" },
         "no-skills": { type: "boolean", default: false },
         "skills-mode": { type: "string", default: "mounted" },
+        provider: { type: "string" },
+        model: { type: "string" },
+        "base-url": { type: "string" },
+        "context-size": { type: "string" },
+        temperature: { type: "string" },
+        "max-tokens": { type: "string" },
+        "top-p": { type: "string" },
+        "request-timeout": { type: "string" },
       },
     });
     const cells = (values.cells as string[] | undefined) ?? [];
@@ -234,6 +256,14 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
       noSkills: Boolean(values["no-skills"]),
       skillsMode: String(values["skills-mode"] ?? "mounted"),
       driverArg,
+      provider: values.provider as string | undefined,
+      model: values.model as string | undefined,
+      baseUrl: values["base-url"] as string | undefined,
+      contextSize: values["context-size"] as string | undefined,
+      temperature: values.temperature as string | undefined,
+      maxTokens: values["max-tokens"] as string | undefined,
+      topP: values["top-p"] as string | undefined,
+      requestTimeout: values["request-timeout"] as string | undefined,
     };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
@@ -276,20 +306,35 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   for (const [, pool] of cells) {
     laneOf[pool] = args.lane ?? pool;
   }
-  if (Object.values(laneOf).some((lane) => (config.PROXIED_LANES as readonly string[]).includes(lane))) {
-    const up = spawnSync(join(config.SCRIPTS_DIR, "litellm_up.sh"), { stdio: "inherit" });
-    if (up.status !== 0) {
-      return up.status ?? 1;
-    }
-  }
-
   const driverArgs = ["--contract", args.contract];
   if (args.turnTimeout) driverArgs.push("--turn-timeout", String(args.turnTimeout));
   if (args.taskTimeout) driverArgs.push("--task-timeout", String(args.taskTimeout));
   if (args.noSkills) driverArgs.push("--no-skills");
   for (const s of args.skill) driverArgs.push("--skill", s);
   if (args.skillsMode !== "mounted") driverArgs.push("--skills-mode", args.skillsMode);
-  driverArgs.push(...args.driverArg);
+  const modelFlags: string[] = [];
+  for (const [flag, value] of [
+    ["--provider", args.provider],
+    ["--model", args.model],
+    ["--base-url", args.baseUrl],
+    ["--context-size", args.contextSize],
+    ["--temperature", args.temperature],
+    ["--max-tokens", args.maxTokens],
+    ["--top-p", args.topP],
+    ["--request-timeout", args.requestTimeout],
+  ] as const) {
+    if (value) modelFlags.push(flag, value);
+  }
+  driverArgs.push(...withModelOverride(modelFlags, args.driverArg));
+
+  if (
+    Object.values(laneOf).some((lane) => flagValue(flagsForLane(lane, driverArgs), "--provider") === "vertex-litellm")
+  ) {
+    const up = spawnSync(join(config.SCRIPTS_DIR, "litellm_up.sh"), { stdio: "inherit" });
+    if (up.status !== 0) {
+      return up.status ?? 1;
+    }
+  }
 
   const caps = parseCaps(args.cellCap);
   const laneMax: Record<string, number> = Object.fromEntries(
