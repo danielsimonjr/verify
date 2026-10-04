@@ -273,9 +273,34 @@ export function runWithBudget(cmd: string[], opts: BudgetedRunOptions): Promise<
   });
 }
 
-export function python3(): string {
-  const hit = spawnSync("python3", ["-c", "import sys; print(sys.executable)"], {
-    encoding: "utf8",
-  });
-  return hit.status === 0 && hit.stdout.trim() ? hit.stdout.trim() : "python3";
+// Python 3 only: a bare `python` is Python 2 on some hosts, and that must not pass for a grader's interpreter.
+const PYTHON_PROBE = "import sys; assert sys.version_info[0] >= 3; print(sys.executable)";
+// `python3` is a Microsoft Store stub on many Windows hosts (it exits 9009), so the next names matter there.
+const PYTHON_NAMES: readonly (readonly string[])[] = [["python3"], ["python"], ["py", "-3"]];
+const PYTHON_PROBE_MS = 15_000;
+
+/**
+ * Builds a function that finds a working Python 3 interpreter: the first of `python3`, `python`,
+ * `py -3` whose probe exits 0 and prints its path. The path is remembered once found. A miss is not
+ * remembered, so an interpreter installed later is picked up. With none, the answer is `"python3"`
+ * and the caller's own spawn names what is missing. `run` is a parameter so a test can fake the host.
+ */
+export function pythonFinder(run: typeof spawnSync = spawnSync): () => string {
+  let found: string | undefined;
+  return () => {
+    if (found !== undefined) return found;
+    for (const [cmd, ...pre] of PYTHON_NAMES) {
+      const hit = run(cmd!, [...pre, "-c", PYTHON_PROBE], {
+        encoding: "utf8",
+        timeout: PYTHON_PROBE_MS,
+        windowsHide: true,
+      });
+      const exe = hit.status === 0 ? String(hit.stdout).trim() : "";
+      if (exe) return (found = exe);
+    }
+    return "python3";
+  };
 }
+
+/** Path of a working Python 3 interpreter, as found by {@link pythonFinder}. */
+export const python3: () => string = pythonFinder();
