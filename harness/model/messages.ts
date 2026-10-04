@@ -76,8 +76,9 @@ export function contextUnknownError(provider: LocalProviderId, model: string, wa
       `Ollama model '${model}' does not advertise num_ctx.${asked} ` +
         `A loaded model reports its effective window as context_length on GET /api/ps; otherwise the harness reads the num_ctx parameter from ollama show. ` +
         `The architecture context_length in model_info is not that window, and the harness will not invent one. ` +
-        `Set it with \`OLLAMA_CONTEXT_LENGTH=32768 ollama serve\`, or ` +
-        `\`printf 'FROM ${model}\\nPARAMETER num_ctx 32768\\n' | ollama create ${model}\`, then retry.`,
+        `Set it with \`printf 'FROM ${model}\\nPARAMETER num_ctx 32768\\n' | ollama create ${model}\`, which ollama show reports at once, or ` +
+        `restart the server with \`OLLAMA_CONTEXT_LENGTH=32768 ollama serve\` and then load the model ` +
+        `(\`ollama run ${model} ""\`) so GET /api/ps reports the window it uses. Then retry.`,
     );
   }
   const asked = want === undefined ? "" : ` --context-size ${want} cannot be checked against the server.`;
