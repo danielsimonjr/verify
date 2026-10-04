@@ -14,13 +14,14 @@
 
 /** Batch runner: drive materialized tasks through the driver with one global work pool. */
 
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import * as config from "./config.js";
 import { exists, isDir, mtime, readText, rmrf, walkFiles, writeJson } from "./fsutil.js";
 import { flagValue, withModelOverride } from "./model/flags.js";
+import { PyRandom, pyRound } from "./pyrandom.js";
 import { harnessCommand, isMain } from "./runtime.js";
 import { renderViews } from "./views.js";
 
@@ -47,13 +48,40 @@ function lastActivity(ws: string): number {
   return max;
 }
 
-function runTask(
+/** The command that runs one task. Tests replace it with a stub; production runs the driver. */
+type DriverCommand = (ws: string, flags: string[]) => string[];
+
+/**
+ * Run a command to completion with its output going to `outFd`, and resolve to its exit code.
+ * The child runs asynchronously: a blocking spawn would hold the event loop for the whole task
+ * and let no other task start.
+ */
+function runToExit(cmd: string[], outFd: number): Promise<number> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (rc: number) => {
+      if (!settled) {
+        settled = true;
+        resolve(rc);
+      }
+    };
+    const child = spawn(cmd[0]!, cmd.slice(1), { cwd: config.REPO, stdio: ["ignore", outFd, outFd] });
+    child.once("error", (e) => {
+      writeSync(outFd, `spawn failed: ${e.message}\n`);
+      finish(1);
+    });
+    child.once("close", (code) => finish(code ?? 1));
+  });
+}
+
+async function runTask(
   src: string,
   ws: string,
   lane: string,
   driverArgs: string[],
   skipInflightMin: number,
-): string {
+  driverCommand: DriverCommand = (w, flags) => harnessCommand(import.meta.url, "driver", [w, ...flags]),
+): Promise<string> {
   if (exists(join(ws, "finish.json"))) {
     return "skip";
   }
@@ -64,17 +92,13 @@ function runTask(
     rmrf(ws);
   }
   cpSync(src, ws, { recursive: true });
-  renderViews(join(ws, "workspace"));
-  renderViews(join(ws, "rollouts"));
-  const cmd = harnessCommand(import.meta.url, "driver", [ws, ...flagsForLane(lane, driverArgs)]);
+  // The driver and its verifier read these views as evidence, so they must exist before launch.
+  await Promise.all([renderViews(join(ws, "workspace")), renderViews(join(ws, "rollouts"))]);
+  const cmd = driverCommand(ws, flagsForLane(lane, driverArgs));
   const outFd = openSync(join(ws, "run.out"), "w");
   let rc = 1;
   try {
-    const hit = spawnSync(cmd[0]!, cmd.slice(1), {
-      cwd: config.REPO,
-      stdio: ["ignore", outFd, outFd],
-    });
-    rc = hit.status ?? 1;
+    rc = await runToExit(cmd, outFd);
   } finally {
     closeSync(outFd);
   }
@@ -88,7 +112,7 @@ interface RunnerArgs {
   lane?: string;
   maxFlash: number;
   maxOpus: number;
-  cellCap: string;
+  caps: Record<string, number>;
   only: string[];
   onlyFile?: string;
   limit: number;
@@ -117,23 +141,18 @@ export function flagsForLane(lane: string, driverArgs: string[]): string[] {
   return withModelOverride(config.LANES[lane] ?? [], driverArgs);
 }
 
-/** Match Python random.Random(seed).sample (Fisher–Yates on a seeded LCG). */
-function seededSample<T>(keys: T[], n: number, seed: number): T[] {
-  const copy = [...keys];
-  let s = seed >>> 0;
-  const rand = () => {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s / 0x100000000;
-  };
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    [copy[i], copy[j]] = [copy[j]!, copy[i]!];
-  }
-  return copy.slice(0, n);
+/** The same elements, in the same order, as Python's `random.Random(seed).sample(keys, n)`. */
+export function seededSample<T>(keys: readonly T[], n: number, seed: number): T[] {
+  return new PyRandom(seed).sample(keys, n);
 }
 
-function selectKeys(bench: string, pool: string, args: RunnerArgs): string[] {
-  const tasksDir = join(config.DATA, bench, pool, "tasks");
+/** Python's `max(1, round(n * fraction))`: `round` takes ties to the even integer. */
+export function fractionCount(n: number, fraction: number): number {
+  return Math.max(1, pyRound(n * fraction));
+}
+
+function selectKeys(dataDir: string, bench: string, pool: string, args: RunnerArgs): string[] {
+  const tasksDir = join(dataDir, bench, pool, "tasks");
   let keys = readdirSync(tasksDir, { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
@@ -154,19 +173,60 @@ function selectKeys(bench: string, pool: string, args: RunnerArgs): string[] {
   if (args.sample && args.sample < keys.length) {
     keys = seededSample(keys, args.sample, args.seed).sort();
   }
-  if (args.fraction > 0 && args.fraction < 1) {
-    keys = seededSample(keys, Math.max(1, Math.round(keys.length * args.fraction)), args.seed).sort();
+  if (args.fraction > 0 && args.fraction < 1 && keys.length) {
+    keys = seededSample(keys, fractionCount(keys.length, args.fraction), args.seed).sort();
   }
   return keys;
 }
 
+/**
+ * Parse an integer flag the way argparse's `type=int` did. `Number()` turns a typo into NaN,
+ * which a seed or a cap then carries silently into the run.
+ */
+function intOption(name: string, raw: string | undefined, fallback: number, min = -Infinity): number {
+  if (raw === undefined) return fallback;
+  if (!/^[+-]?\d+$/.test(raw.trim())) throw new Error(`--${name} must be an integer, got '${raw}'`);
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n)) throw new Error(`--${name} is out of range: '${raw}'`);
+  if (n < min) throw new Error(`--${name} must be at least ${min}, got ${n}`);
+  return n;
+}
+
+/** An optional integer flag of at least 1; unset stays undefined so the driver keeps its default. */
+function optionalPositive(name: string, raw: string | undefined): number | undefined {
+  return raw === undefined ? undefined : intOption(name, raw, 0, 1);
+}
+
+/**
+ * Parse `bench=N,...` (key `default` for the rest) over the default caps. A cap that is not an
+ * integer of at least 1 would make `inUseCell < cap` false forever: the cell never starts and
+ * the scheduler loop wakes every few seconds for nothing. An unknown key would do nothing.
+ */
 function parseCaps(spec: string): Record<string, number> {
   const caps = { ...DEFAULT_CELL_CAP };
-  for (const item of (spec || "").split(",").filter(Boolean)) {
-    const [k, v] = item.split("=");
-    caps[k.trim()] = parseInt(v!, 10);
+  for (const item of spec.split(",").filter((s) => s.trim())) {
+    const eq = item.indexOf("=");
+    const key = (eq < 0 ? item : item.slice(0, eq)).trim();
+    const raw = eq < 0 ? "" : item.slice(eq + 1).trim();
+    if (key !== "default" && !(config.BENCHES as readonly string[]).includes(key)) {
+      throw new Error(`--cell-cap: unknown key '${key}' (use a bench: ${config.BENCHES.join(", ")}; or default)`);
+    }
+    if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+      throw new Error(`--cell-cap: '${key}' needs an integer of at least 1, got '${raw}'`);
+    }
+    caps[key] = Number(raw);
   }
   return caps;
+}
+
+/** `--fraction`: a number from 0 to 1. A typo parsed as NaN would mean "no sampling", the full set. */
+function fractionOption(raw: string | undefined): number {
+  if (raw === undefined) return 0;
+  const n = Number(raw);
+  if (raw.trim() === "" || !Number.isFinite(n) || n < 0 || n > 1) {
+    throw new Error(`--fraction must be a number from 0 to 1, got '${raw}'`);
+  }
+  return n;
 }
 
 function driverProcesses(): Record<string, number> {
@@ -240,18 +300,18 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
       runName: String(values["run-name"]),
       contract: String(values.contract ?? "artifact"),
       lane: values.lane as string | undefined,
-      maxFlash: Number(values["max-flash"] ?? DEFAULT_LANE_MAX.flash),
-      maxOpus: Number(values["max-opus"] ?? DEFAULT_LANE_MAX.opus),
-      cellCap: String(values["cell-cap"] ?? ""),
+      maxFlash: intOption("max-flash", values["max-flash"], DEFAULT_LANE_MAX.flash!, 1),
+      maxOpus: intOption("max-opus", values["max-opus"], DEFAULT_LANE_MAX.opus!, 1),
+      caps: parseCaps(String(values["cell-cap"] ?? "")),
       only,
       onlyFile: values["only-file"] as string | undefined,
-      limit: Number(values.limit ?? 0),
-      sample: Number(values.sample ?? 0),
-      fraction: Number(values.fraction ?? 0),
-      seed: Number(values.seed ?? 0),
-      turnTimeout: values["turn-timeout"] ? Number(values["turn-timeout"]) : undefined,
-      taskTimeout: values["task-timeout"] ? Number(values["task-timeout"]) : undefined,
-      skipInflight: Number(values["skip-inflight"] ?? 45),
+      limit: intOption("limit", values.limit, 0, 0),
+      sample: intOption("sample", values.sample, 0, 0),
+      fraction: fractionOption(values.fraction),
+      seed: intOption("seed", values.seed, 0),
+      turnTimeout: optionalPositive("turn-timeout", values["turn-timeout"]),
+      taskTimeout: optionalPositive("task-timeout", values["task-timeout"]),
+      skipInflight: intOption("skip-inflight", values["skip-inflight"], 45, 0),
       skill,
       noSkills: Boolean(values["no-skills"]),
       skillsMode: String(values["skills-mode"] ?? "mounted"),
@@ -270,13 +330,42 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
   }
 }
 
-type CellKey = `${string}\0${string}`;
+/**
+ * One path segment: no separator and no leading dot, so "." and ".." cannot climb out of the
+ * directory a name is joined under. run_name and each cell pool are joined under the runs and
+ * data directories, and runTask removes an existing task workspace there.
+ */
+const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-function cellKey(bench: string, pool: string): CellKey {
-  return `${bench}\0${pool}`;
+/** An own key only: `"constructor" in LANES` is true and would pass an inherited name as a lane. */
+function isLane(name: string): boolean {
+  return Object.hasOwn(config.LANES, name);
 }
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+/** `bench:pool`. Neither part can hold a colon (a bench is one of BENCHES, a pool is one path segment). */
+type CellKey = `${string}:${string}`;
+
+function cellKey(bench: string, pool: string): CellKey {
+  return `${bench}:${pool}`;
+}
+
+/** Seams for tests: where the pools and runs live, and what stands in for the driver. */
+export interface RunnerDeps {
+  dataDir?: string;
+  runsDir?: string;
+  driverCommand?: DriverCommand;
+  /** Milliseconds between scheduling passes while tasks wait for capacity (default 3000). */
+  pollMs?: number;
+}
+
+/**
+ * Run the batch runner: validate the arguments, stage each selected task and drive it through
+ * the driver under the lane and cell caps. Resolves to the exit code: 0 when every task ended
+ * ok, skipped or in flight, 1 when any failed, 2 for a bad argument.
+ */
+export async function main(argv: string[] = process.argv.slice(2), deps: RunnerDeps = {}): Promise<number> {
+  const dataDir = deps.dataDir ?? config.DATA;
+  const runsDir = deps.runsDir ?? config.RUNS;
   const parsed = parseRunnerArgv(argv);
   if ("error" in parsed) {
     process.stderr.write(`error: ${parsed.error}\n`);
@@ -288,16 +377,30 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     process.stderr.write("error: a cell is <bench>:<pool>\n");
     return 2;
   }
+  if (!SEGMENT.test(args.runName)) {
+    process.stderr.write(`error: --run-name must be one path segment ([A-Za-z0-9][A-Za-z0-9._-]*), got '${args.runName}'\n`);
+    return 2;
+  }
   const cells = args.cells.map((c) => {
-    const [bench, pool] = c.split(":", 2);
-    return [bench!, pool!] as [string, string];
+    const colon = c.indexOf(":");
+    return [c.slice(0, colon), c.slice(colon + 1)] as [string, string];
   });
+  for (const [, pool] of cells) {
+    if (!SEGMENT.test(pool)) {
+      process.stderr.write(`error: a cell pool must be one path segment ([A-Za-z0-9][A-Za-z0-9._-]*), got '${pool}'\n`);
+      return 2;
+    }
+  }
+  if (args.lane && !isLane(args.lane)) {
+    process.stderr.write(`error: unknown lane '${args.lane}' (known: ${Object.keys(config.LANES).join(", ")})\n`);
+    return 2;
+  }
   for (const [bench, pool] of cells) {
     if (!(config.BENCHES as readonly string[]).includes(bench)) {
       process.stderr.write(`error: unknown bench '${bench}'\n`);
       return 2;
     }
-    if (!(pool in config.LANES) && !args.lane) {
+    if (!isLane(pool) && !args.lane) {
       process.stderr.write(`error: pool '${pool}' names no lane; pass --lane\n`);
       return 2;
     }
@@ -336,21 +439,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
   }
 
-  const caps = parseCaps(args.cellCap);
+  const caps = args.caps;
   const laneMax: Record<string, number> = Object.fromEntries(
     Object.keys(config.LANES).map((lane) => [lane, Math.max(...Object.values(DEFAULT_LANE_MAX))]),
   );
   laneMax.flash = args.maxFlash;
   laneMax.opus = args.maxOpus;
 
-  const root = join(config.RUNS, args.runName);
+  const root = join(runsDir, args.runName);
   const plan: [string, string, string, string][][] = [];
   const cellCap: Record<CellKey, number> = {} as Record<CellKey, number>;
 
   for (const [bench, pool] of cells) {
     const cellDir = join(root, `${bench}_${pool}`);
     mkdirSync(cellDir, { recursive: true });
-    const keys = selectKeys(bench, pool, args);
+    const keys = selectKeys(dataDir, bench, pool, args);
     const ck = cellKey(bench, pool);
     cellCap[ck] = caps[bench] ?? caps.default!;
     writeJson(join(cellDir, "run.json"), {
@@ -407,12 +510,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const work = async (bench: string, pool: string, cellDir: string, key: string) => {
     let status: string;
     try {
-      status = runTask(
-        join(config.DATA, bench, pool, "tasks", key),
+      status = await runTask(
+        join(dataDir, bench, pool, "tasks", key),
         join(cellDir, key),
         laneOf[pool]!,
         driverArgs,
         args.skipInflight,
+        deps.driverCommand,
       );
     } catch (e) {
       status = `error(${e})`;
@@ -464,7 +568,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
     pending = rest;
     if (pending.length) {
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, deps.pollMs ?? 3000));
     }
   }
   await Promise.all([...active]);
