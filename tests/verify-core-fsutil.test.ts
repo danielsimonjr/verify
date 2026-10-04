@@ -48,7 +48,11 @@ describe("the PATH guard", () => {
     const env = guardedEnv(tmp);
     for (const exe of ["docker", "python3"]) {
       const r = spawnSync(exe, ["--version"], { encoding: "utf8", env });
-      expect(r.error?.message ?? "").toContain("ENOENT");
+      // The spawn must fail and nothing may have run. Node words it "ENOENT", Bun "Executable not
+      // found in $PATH"; a successful run would leave no error and a numeric exit status.
+      expect(r.error, `${exe} started under the guarded PATH`).toBeDefined();
+      expect(r.error!.message).toMatch(/ENOENT|not found/i);
+      expect(r.status ?? null).toBeNull(); // Node: null, Bun: undefined
     }
   });
 });

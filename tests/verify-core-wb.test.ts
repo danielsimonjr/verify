@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 describe("wb grade() without Docker", () => {
-  // The subprocess has an empty PATH, so `docker` cannot be started. imageFor() read
+  // The subprocess PATH holds only an empty directory, so `docker` cannot be started. imageFor() read
   // spawnSync(...).stdout.split(), and stdout is null when the binary is missing: the grader
   // crashed with a TypeError instead of reporting that no image is available.
   test("reports no local env image instead of crashing", () => {
