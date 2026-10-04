@@ -25,11 +25,29 @@
  *                             revised artifacts (layout: see README, "Benchmarks")
  */
 
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const REPO = resolve(join(dirname(fileURLToPath(import.meta.url)), ".."));
+/**
+ * The repository root: the nearest ancestor of this module that holds package.json.
+ *
+ * Under Bun this module is <root>/harness/config.ts. After `npm run build` it is
+ * <root>/dist/harness/config.js. The prompts, skills, scripts and pi-home that the paths
+ * below name are plain files that tsc does not emit, so both layouts must resolve to the same
+ * root. Do not add a package.json under dist/ or harness/: it would end this search early.
+ */
+function findRepoRoot(from: string): string {
+  for (let dir = from; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, "package.json"))) return dir;
+    if (dirname(dir) === dir) {
+      throw new Error(`cannot locate the repository root: no package.json above ${from}`);
+    }
+  }
+}
+
+export const REPO = findRepoRoot(dirname(fileURLToPath(import.meta.url)));
 export const HARNESS_DIR = join(REPO, "harness");
 export const PROMPTS_DIR = join(HARNESS_DIR, "prompts");
 export const SKILLS_DIR = join(HARNESS_DIR, "skills");
