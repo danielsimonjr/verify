@@ -25,8 +25,6 @@ export const DEFAULT_RETRIES = 2;
 /** Placeholder pi stores so a keyless local server still appears selectable. Never sent by this client. */
 export const PI_PLACEHOLDER_API_KEY = "local";
 export const DEFAULT_PI_MAX_TOKENS = 8192;
-/** Recommended server context. Never substituted when the server does not advertise one. */
-export const DEFAULT_PI_CONTEXT = 32768;
 
 export interface LocalModelConfig {
   provider: LocalProviderId;
