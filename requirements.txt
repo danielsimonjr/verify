@@ -1,11 +1,5 @@
-# Harness core (driver, runner, score) is standard-library only.
-# Skill scripts and spreadsheet rendering:
-openpyxl
-python-docx
-python-pptx
-pdfplumber
-pymupdf
-# APEX task prompts and rubrics (materialize/apex.py, grade/apex.py):
+# Harness TypeScript (driver, runner, score, materialize, views, most skills).
+# Remaining Python: WorkBuddy in-container grade driver (grade/wb.py --driver),
+# SpreadsheetBench-2 official cell compare (grade/sb2_compare.py), LiteLLM,
+# and upstream benchmark setup (scripts/setup_benchmarks.sh).
 huggingface_hub
-# Optional: evidence-patch/scripts/pageprobe.py drives a headless Chromium when
-# playwright (and its browser) is installed; without it the script reports and exits.

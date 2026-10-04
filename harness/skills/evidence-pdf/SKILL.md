@@ -5,16 +5,16 @@ description: Use when a claim you are checking turns on what a PDF actually show
 
 # PDF evidence
 
-Scripts (run with `python3`; paths are relative to this directory):
+Scripts (paths relative to this directory; production: `node scripts/<name>.js`, development: `bun scripts/<name>.ts`):
 
-- `scripts/pdf_render.py FILE PAGE [--dpi 150] [--crop x0,y0,x1,y1]` — renders one
+- `scripts/pdf_render.js FILE PAGE [--dpi 150] [--crop x0,y0,x1,y1]` — renders one
   page (1-based) to a PNG under /tmp/pdf_pages/ and prints its path. Open that
   path with the `read` tool: you will see the page as an image. `--crop` takes
   fractions of the page (e.g. `0,0.4,1,0.8`) to zoom into a chart.
-- `scripts/pdf_words.py FILE PAGE [--grep REGEX]` — every word on the page with its
+- `scripts/pdf_words.js FILE PAGE [--grep REGEX]` — every word on the page with its
   coordinates, ordered top-to-bottom then left-to-right, so a label can be tied to
   the value that sits next to it by position rather than by text-stream order.
-- `scripts/pdf_tables.py FILE PAGE [--all-pages] [--strategy lines|text]` — the
+- `scripts/pdf_tables.js FILE PAGE [--all-pages] [--strategy lines|text]` — the
   tables on a page as tab-separated rows with their columns kept. Use this for any
   table; plain text extraction (pdftotext, text streams) flattens the layout and
   interleaves the columns of a multi-column table.

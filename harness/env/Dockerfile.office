@@ -14,7 +14,8 @@
 #
 # Office-document environment for adjudication and delivery on spreadsheet and
 # document benchmarks: the SpreadsheetBench image (LibreOffice for recalculation)
-# plus the document libraries the evidence and repair skills use.
+# plus LibreOffice and host tools. Skill CLIs are TypeScript/Node (mounted from
+# harness/vendor); pip libraries remain for models and task-native Python.
 #   docker build -f harness/env/Dockerfile.office -t veriharness-office .
 ARG BASE=spreadsheetbench-v2
 FROM ${BASE}

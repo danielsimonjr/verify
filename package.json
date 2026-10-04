@@ -1,0 +1,38 @@
+{
+  "name": "veriharness",
+  "version": "0.1.0",
+  "description": "Same-model verification harness for long-horizon workspace agents",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "bin": {
+    "veriharness": "./dist/harness/cli.js"
+  },
+  "scripts": {
+    "dev": "bun harness/cli.ts",
+    "driver": "bun harness/driver.ts",
+    "runner": "bun harness/runner.ts",
+    "score": "bun harness/score.ts",
+    "materialize": "bun harness/materialize/main.ts",
+    "grade": "bun harness/grade/main.ts",
+    "env:derive": "bun harness/env/derive.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/harness/cli.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test",
+    "test:node": "node --test dist/harness/**/*.test.js"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "fast-xml-parser": "^4.5.1",
+    "jszip": "^3.10.1",
+    "pdfjs-dist": "^4.10.38",
+    "playwright": "^1.50.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  }
+}

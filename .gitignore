@@ -9,3 +9,6 @@ __pycache__/
 *.pyc
 *.log
 .vscode/
+node_modules/
+dist/
+*.tsbuildinfo

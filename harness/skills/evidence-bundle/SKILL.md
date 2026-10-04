@@ -11,7 +11,7 @@ Reading the bundles one after another, differences of *value* stand out and diff
 invoice number most of them never cite. Those are often what separates a complete deliverable
 from a plausible one, and they cost nothing to see once the bundles are side by side.
 
-- `python3 scripts/bundle_inventory.py rollouts [--base rNN] [--min-len 4] [--max 60]`
+- `node scripts/bundle_inventory.js rollouts [--base rNN] [--min-len 4] [--max 60]` (or `bun scripts/bundle_inventory.ts` in development)
   reads every candidate's deliverables through their text views (`.text.txt`, `.cells.tsv`)
   and plain-text files, and prints: (1) the files each candidate delivered, with sizes; (2) the
   *shape* of each structured file where candidates differ - the header row of a CSV/TSV, a
