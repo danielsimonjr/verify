@@ -38,8 +38,8 @@ import { fileURLToPath } from "node:url";
  * below name are plain files that tsc does not emit, so both layouts must resolve to the same
  * root. Do not add a package.json under dist/ or harness/: it would end this search early.
  */
-function findRepoRoot(from: string): string {
-  for (let dir = from; ; dir = dirname(dir)) {
+export function findRepoRoot(from: string): string {
+  for (let dir = resolve(from); ; dir = dirname(dir)) {
     if (existsSync(join(dir, "package.json"))) return dir;
     if (dirname(dir) === dir) {
       throw new Error(`cannot locate the repository root: no package.json above ${from}`);
