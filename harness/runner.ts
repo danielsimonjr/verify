@@ -302,6 +302,13 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
   }
 }
 
+/**
+ * One path segment: no separator and no leading dot, so "." and ".." cannot climb out of the
+ * directory a name is joined under. run_name and each cell pool are joined under the runs and
+ * data directories, and runTask removes an existing task workspace there.
+ */
+const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 /** An own key only: `"constructor" in LANES` is true and would pass an inherited name as a lane. */
 function isLane(name: string): boolean {
   return Object.hasOwn(config.LANES, name);
@@ -336,10 +343,20 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
     process.stderr.write("error: a cell is <bench>:<pool>\n");
     return 2;
   }
+  if (!SEGMENT.test(args.runName)) {
+    process.stderr.write(`error: --run-name must be one path segment ([A-Za-z0-9][A-Za-z0-9._-]*), got '${args.runName}'\n`);
+    return 2;
+  }
   const cells = args.cells.map((c) => {
-    const [bench, pool] = c.split(":", 2);
-    return [bench!, pool!] as [string, string];
+    const colon = c.indexOf(":");
+    return [c.slice(0, colon), c.slice(colon + 1)] as [string, string];
   });
+  for (const [, pool] of cells) {
+    if (!SEGMENT.test(pool)) {
+      process.stderr.write(`error: a cell pool must be one path segment ([A-Za-z0-9][A-Za-z0-9._-]*), got '${pool}'\n`);
+      return 2;
+    }
+  }
   if (args.lane && !isLane(args.lane)) {
     process.stderr.write(`error: unknown lane '${args.lane}' (known: ${Object.keys(config.LANES).join(", ")})\n`);
     return 2;

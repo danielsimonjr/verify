@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { main } from "../harness/runner.ts";
 import { addTask, captureStderr, makeSandbox, within, type Sandbox } from "./fixtures/verify-runner/sandbox.ts";
@@ -63,4 +64,60 @@ describe("runner --seed", () => {
       expect(hit.runs).toEqual([]);
     });
   }
+});
+
+describe("runner path segments", () => {
+  // run_name and each cell pool are joined under the runs and data directories, and runTask
+  // removes an existing task workspace there. A value that is not one path segment reaches
+  // outside them.
+  test("a --run-name that climbs out of the runs dir deletes nothing outside it", async () => {
+    // <root>/outside/sb2_flash/t1 is where "../outside" would resolve a task workspace.
+    const victim = join(sb.outside, "sb2_flash", "t1");
+    mkdirSync(victim, { recursive: true });
+    writeFileSync(join(victim, "precious.txt"), "keep");
+
+    const hit = await runner(["--cells", "sb2:flash", "--run-name", "../outside"]);
+
+    expect(existsSync(join(victim, "precious.txt"))).toBe(true);
+    expect(readFileSync(join(victim, "precious.txt"), "utf8")).toBe("keep");
+    expect(existsSync(join(sb.outside, "sb2_flash", "run.json"))).toBe(false);
+    expect(hit.code).toBe(2);
+    expect(hit.stderr).toMatch(/--run-name/);
+  });
+
+  const badSegments = ["..", ".", "../x", "a/b", "a\b", ".hidden", "", "x y", "x\0y", "/abs", "C:\abs", "-x"];
+  for (const name of badSegments) {
+    test(`--run-name ${JSON.stringify(name)} is rejected`, async () => {
+      const hit = await runner(["--cells", "sb2:flash", "--run-name", name]);
+      expect(hit.code).toBe(2);
+      expect(hit.runs).toEqual([]);
+    });
+  }
+
+  // The pool names a data directory (<data>/<bench>/<pool>/tasks) and, with --lane, no lane.
+  for (const pool of ["..", "../x", "a/b", "a\b", ".hidden", "a:b", ""]) {
+    test(`a cell pool ${JSON.stringify(pool)} is rejected`, async () => {
+      addTask(sb.dataDir, "sb2", "x", "t1"); // <data>/sb2/../x/tasks resolves here
+      const hit = await runner(["--cells", `wb:${pool}`, "--lane", "flash", "--run-name", "r"]);
+      expect(hit.code).toBe(2);
+      expect(hit.stderr).toMatch(/pool/);
+      expect(hit.runs).toEqual([]);
+    });
+  }
+
+  test("ordinary names are accepted", async () => {
+    for (const ok of ["run1", "Run-2026.10.04_a", "0", "a.b"]) {
+      const { result } = await captureStderr(() =>
+        within(
+          main(["--cells", "sb2:flash", "--run-name", ok], {
+            dataDir: sb.dataDir,
+            runsDir: sb.runsDir,
+            driverCommand: () => [process.execPath, "-e", ""],
+          }),
+          5000,
+        ),
+      );
+      expect(result, ok).toBe(1); // the empty driver writes no finish.json; the name was accepted
+    }
+  });
 });
