@@ -47,12 +47,16 @@ function lastActivity(ws: string): number {
   return max;
 }
 
+/** The command that runs one task. Tests replace it with a stub; production runs the driver. */
+type DriverCommand = (ws: string, flags: string[]) => string[];
+
 function runTask(
   src: string,
   ws: string,
   lane: string,
   driverArgs: string[],
   skipInflightMin: number,
+  driverCommand: DriverCommand = (w, flags) => harnessCommand(import.meta.url, "driver", [w, ...flags]),
 ): string {
   if (exists(join(ws, "finish.json"))) {
     return "skip";
@@ -66,7 +70,7 @@ function runTask(
   cpSync(src, ws, { recursive: true });
   renderViews(join(ws, "workspace"));
   renderViews(join(ws, "rollouts"));
-  const cmd = harnessCommand(import.meta.url, "driver", [ws, ...flagsForLane(lane, driverArgs)]);
+  const cmd = driverCommand(ws, flagsForLane(lane, driverArgs));
   const outFd = openSync(join(ws, "run.out"), "w");
   let rc = 1;
   try {
@@ -132,8 +136,8 @@ function seededSample<T>(keys: T[], n: number, seed: number): T[] {
   return copy.slice(0, n);
 }
 
-function selectKeys(bench: string, pool: string, args: RunnerArgs): string[] {
-  const tasksDir = join(config.DATA, bench, pool, "tasks");
+function selectKeys(dataDir: string, bench: string, pool: string, args: RunnerArgs): string[] {
+  const tasksDir = join(dataDir, bench, pool, "tasks");
   let keys = readdirSync(tasksDir, { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
@@ -276,7 +280,16 @@ function cellKey(bench: string, pool: string): CellKey {
   return `${bench}\0${pool}`;
 }
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+/** Seams for tests: where the pools and runs live, and what stands in for the driver. */
+export interface RunnerDeps {
+  dataDir?: string;
+  runsDir?: string;
+  driverCommand?: DriverCommand;
+}
+
+export async function main(argv: string[] = process.argv.slice(2), deps: RunnerDeps = {}): Promise<number> {
+  const dataDir = deps.dataDir ?? config.DATA;
+  const runsDir = deps.runsDir ?? config.RUNS;
   const parsed = parseRunnerArgv(argv);
   if ("error" in parsed) {
     process.stderr.write(`error: ${parsed.error}\n`);
@@ -343,14 +356,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   laneMax.flash = args.maxFlash;
   laneMax.opus = args.maxOpus;
 
-  const root = join(config.RUNS, args.runName);
+  const root = join(runsDir, args.runName);
   const plan: [string, string, string, string][][] = [];
   const cellCap: Record<CellKey, number> = {} as Record<CellKey, number>;
 
   for (const [bench, pool] of cells) {
     const cellDir = join(root, `${bench}_${pool}`);
     mkdirSync(cellDir, { recursive: true });
-    const keys = selectKeys(bench, pool, args);
+    const keys = selectKeys(dataDir, bench, pool, args);
     const ck = cellKey(bench, pool);
     cellCap[ck] = caps[bench] ?? caps.default!;
     writeJson(join(cellDir, "run.json"), {
@@ -408,11 +421,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     let status: string;
     try {
       status = runTask(
-        join(config.DATA, bench, pool, "tasks", key),
+        join(dataDir, bench, pool, "tasks", key),
         join(cellDir, key),
         laneOf[pool]!,
         driverArgs,
         args.skipInflight,
+        deps.driverCommand,
       );
     } catch (e) {
       status = `error(${e})`;
