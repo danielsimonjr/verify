@@ -274,6 +274,11 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
   }
 }
 
+/** An own key only: `"constructor" in LANES` is true and would pass an inherited name as a lane. */
+function isLane(name: string): boolean {
+  return Object.hasOwn(config.LANES, name);
+}
+
 type CellKey = `${string}\0${string}`;
 
 function cellKey(bench: string, pool: string): CellKey {
@@ -305,12 +310,16 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
     const [bench, pool] = c.split(":", 2);
     return [bench!, pool!] as [string, string];
   });
+  if (args.lane && !isLane(args.lane)) {
+    process.stderr.write(`error: unknown lane '${args.lane}' (known: ${Object.keys(config.LANES).join(", ")})\n`);
+    return 2;
+  }
   for (const [bench, pool] of cells) {
     if (!(config.BENCHES as readonly string[]).includes(bench)) {
       process.stderr.write(`error: unknown bench '${bench}'\n`);
       return 2;
     }
-    if (!(pool in config.LANES) && !args.lane) {
+    if (!isLane(pool) && !args.lane) {
       process.stderr.write(`error: pool '${pool}' names no lane; pass --lane\n`);
       return 2;
     }
