@@ -43,6 +43,7 @@ export const STACK =
 const DOCKERFILE = (base: string, stack: string) =>
   `FROM ${base}\nRUN python3 -m pip install --no-cache-dir -q ${stack} || pip install --no-cache-dir -q ${stack} || true\n`;
 
+/** The tag of the derived image for a task image: `vh/` plus its name without registry or tag. */
 export function derivedName(base: string): string {
   return "vh/" + base.split("/").pop()!.split(":")[0];
 }
@@ -143,6 +144,7 @@ export function deriveImages(
   return mapPool(bases, jobs, (base) => build(base, docker, timeoutMs));
 }
 
+/** Derive an image for every `.exported` base under the data dir. Resolves to 0, or 2 for a bad `--jobs`. */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   let jobs = 8;
   const only: string[] = [];

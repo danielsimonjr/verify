@@ -180,6 +180,24 @@ function selectKeys(dataDir: string, bench: string, pool: string, args: RunnerAr
 }
 
 /**
+ * Parse an integer flag the way argparse's `type=int` did. `Number()` turns a typo into NaN,
+ * which a seed or a cap then carries silently into the run.
+ */
+function intOption(name: string, raw: string | undefined, fallback: number, min = -Infinity): number {
+  if (raw === undefined) return fallback;
+  if (!/^[+-]?\d+$/.test(raw.trim())) throw new Error(`--${name} must be an integer, got '${raw}'`);
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n)) throw new Error(`--${name} is out of range: '${raw}'`);
+  if (n < min) throw new Error(`--${name} must be at least ${min}, got ${n}`);
+  return n;
+}
+
+/** An optional integer flag of at least 1; unset stays undefined so the driver keeps its default. */
+function optionalPositive(name: string, raw: string | undefined): number | undefined {
+  return raw === undefined ? undefined : intOption(name, raw, 0, 1);
+}
+
+/**
  * Parse `bench=N,...` (key `default` for the rest) over the default caps. A cap that is not an
  * integer of at least 1 would make `inUseCell < cap` false forever: the cell never starts and
  * the scheduler loop wakes every few seconds for nothing. An unknown key would do nothing.
@@ -228,19 +246,6 @@ function driverProcesses(): Record<string, number> {
     return seen;
   }
   return seen;
-}
-
-/**
- * Parse an integer flag the way argparse's `type=int` did. `Number()` turns a typo into NaN,
- * which a seed or a cap then carries silently into the run.
- */
-function intOption(name: string, raw: string | undefined, fallback: number, min = -Infinity): number {
-  if (raw === undefined) return fallback;
-  if (!/^[+-]?\d+$/.test(raw.trim())) throw new Error(`--${name} must be an integer, got '${raw}'`);
-  const n = Number(raw);
-  if (!Number.isSafeInteger(n)) throw new Error(`--${name} is out of range: '${raw}'`);
-  if (n < min) throw new Error(`--${name} must be at least ${min}, got ${n}`);
-  return n;
 }
 
 function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
@@ -304,8 +309,8 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
       sample: intOption("sample", values.sample, 0, 0),
       fraction: fractionOption(values.fraction),
       seed: intOption("seed", values.seed, 0),
-      turnTimeout: values["turn-timeout"] === undefined ? undefined : intOption("turn-timeout", values["turn-timeout"], 0, 1),
-      taskTimeout: values["task-timeout"] === undefined ? undefined : intOption("task-timeout", values["task-timeout"], 0, 1),
+      turnTimeout: optionalPositive("turn-timeout", values["turn-timeout"]),
+      taskTimeout: optionalPositive("task-timeout", values["task-timeout"]),
       skipInflight: intOption("skip-inflight", values["skip-inflight"], 45, 0),
       skill,
       noSkills: Boolean(values["no-skills"]),
@@ -337,10 +342,11 @@ function isLane(name: string): boolean {
   return Object.hasOwn(config.LANES, name);
 }
 
-type CellKey = `${string}\0${string}`;
+/** `bench:pool`. Neither part can hold a colon (a bench is one of BENCHES, a pool is one path segment). */
+type CellKey = `${string}:${string}`;
 
 function cellKey(bench: string, pool: string): CellKey {
-  return `${bench}\0${pool}`;
+  return `${bench}:${pool}`;
 }
 
 /** Seams for tests: where the pools and runs live, and what stands in for the driver. */
@@ -352,6 +358,11 @@ export interface RunnerDeps {
   pollMs?: number;
 }
 
+/**
+ * Run the batch runner: validate the arguments, stage each selected task and drive it through
+ * the driver under the lane and cell caps. Resolves to the exit code: 0 when every task ended
+ * ok, skipped or in flight, 1 when any failed, 2 for a bad argument.
+ */
 export async function main(argv: string[] = process.argv.slice(2), deps: RunnerDeps = {}): Promise<number> {
   const dataDir = deps.dataDir ?? config.DATA;
   const runsDir = deps.runsDir ?? config.RUNS;

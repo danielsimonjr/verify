@@ -43,6 +43,7 @@ function seedWords(seed: number | bigint): number[] {
   return words;
 }
 
+/** A `random.Random` that produces the numbers CPython produces for the same integer seed. */
 export class PyRandom {
   private readonly mt = new Uint32Array(N);
   private index = N;
