@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { timerDelay } from "../timer.js";
+
 /**
  * Minimal HTTP for local model servers.
  *
@@ -19,8 +21,6 @@
  * Connection refused is not retried (the server is down). 408/429/500/502/503/504
  * and connection resets are retried. A caller-supplied fetch keeps tests off the network.
  */
-
-import { timerDelay } from "../timer.js";
 
 export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
