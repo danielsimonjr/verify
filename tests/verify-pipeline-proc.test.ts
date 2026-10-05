@@ -102,25 +102,23 @@ describe("run", () => {
   // A one-shot grader exits on the result. If the result came back before onTimeout finished,
   // the `docker kill` it starts would die with the grader and the container would keep running.
   test("returns only after onTimeout has finished", async () => {
-    // onTimeout finishes 300 ms after the child is gone. A run() that returned on the child's exit
-    // would return first on every platform. A fixed delay does not show that on Windows, where
-    // the tree kill alone takes longer than the delay.
-    const pidFile = join(dir, "pid");
-    let pid = 0;
+    // onTimeout holds for 3 s, longer than any tree kill (taskkill measured about 1 s on Windows), so a
+    // run() that returned when the child died would return first on every platform. The test does not
+    // read the child's pid: the child only has to be spawned, not started, when the timer fires, so
+    // the result does not depend on how fast Node starts.
     let stopped = false;
-    await sh("require('fs').writeFileSync(process.env.PID_FILE, String(process.pid)); setTimeout(() => {}, 60000)", {
-      timeoutMs: 1_000,
-      env: { ...process.env, PID_FILE: pidFile },
+    const t0 = Date.now();
+    const r = await sh("setTimeout(() => {}, 60000)", {
+      timeoutMs: 300,
       onTimeout: async () => {
-        pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : 0;
-        for (let i = 0; i < 100 && pid && alive(pid); i++) await new Promise((r) => setTimeout(r, 50));
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((res) => setTimeout(res, 3_000));
         stopped = true;
       },
     });
-    expect(pid).toBeGreaterThan(0); // without the pid, the wait above is a fixed delay again
+    expect(r.timedOut).toBe(true);
     expect(stopped).toBe(true);
-  }, 15_000); // timer 1 s + taskkill about 1 s + up to 5 s of polling + 300 ms
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(3_000);
+  }, 20_000); // timer 0.3 s + onTimeout 3 s + stopWait; the kill runs inside the 3 s
 
   test("an onTimeout that never settles does not hold the caller past the stop wait", async () => {
     const t0 = Date.now();

@@ -41,3 +41,22 @@ else if (mode === "tree") {
   process.stderr.write("runner exploded: bad credentials\n");
   process.exit(2);
 } else if (mode === "silent") process.exit(1);
+else if (mode === "done-then-fail") {
+  // A complete result file, then a failing exit: a crash after the write, or a file that is not final.
+  writeFileSync(
+    flags["--output"],
+    JSON.stringify({
+      grading_run_status: "completed",
+      verifier_results: [
+        { verifier_id: "v1", score: 1, status: "ok" },
+        { verifier_id: "v2", score: 1, status: "ok" },
+      ],
+      scoring_results: { final_score: 1 },
+    }),
+  );
+  process.stderr.write("runner crashed during shutdown\n");
+  process.exit(3);
+} else if (mode === "done-then-kill") {
+  writeFileSync(flags["--output"], JSON.stringify({ grading_run_status: "completed", verifier_results: [] }));
+  process.kill(process.pid, "SIGKILL");
+}

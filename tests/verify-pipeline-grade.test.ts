@@ -155,6 +155,26 @@ describe("apex grade", () => {
     expect(r.json.error).toBe("apex runner: exit 1");
   });
 
+  test("a runner that writes grades.json and then exits nonzero is not scored", () => {
+    const r = scenario("apex-grade", { FAKE_MODE: "done-then-fail" });
+    expect(r.json.score).toBeNull();
+    expect(r.json.error).toMatch(/exit 3.*crashed during shutdown/s);
+  });
+
+  test.skipIf(process.platform === "win32")("a runner that writes grades.json and is then killed is not scored", () => {
+    const r = scenario("apex-grade", { FAKE_MODE: "done-then-kill" });
+    expect(r.json.score).toBeNull();
+    expect(r.json.error).toBe("apex runner: killed by SIGKILL");
+  });
+
+  test("the key counter is not wrapped: leave wrapping to the caller", async () => {
+    // A pid above 1,000,000 (Linux allows 4,194,304) must seed the same start key as Python's count(pid).
+    const { nextKey } = await import("../harness/grade/apex.ts");
+    const first = nextKey();
+    for (let i = 0; i < 1_000_000; i++) nextKey();
+    expect(nextKey()).toBe(first + 1_000_001);
+  });
+
   test("judge keys rotate, starting from the pid rather than always from the first key", () => {
     // Two keys, three keys...: the first key used is keys[pid % n], and the next call takes the next one.
     scenario("apex-two", { FAKE_MODE: "ok", GEMINI_API_KEY: "k0,k1,k2,k3,k4,k5,k6" });
