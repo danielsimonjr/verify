@@ -18,6 +18,7 @@ import { copyFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { DATA, benchRoot } from "../config.js";
+import { parseCount } from "../count.js";
 import {
   ensureDir,
   exists,
@@ -226,10 +227,11 @@ export function parseCliArgs(argv: string[], pools: string[]) {
       only.push(value());
     } else if (a === "--limit") {
       const v = value();
-      if (!/^\d+$/.test(v)) {
+      const n = parseCount(v);
+      if (n === undefined) {
         throw new UsageError(`--limit must be a non-negative integer, got ${JSON.stringify(v)}`);
       }
-      limit = Number(v);
+      limit = n;
     } else {
       throw new UsageError(`unknown argument ${JSON.stringify(a)}`);
     }

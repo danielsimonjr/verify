@@ -139,9 +139,11 @@ describe("runner --cell-cap", () => {
     "sb2=2,wb=0",
     "default=0",
     "SB2=3",
+    `sb2=${"9".repeat(400)}`,
+    "default=9007199254740993",
   ];
   for (const spec of bad) {
-    test(`rejects ${JSON.stringify(spec)}`, async () => {
+    test(`rejects ${JSON.stringify(spec.slice(0, 40))}`, async () => {
       const hit = await runner(["--cells", "sb2:flash", "--run-name", "r", "--cell-cap", spec]);
       expect(hit.code).toBe(2);
       expect(hit.stderr).toMatch(/--cell-cap/);

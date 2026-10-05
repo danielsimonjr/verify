@@ -100,6 +100,8 @@ describe("parseCliArgs", () => {
     [["--limit", "abc"], /--limit/],
     [["--limit", "-1"], /--limit/],
     [["--limit", "1.5"], /--limit/],
+    [["--limit", "9".repeat(400)], /--limit/],
+    [["--limit", "9007199254740993"], /--limit/],
     [["--limit"], /needs a value/],
     [["--pool"], /needs a value/],
     [["--pool", "nope"], /invalid --pool/],

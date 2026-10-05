@@ -202,8 +202,8 @@ describe("concurrency caps", () => {
     expect(laneMax(w.stdout).flash).toBe(6);
   });
 
-  for (const bad of ["fish=2", "haiku", "haiku=", "haiku=0", "haiku=-1", "haiku=2.5", "haiku=two", "=3"]) {
-    test(`--lane-max ${bad} is an argument error`, async () => {
+  for (const bad of ["fish=2", "haiku", "haiku=", "haiku=0", "haiku=-1", "haiku=2.5", "haiku=two", "=3", `haiku=${"9".repeat(400)}`, "haiku=9007199254740993"]) {
+    test(`--lane-max ${bad.slice(0, 30)} is an argument error`, async () => {
       const { code, stderr } = await run("sb2:haiku", ["t1"], ["--env", "none", "--lane-max", bad]);
       expect(code).toBe(2);
       expect(stderr).toContain("--lane-max");
