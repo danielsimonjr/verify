@@ -223,6 +223,21 @@ describe("wb adapter", () => {
     expect(t!.rollouts.s3!.score).toBe(0.75);
   });
 
+  test("a string reward is accepted only in the forms that Python float() accepts", async () => {
+    const read = async (reward: string) => {
+      fixture({}, { s3: { dir: join(root, "runs", "r1"), reward } });
+      const [t] = await collect(wb.iterTasks("flash"));
+      return t!.rollouts.s3!.score;
+    };
+    for (const [text, value] of [[" 0.5 ", 0.5], ["+1", 1], [".5", 0.5], ["1.", 1], ["1e-1", 0.1], ["1_000", 1000], ["-2.5E1", -25]] as const) {
+      expect(await read(text)).toBe(value);
+    }
+    for (const bad of ["0x10", "0b1", "0o7", "1e999", "Infinity", "inf", "nan", "1 2", "--1", "1__0", "_1", "1_", "1e", "e5", ".", "+"]) {
+      fixture({}, { s3: { dir: join(root, "runs", "r1"), reward: bad } });
+      await expect(collect(wb.iterTasks("flash"))).rejects.toThrow(/is not a number/);
+    }
+  });
+
   test("artifact names use forward slashes on every platform", async () => {
     fixture({ "verifier/raw_artifacts/a/b.xlsx": "x", "verifier/raw_artifacts/top.txt": "y" });
     const [t] = await collect(wb.iterTasks("flash"));
