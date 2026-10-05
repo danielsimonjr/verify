@@ -32,6 +32,11 @@ function within(dir: string, target: string): boolean {
  * untrusted. The path is percent-decoded exactly once, resolved against `root`, and refused (403)
  * unless the result still lies under `root`. A symlink or junction that leads out of `root` is
  * refused too: `readFileSync` would follow it. A malformed escape or a NUL byte is a 400.
+ *
+ * A backslash is refused (403) wherever it appears. It is a separator on Windows and a name
+ * character on POSIX, and Bun's `realpathSync` reads it as a separator on Linux as well, where
+ * Node's does not. Without this rule, one URL would name different files on different platforms
+ * and runtimes.
  */
 export function resolveServedPath(root: string, requestUrl: string | undefined): ServedPath {
   const rawPath = (requestUrl ?? "/").split(/[?#]/, 1)[0] ?? "/";
@@ -42,9 +47,10 @@ export function resolveServedPath(root: string, requestUrl: string | undefined):
     return { status: 400 };
   }
   if (decoded.includes("\0")) return { status: 400 };
+  if (decoded.includes("\\")) return { status: 403 };
 
   const base = resolve(root);
-  const path = resolve(base, decoded === "/" ? "index.html" : decoded.replace(/^[/\\]+/, ""));
+  const path = resolve(base, decoded === "/" ? "index.html" : decoded.replace(/^\/+/, ""));
   if (!within(base, path)) return { status: 403 };
 
   let real: string;
