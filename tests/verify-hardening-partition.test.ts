@@ -50,7 +50,7 @@ function sourceFiles(dir: string): string[] {
 
 describe("no TypeScript or JavaScript split(sep, n) that truncates", () => {
   // split(sep, 1)[0] is the first piece and is correct; any other limit drops text.
-  const LIMITED_SPLIT = /\.split\(\s*(?:"[^"]*"|'[^']*'|`[^`]*`|\/(?:\.|[^/\\n])+\/[a-z]*)\s*,\s*[0-9a-zA-Z_.]+\s*\)(?!\s*\[0\])/;
+  const LIMITED_SPLIT = /\.split\(\s*(?:"[^"]*"|'[^']*'|`[^`]*`|\/(?:\\.|[^/\\\n])+\/[a-z]*)\s*,\s*[0-9a-zA-Z_.]+\s*\)(?!\s*\[0\])/;
 
   test("the harness has none", () => {
     const hits: string[] = [];
@@ -73,11 +73,27 @@ describe("no TypeScript or JavaScript split(sep, n) that truncates", () => {
       "x.split(/=/, 2)",
       'x.split("=", n)',
       'const [k, v] = line.split(":", 2);',
+      "x.split(/\\s+/, 2)", // a regex literal with an escape in it
+      "x.split(/\\//, 2)", // an escaped slash does not end the literal
     ]) {
       expect(LIMITED_SPLIT.test(bad)).toBe(true);
     }
-    for (const fine of ['x.split("=")', 'x.split(/[?#]/, 1)[0]', 'x.split(",").map(f)', "x.split(a, b)"]) {
+    for (const fine of [
+      'x.split("=")',
+      'x.split(/[?#]/, 1)[0]',
+      'x.split(",").map(f)',
+      "x.split(a, b)",
+      "x.split(/\\s+/)[0]",
+      "x.split(/\\r?\\n/)",
+    ]) {
       expect(LIMITED_SPLIT.test(fine)).toBe(false);
     }
+  });
+
+  test("the pattern runs in linear time on a long run of dots (CodeQL js/redos)", () => {
+    const hostile = ".split(/" + ".".repeat(50_000);
+    const t0 = performance.now();
+    expect(LIMITED_SPLIT.test(hostile)).toBe(false);
+    expect(performance.now() - t0).toBeLessThan(1000);
   });
 });
