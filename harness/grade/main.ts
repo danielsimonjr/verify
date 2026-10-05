@@ -18,25 +18,36 @@ import { BENCHES } from "../config.js";
 import { isMain } from "../runtime.js";
 import { gradeDeliverables } from "./index.js";
 
+const USAGE = "usage: veriharness grade <bench> <task_key> <deliverables_dir> [--json]\n";
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   let json = false;
   const args: string[] = [];
   for (const a of argv) {
     if (a === "--json") json = true;
-    else args.push(a);
+    else if (a.startsWith("--")) {
+      // argparse refused an unknown option; taking it for a positional made `--jsn` print plain text.
+      process.stderr.write(`grade: unknown option ${a}\n${USAGE}`);
+      return 2;
+    } else args.push(a);
   }
-  const [bench, key, deliverables] = args;
-  if (!bench || !key || !deliverables) {
-    process.stderr.write(
-      "usage: veriharness grade <bench> <task_key> <deliverables_dir> [--json]\n",
-    );
+  if (args.length !== 3) {
+    process.stderr.write(USAGE);
     return 2;
   }
+  const [bench, key, deliverables] = args as [string, string, string];
   if (!BENCHES.includes(bench as (typeof BENCHES)[number])) {
     process.stderr.write(`unknown bench: ${bench}\n`);
     return 2;
   }
-  const result = await gradeDeliverables(bench, key, deliverables);
+  let result;
+  try {
+    result = await gradeDeliverables(bench, key, deliverables);
+  } catch (e) {
+    // A grader that throws (a missing dataset file, a bad key) is an error to report, not a stack trace.
+    process.stderr.write(`grade: ${e instanceof Error ? e.message : String(e)}\n`);
+    return 1;
+  }
   if (json) {
     console.log(JSON.stringify(result, null, 1));
   } else {
@@ -46,5 +57,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 }
 
 if (isMain(import.meta.url)) {
-  main().then((c) => process.exit(c));
+  main().then(
+    (c) => process.exit(c),
+    (err) => {
+      console.error(err);
+      process.exit(1);
+    },
+  );
 }

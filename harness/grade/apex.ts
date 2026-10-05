@@ -12,64 +12,45 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import JSZip from "jszip";
 
 import * as config from "../config.js";
 import { benchRoot, DATA, TMP_DIR } from "../config.js";
-import {
-  exists,
-  isFile,
-  posixRel,
-  readJson,
-  readText,
-  rmrf,
-  walkFiles,
-  writeText,
-} from "../fsutil.js";
-import { python3 } from "../runtime.js";
+import { exists, isFile, posixRel, readJson, readText, rmrf, walkFiles, writeText } from "../fsutil.js";
+import { defaultTasks, domainCode, type ApexTask } from "../materialize/apex.js";
+import { readJsonStrict } from "../materialize/base.js";
 import { isView } from "../views.js";
 import type { GradeResult } from "./index.js";
+import { describeFailure, run } from "./proc.js";
 
-const GRADING = process.env.APEX_GRADING_DIR
-  ? join(process.env.APEX_GRADING_DIR)
-  : join(benchRoot(), "benchmarks", "apex", "grading");
-const PY = join(GRADING, ".venv", "bin", "python");
 const CONFIGS = join(config.HARNESS_DIR, "benchmarks", "apex");
-const DOMAIN: Record<string, string> = {
-  "Investment Banking": "IB",
-  "Management Consulting": "MC",
-  Law: "Law",
-};
 const GRADER = "apex/runner.main";
 
-let keyCounter = 0;
-function nextKey(): number {
+/**
+ * The benchmark's grading runner checkout. Resolved when asked, not at import: `benchRoot()` throws
+ * when the bench root is unset, and `preflight()` must be able to report that instead.
+ */
+export function gradingDir(): string {
+  const env = process.env.APEX_GRADING_DIR;
+  // resolve(): the runner starts with this directory as its cwd, so a relative path must not be re-read from there.
+  return env ? resolve(env) : join(benchRoot(), "benchmarks", "apex", "grading");
+}
+
+const venvPython = (): string => join(gradingDir(), ".venv", "bin", "python");
+
+// Seeded with the pid, as the Python was (itertools.count(os.getpid())): every one-shot
+// `veriharness grade` process would otherwise start at key 0 and never reach the others.
+let keyCounter = process.pid;
+export function nextKey(): number {
   return keyCounter++ % 1_000_000;
 }
 
-let tasksCache: Record<string, unknown>[] | null = null;
-
-function tasks(): Record<string, unknown>[] {
-  if (tasksCache) return tasksCache;
-  const script = `
-from huggingface_hub import hf_hub_download
-from pathlib import Path
-import json
-try:
-  p = hf_hub_download("mercor/apex-agents", "tasks_and_rubrics.json", repo_type="dataset", local_files_only=True)
-except Exception:
-  p = hf_hub_download("mercor/apex-agents", "tasks_and_rubrics.json", repo_type="dataset")
-print(Path(p).read_text())
-`;
-  const r = spawnSync(python3(), ["-c", script], { encoding: "utf8", timeout: 120_000 });
-  if (r.status !== 0) throw new Error(`hf_hub_download failed: ${(r.stderr || "").slice(-400)}`);
-  tasksCache = JSON.parse(r.stdout || "[]") as Record<string, unknown>[];
-  return tasksCache;
+async function tasks(): Promise<Record<string, unknown>[]> {
+  return (await defaultTasks()) as unknown as Record<string, unknown>[];
 }
 
 function apiKeys(): string[] {
@@ -79,11 +60,12 @@ function apiKeys(): string[] {
     .filter(Boolean);
 }
 
-function gradingSettings(): string {
-  const defaultPath = join(CONFIGS, "grading_settings.json");
+/** The benchmark's grading settings, with the judge model swapped for APEX_JUDGE_MODEL when that is set. */
+export function gradingSettings(defaultPath = join(CONFIGS, "grading_settings.json")): string {
   const model = process.env.APEX_JUDGE_MODEL;
   if (!model) return defaultPath;
-  const settings = { ...readJson<Record<string, unknown>>(defaultPath), llm_judge_model: model };
+  // Strict: a missing settings file must not become `{llm_judge_model}` alone.
+  const settings = { ...readJsonStrict<Record<string, unknown>>(defaultPath), llm_judge_model: model };
   const uid = process.getuid?.() ?? 0;
   const out = join(tmpdir(), `vh_apex_grading_settings_${uid}.json`);
   const tmp = `${out}.${process.pid}`;
@@ -102,7 +84,12 @@ export function preflight(): string {
       "with VERTEXAI_PROJECT and VERTEXAI_LOCATION set"
     );
   }
-  return exists(PY) ? "" : `APEX grading venv not found: ${PY}`;
+  try {
+    const py = venvPython();
+    return exists(py) ? "" : `APEX grading venv not found: ${py}`;
+  } catch (e) {
+    return (e as Error).message;
+  }
 }
 
 function worldZip(key: string): string | null {
@@ -120,11 +107,13 @@ function worldZip(key: string): string | null {
   return null;
 }
 
-function taskFor(key: string): Record<string, unknown> {
+async function taskFor(key: string): Promise<Record<string, unknown>> {
   const m = /^(\d{3})_(IB|MC|Law)$/.exec(key);
   if (!m) throw new Error(`bad apex key ${JSON.stringify(key)}`);
-  const t = tasks()[parseInt(m[1], 10)]!;
-  if (DOMAIN[String(t.domain)] !== m[2]) {
+  const list = await tasks();
+  const t = list[parseInt(m[1], 10)];
+  if (!t) throw new Error(`key ${key} is outside the ${list.length} APEX tasks`);
+  if (domainCode(t as unknown as ApexTask) !== m[2]) {
     throw new Error(
       `key ${key} domain mismatch with HF task ${t.task_id} (${t.domain})`,
     );
@@ -151,15 +140,23 @@ function verifiers(t: Record<string, unknown>): Record<string, unknown>[] {
 
 async function writeZip(path: string, files: { name: string; data: Buffer }[]): Promise<void> {
   const zip = new JSZip();
-  for (const f of files) zip.file(f.name, f.data);
+  // No folder entries: the Python wrote only the files, and the runner diffs the archive's entries.
+  for (const f of files) zip.file(f.name, f.data, { createFolders: false });
   const buf = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
   writeFileSync(path, buf);
 }
 
+export type ApexOptions = {
+  /** Runner timeout in milliseconds (default 30 minutes). */
+  timeout?: number;
+  /** Replaces `<grading venv python> -m runner.main`; the runner's arguments follow it. For tests. */
+  command?: string[];
+};
+
 export async function grade(
   key: string,
   deliverables: string,
-  opts: { timeout?: number } = {},
+  opts: ApexOptions = {},
 ): Promise<GradeResult> {
   const timeout = opts.timeout ?? 1_800_000;
   const ans = join(deliverables, "answer.md");
@@ -168,7 +165,7 @@ export async function grade(
   }
   const answer = readText(ans).replace(/\r\n/g, "\n").trim();
   if (!answer) return { score: 0.0, error: "empty answer.md", grader: GRADER };
-  const t = taskFor(key);
+  const t = await taskFor(key);
   const vlist = verifiers(t);
   if (!vlist.length) {
     return { score: null, error: `task ${t.task_id} has no rubric`, grader: GRADER };
@@ -195,8 +192,10 @@ export async function grade(
     }
     const final = join(td, "final_snapshot.zip");
     const files: { name: string; data: Buffer }[] = [];
-    for (const f of walkFiles(deliverables)) {
-      const base = f.split("/").pop()!;
+    // Sorted, so the same bundle always makes the same archive. basename(), not split("/"): on a
+    // native Windows path the last "/" piece is the whole path, and answer.md would be sent as an artifact.
+    for (const f of walkFiles(deliverables).sort()) {
+      const base = basename(f);
       if (base === "answer.md" || isView(base)) continue;
       if (!isFile(f)) continue;
       const rel = posixRel(deliverables, f);
@@ -207,11 +206,10 @@ export async function grade(
     const vf = join(td, "verifiers.json");
     writeText(vf, JSON.stringify(vlist, null, 2));
     const out = join(td, "grades.json");
-    const runId = `vh_${key}_${td.split("_").pop()}`;
-    const cmd = [
-      PY,
-      "-m",
-      "runner.main",
+    const runId = `vh_${key}_${basename(td).split("_").pop()}`;
+    const runner = opts.command ?? [venvPython(), "-m", "runner.main"];
+    const args = [
+      ...runner.slice(1),
       "--grading-run-id",
       runId,
       "--trajectory-id",
@@ -234,22 +232,19 @@ export async function grade(
       out,
     ];
     const keys = apiKeys();
-    const env: Record<string, string> = { ...process.env, PYTHONPATH: "." };
+    const env: Record<string, string> = { ...process.env, PYTHONPATH: "." } as Record<string, string>;
     if (keys.length) env.GEMINI_API_KEY = keys[nextKey() % keys.length]!;
-    const p = spawnSync(cmd[0], cmd.slice(1), {
-      encoding: "utf8",
-      timeout,
-      cwd: GRADING,
-      env,
-    });
-    if (!exists(out)) {
-      return {
-        score: null,
-        error: ((p.stderr || "") + (p.stdout || "")).slice(-800),
-        grader: GRADER,
-      };
+    // Asynchronous: grade() runs inside a worker pool, and a blocking spawnSync serialised it.
+    const p = await run(runner[0]!, args, { timeoutMs: timeout, cwd: gradingDir(), env });
+    if (p.timedOut || p.error || p.truncated || !exists(out)) {
+      return { score: null, error: describeFailure(p, "apex runner"), grader: GRADER };
     }
-    const g = readJson<Record<string, unknown>>(out)!;
+    let g: Record<string, unknown>;
+    try {
+      g = readJsonStrict<Record<string, unknown>>(out);
+    } catch (e) {
+      return { score: null, error: (e as Error).message.slice(0, 800), grader: GRADER };
+    }
     const vr = (g.verifier_results as Record<string, unknown>[]) || [];
     const status = g.grading_run_status;
     if (status !== "completed" || vr.length !== vlist.length) {

@@ -13,7 +13,6 @@
 // limitations under the License.
 
 import { readdirSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { DATA } from "../config.js";
@@ -33,7 +32,7 @@ const DOMAIN: Record<string, string> = {
 };
 
 /** The grader checks this suffix against its own table, so an unknown domain has no valid key. */
-function domainCode(t: ApexTask): string {
+export function domainCode(t: ApexTask): string {
   if (!Object.hasOwn(DOMAIN, t.domain)) {
     throw new Error(`unknown domain ${JSON.stringify(t.domain)} in APEX task ${t.task_id}: add it to DOMAIN`);
   }
@@ -45,6 +44,16 @@ const TASKS_URL =
 const FETCH_TIMEOUT_MS = 60_000;
 
 export type ApexTask = { task_id: string; domain: string; prompt: string };
+
+/**
+ * Where the task list is cached: VERIHARNESS_APEX_TASKS when set (also a way to supply a copy
+ * downloaded elsewhere), else under the data directory. A shared name in the temp directory let
+ * any local user plant the rubrics the grader trusts, and a reboot emptied it.
+ */
+export function defaultCachePath(): string {
+  const env = process.env.VERIHARNESS_APEX_TASKS;
+  return env && env.length > 0 ? env : join(DATA, "_cache", "apex-tasks_and_rubrics.json");
+}
 
 export type TasksSource = {
   fetchImpl?: typeof fetch;
@@ -83,7 +92,7 @@ function parseTasks(raw: string, where: string): ApexTask[] {
  * never trusted.
  */
 export async function loadTasks(src: TasksSource = {}): Promise<ApexTask[]> {
-  const cachePath = src.cachePath ?? join(tmpdir(), "veriharness-apex-tasks_and_rubrics.json");
+  const cachePath = src.cachePath ?? defaultCachePath();
   if (exists(cachePath)) {
     try {
       return parseTasks(readFileSync(cachePath, "utf8"), cachePath);
@@ -109,7 +118,7 @@ export async function loadTasks(src: TasksSource = {}): Promise<ApexTask[]> {
 let tasksMemo: Promise<ApexTask[]> | null = null;
 
 /** One download per process: both pools read the same list. A failure is not remembered. */
-function defaultTasks(): Promise<ApexTask[]> {
+export function defaultTasks(): Promise<ApexTask[]> {
   tasksMemo ??= loadTasks().catch((e) => {
     tasksMemo = null;
     throw e;

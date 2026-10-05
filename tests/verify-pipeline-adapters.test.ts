@@ -491,8 +491,9 @@ describe("apex default task source", () => {
   });
 
   test("one download serves both pools, a failure is not remembered, and HF_TOKEN is sent", async () => {
-    // The cache path is under os.tmpdir(); point it at the test root so the real temp dir is untouched.
-    for (const name of ["TEMP", "TMP", "TMPDIR"]) setEnv(name, root);
+    // The cache path comes from the environment, so the real data directory is untouched.
+    const cache = join(root, "cache", "tasks.json");
+    setEnv("VERIHARNESS_APEX_TASKS", cache);
     setEnv("HF_TOKEN", "hf_from_env");
     setEnv("HUGGING_FACE_HUB_TOKEN", undefined);
     for (const dir of ["digest_cache_1_flash", "digest_cache_1_opus_high"]) {
@@ -510,6 +511,6 @@ describe("apex default task source", () => {
     await collect(apex.iterTasks("flash"));
     await collect(apex.iterTasks("opus"));
     expect(calls).toEqual(["Bearer hf_from_env", "Bearer hf_from_env"]); // 1 failed + 1 good; opus reused the list
-    expect(readdirSync(root).filter((n) => n.includes("veriharness-apex"))).toEqual(["veriharness-apex-tasks_and_rubrics.json"]);
+    expect(readFileSync(cache, "utf8")).toBe(tasksBody);
   });
 });
