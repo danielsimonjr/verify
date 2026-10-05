@@ -1,0 +1,2 @@
+# Fixture bytes must survive checkout exactly (PDF xref offsets, OOXML parts).
+* -text

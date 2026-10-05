@@ -1,0 +1,46 @@
+=== slide 1 (layout: Title Only) — Gamma
+[text Title 1 placeholder]
+  Gamma
+[text TextBox 2]
+  2024
+[notes]
+  Notes for Gamma
+
+=== slide 2 (layout: Title Only) — Alpha
+[text Title 1 placeholder]
+  Alpha
+[text TextBox 2]
+  first
+[table Table 3: 2 rows x 2 cols]
+  k	v
+  n	7
+[text TextBox 4]
+  second
+[group Group 5]
+  [text TextBox 6]
+    grouped one
+  [group Group 7]
+    [text TextBox 8]
+      grouped two
+[chart Chart 9: type=COLUMN_CLUSTERED (51) categories=['Q1', 'Q2', 'Q3']]
+  series Sales: [10.0, 12.5, 9.0]
+[picture Picture 10: 2.0x1.0 in — content not readable as text; render the slide]
+[text TextBox 11]
+  third
+[notes]
+  Notes for Alpha
+  second notes line
+
+=== slide 3 (layout: Title and Content) — Beta
+[text Title 1 placeholder]
+  Beta
+[text Content Placeholder 2 placeholder]
+  Bullet 1
+  Bullet 2
+[text TextBox 3]
+  line one
+  line two
+[shape Connector 4: type=LINE (9), no text]
+[text Rectangle 5: empty]
+
+# 3 slides total

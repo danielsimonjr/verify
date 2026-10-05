@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { copyFileSync, mkdirSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { basename, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { basename, extname, join, resolve } from "node:path";
+import { sofficeToPdf } from "../../_shared/office.js";
+import { rasterizePages, renderRoot } from "../../_shared/raster.js";
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -23,51 +24,30 @@ const { positionals, values } = parseArgs({
 });
 const file = positionals[0];
 const dpi = parseInt(values.dpi ?? "110", 10);
-if (!file) {
-  console.error("usage: xlsx_render.py FILE [--dpi 110]");
+if (!file || !(dpi > 0)) {
+  console.error("usage: xlsx_render.js FILE [--dpi 110]");
   process.exit(2);
 }
 
 const src = resolve(file);
-const out = join("/tmp/xlsx_render", basename(src, ".xlsx"));
+const out = join(renderRoot(), "xlsx_render", basename(src, extname(src)));
 mkdirSync(out, { recursive: true });
 const copy = join(out, basename(src));
 copyFileSync(src, copy);
 
-const env = { ...process.env, HOME: out };
-const profile = join(out, "profile");
-const r = spawnSync(
-  "soffice",
-  [
-    `-env:UserInstallation=file://${profile}`,
-    "--headless",
-    "--convert-to",
-    "pdf",
-    "--outdir",
-    out,
-    copy,
-  ],
-  { encoding: "utf-8", timeout: 300_000, env },
-);
-
-const pdf = join(out, `${basename(src, ".xlsx")}.pdf`);
-if (!existsSync(pdf)) {
-  const msg = (r.stderr || r.stdout || "").trim().slice(-400);
-  console.error(`LibreOffice conversion failed: ${msg}`);
+const converted = sofficeToPdf(copy, out);
+if ("error" in converted) {
+  console.error(`LibreOffice conversion failed: ${converted.error}`);
   process.exit(1);
 }
 
-const ppm = spawnSync(
-  "pdftoppm",
-  ["-r", String(dpi), "-png", pdf, join(out, "page")],
-  { stdio: "inherit" },
-);
-if (ppm.status !== 0) process.exit(ppm.status ?? 1);
-
-const pages = readdirSync(out)
-  .filter((f) => /^page-\d+\.png$/.test(f))
-  .sort((a, b) => parseInt(a.split("-")[1]!, 10) - parseInt(b.split("-")[1]!, 10))
-  .map((f) => join(out, f));
+let pages;
+try {
+  pages = rasterizePages(converted.pdf, out, "page", { dpi });
+} catch (e) {
+  console.error((e as Error).message);
+  process.exit(1);
+}
 
 console.log(`${pages.length} page(s) rendered from ${basename(src)}:`);
-for (const p of pages) console.log(p);
+for (const p of pages) console.log(p.path);

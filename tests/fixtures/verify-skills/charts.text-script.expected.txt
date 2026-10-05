@@ -1,0 +1,49 @@
+=== slide 1 (layout: Title Only) — Charts
+[text Title 1 placeholder]
+  Charts
+[chart Chart 2: type=COLUMN_STACKED (52) categories=['Q1', "it's", 'say "hi"', 'back\\slash', 'café']]
+  series First: [1.0, 2.5, None, 1e-05, 1e+16]
+  series Second — two: [3.0, 4.0, 5.0, 6.0, 7.0]
+[chart Chart 3: type=BAR_CLUSTERED (57) categories=['Q1', "it's", 'say "hi"', 'back\\slash', 'café']]
+  series First: [1.0, 2.5, None, 1e-05, 1e+16]
+  series Second — two: [3.0, 4.0, 5.0, 6.0, 7.0]
+[chart Chart 4: type=LINE (4) categories=['Q1', "it's", 'say "hi"', 'back\\slash', 'café']]
+  series First: [1.0, 2.5, None, 1e-05, 1e+16]
+  series Second — two: [3.0, 4.0, 5.0, 6.0, 7.0]
+[chart Chart 5: type=LINE_MARKERS (65) categories=['Q1', "it's", 'say "hi"', 'back\\slash', 'café']]
+  series First: [1.0, 2.5, None, 1e-05, 1e+16]
+  series Second — two: [3.0, 4.0, 5.0, 6.0, 7.0]
+[chart Chart 6: type=PIE_EXPLODED (69) categories=['Q1', "it's", 'say "hi"', 'back\\slash', 'café']]
+  series First: [1.0, 2.5, None, 1e-05, 1e+16]
+[chart Chart 7: type=DOUGHNUT (-4120) categories=['Q1', "it's", 'say "hi"', 'back\\slash', 'café']]
+  series First: [1.0, 2.5, None, 1e-05, 1e+16]
+  series Second — two: [3.0, 4.0, 5.0, 6.0, 7.0]
+[chart Chart 8: type=AREA_STACKED (76) categories=['Q1', "it's", 'say "hi"', 'back\\slash', 'café']]
+  series First: [1.0, 2.5, None, 1e-05, 1e+16]
+  series Second — two: [3.0, 4.0, 5.0, 6.0, 7.0]
+[chart Chart 9: type=RADAR_FILLED (82) categories=['Q1', "it's", 'say "hi"', 'back\\slash', 'café']]
+  series First: [1.0, 2.5, None, 1e-05, 1e+16]
+  series Second — two: [3.0, 4.0, 5.0, 6.0, 7.0]
+[chart Chart 10: type=XY_SCATTER_LINES_NO_MARKERS (75) categories=[]]
+  series points: [2.0, 3.5, 1.0]
+[chart Chart 11: type=BUBBLE_THREE_D_EFFECT (87) categories=[]]
+  series blobs: [2.0, 3.0]
+[chart Chart 12: type=LINE (4) categories=['c0', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8', 'c9', 'c10', 'c11']]
+  series long: [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0]
+
+=== slide 2 (layout: Blank)
+[text TextBox 1]
+  padded  
+  
+  a b
+  c
+  after break
+  tail
+[picture Picture 2: 0.2x0.8 in — content not readable as text; render the slide]
+[picture Picture 3: 1.2x2.5 in — content not readable as text; render the slide]
+[table Table 4: 3 rows x 3 cols]
+  merged head		
+  x		
+  		tail
+
+# 2 slides total

@@ -15,16 +15,16 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import JSZip from "jszip";
-import { XMLParser } from "fast-xml-parser";
+import {
+  attr,
+  childrenOf,
+  ownText,
+  parseOrdered,
+  textIn,
+  walk,
+} from "../../_shared/xml.js";
 
-const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-const parser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  removeNSPrefix: false,
-  isArray: (name) =>
-    ["w:r", "w:t", "w:ins", "w:del", "w:comment", "w:p"].includes(name),
-});
+const TEXT_TAGS = ["w:t", "w:delText"] as const;
 
 const { positionals } = parseArgs({ allowPositionals: true });
 const docx = positionals[0];
@@ -34,125 +34,55 @@ if (!docx) {
 }
 
 const zip = await JSZip.loadAsync(readFileSync(docx));
-const docXml = await zip.file("word/document.xml")!.async("string");
-const doc = parser.parse(docXml);
-const root = doc["w:document"]?.["w:body"] ?? doc;
+const doc = parseOrdered(await zip.file("word/document.xml")!.async("string"));
 
-function textOf(el: unknown): string {
-  const parts: string[] = [];
-  function walk(node: unknown) {
-    if (!node || typeof node !== "object") return;
-    if (Array.isArray(node)) {
-      for (const x of node) walk(x);
-      return;
-    }
-    const o = node as Record<string, unknown>;
-    for (const [k, v] of Object.entries(o)) {
-      if (k === "w:t" || k === "w:delText") {
-        if (typeof v === "string") parts.push(v);
-        else if (Array.isArray(v)) {
-          for (const t of v) {
-            if (typeof t === "string") parts.push(t);
-            else if (t && typeof t === "object" && "#text" in t)
-              parts.push(String((t as { "#text": string })["#text"]));
-          }
-        } else if (v && typeof v === "object" && "#text" in v) {
-          parts.push(String((v as { "#text": string })["#text"]));
-        }
-      } else walk(v);
-    }
-  }
-  walk(el);
-  return parts.join("");
-}
-
-function walkInsDel(node: unknown, fn: (kind: string, el: Record<string, unknown>) => void) {
-  if (!node || typeof node !== "object") return;
-  if (Array.isArray(node)) {
-    for (const x of node) walkInsDel(x, fn);
-    return;
-  }
-  const o = node as Record<string, unknown>;
-  for (const [k, v] of Object.entries(o)) {
-    if (k === "w:ins" || k === "w:del") {
-      const arr = Array.isArray(v) ? v : [v];
-      for (const el of arr) {
-        if (el && typeof el === "object")
-          fn(k === "w:ins" ? "INS" : "DEL", el as Record<string, unknown>);
-      }
-    }
-    walkInsDel(v, fn);
-  }
-}
-
+// Tracked changes, in document order (a parent is printed before any change nested in it).
 let n = 0;
-walkInsDel(root, (kind, el) => {
-  const author = el["@_w:author"] ?? "";
-  const date = el["@_w:date"] ?? "";
-  console.log(`${kind} [${author}, ${date}] ${JSON.stringify(textOf(el))}`);
+walk(doc, (el, tag) => {
+  if (tag !== "w:ins" && tag !== "w:del") return;
+  const kind = tag === "w:ins" ? "INS" : "DEL";
+  const author = attr(el, "w:author") ?? "";
+  const date = attr(el, "w:date") ?? "";
+  console.log(`${kind} [${author}, ${date}] ${JSON.stringify(textIn(childrenOf(el), TEXT_TAGS))}`);
   n++;
 });
 console.log(`# ${n} tracked changes`);
 
 const commentsFile = zip.file("word/comments.xml");
 if (commentsFile) {
-  const comXml = await commentsFile.async("string");
-  const com = parser.parse(comXml);
-  const anchors: Record<string, string[]> = {};
-  let current: string | null = null;
+  const com = parseOrdered(await commentsFile.async("string"));
 
-  function walkAnchors(node: unknown) {
-    if (!node || typeof node !== "object") return;
-    if (Array.isArray(node)) {
-      for (const x of node) walkAnchors(x);
-      return;
+  // Anchored text: every w:t between a comment's range start and end, in document order.
+  // Ranges can overlap, so each text run goes to every range that is open at that point.
+  const anchors = new Map<string, string[]>();
+  const open = new Set<string>();
+  walk(doc, (el, tag) => {
+    if (tag === "w:commentRangeStart") {
+      const id = attr(el, "w:id") ?? "";
+      anchors.set(id, []);
+      open.add(id);
+    } else if (tag === "w:commentRangeEnd") {
+      open.delete(attr(el, "w:id") ?? "");
+    } else if (tag === "w:t" && open.size) {
+      const text = ownText(el);
+      for (const id of open) anchors.get(id)!.push(text);
+      return false;
     }
-    const o = node as Record<string, unknown>;
-    for (const [k, v] of Object.entries(o)) {
-      if (k === "w:commentRangeStart") {
-        const arr = Array.isArray(v) ? v : [v];
-        for (const el of arr) {
-          if (el && typeof el === "object") {
-            current = String((el as Record<string, string>)["@_w:id"] ?? "");
-            anchors[current] = [];
-          }
-        }
-      } else if (k === "w:commentRangeEnd") {
-        current = null;
-      } else if (k === "w:t" && current != null) {
-        const arr = Array.isArray(v) ? v : [v];
-        for (const t of arr) {
-          const txt =
-            typeof t === "string"
-              ? t
-              : t && typeof t === "object" && "#text" in t
-                ? String((t as { "#text": string })["#text"])
-                : "";
-          anchors[current].push(txt);
-        }
-      } else walkAnchors(v);
-    }
-  }
-  walkAnchors(root);
+  });
 
-  const comments =
-    com["w:comments"]?.["w:comment"] ??
-    com?.["w:comment"] ??
-    [];
-  const carr = Array.isArray(comments) ? comments : [comments];
   let m = 0;
-  for (const c of carr) {
-    if (!c || typeof c !== "object") continue;
-    const co = c as Record<string, string>;
-    const cid = co["@_w:id"] ?? "";
-    const author = co["@_w:author"] ?? "";
-    const date = co["@_w:date"] ?? "";
-    const anchor = (anchors[cid] ?? []).join("");
+  walk(com, (c, tag) => {
+    if (tag !== "w:comment") return;
+    const cid = attr(c, "w:id") ?? "";
+    const author = attr(c, "w:author") ?? "";
+    const date = attr(c, "w:date") ?? "";
+    const anchor = (anchors.get(cid) ?? []).join("");
     console.log(
-      `COMMENT ${cid} [${author}, ${date}] on ${JSON.stringify(anchor)}: ${JSON.stringify(textOf(c))}`,
+      `COMMENT ${cid} [${author}, ${date}] on ${JSON.stringify(anchor)}: ${JSON.stringify(textIn(childrenOf(c), TEXT_TAGS))}`,
     );
     m++;
-  }
+    return false;
+  });
   console.log(`# ${m} comments`);
 } else {
   console.log("# 0 comments (no comments part)");

@@ -14,15 +14,16 @@
 
 import {
   copyFileSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { parseArgs } from "node:util";
-import { basename, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { basename, extname, join, resolve } from "node:path";
+import { sofficeToPdf } from "../../_shared/office.js";
+import { rasterizePages, renderRoot } from "../../_shared/raster.js";
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -30,54 +31,45 @@ const { positionals, values } = parseArgs({
 });
 const file = positionals[0];
 const dpi = parseInt(values.dpi ?? "110", 10);
-if (!file) {
-  console.error("usage: pptx_render.py FILE [--dpi 110]");
+if (!file || !(dpi > 0)) {
+  console.error("usage: pptx_render.js FILE [--dpi 110]");
   process.exit(2);
 }
 
-const src = resolve(file);
-const out = join("/tmp/pptx_render", basename(src, ".pptx"));
-mkdirSync(out, { recursive: true });
-const td = mkdtempSync(join(tmpdir(), "pptx_render_"));
-const copy = join(td, basename(src));
-copyFileSync(src, copy);
-
-const r = spawnSync(
-  "soffice",
-  [
-    "--headless",
-    `-env:UserInstallation=file://${join(td, "profile")}`,
-    "--convert-to",
-    "pdf",
-    "--outdir",
-    td,
-    copy,
-  ],
-  { encoding: "utf-8", timeout: 300_000, env: { ...process.env, HOME: td } },
-);
-
-const pdf = join(td, `${basename(src, ".pptx")}.pdf`);
-if (!existsSync(pdf)) {
-  console.log("conversion failed:", (r.stderr || r.stdout || "").slice(-300));
-  process.exit(1);
+function main(file: string): number {
+  const src = resolve(file);
+  const out = join(renderRoot(), "pptx_render", basename(src, extname(src)));
+  mkdirSync(out, { recursive: true });
+  // The conversion, its profile and its PDF live in a scratch directory that is removed
+  // on the way out; only the slide images are kept.
+  const td = mkdtempSync(join(tmpdir(), "pptx_render_"));
+  try {
+    const copy = join(td, basename(src));
+    copyFileSync(src, copy);
+    const converted = sofficeToPdf(copy, td);
+    if ("error" in converted) {
+      console.log("conversion failed:", converted.error.slice(-300));
+      return 1;
+    }
+    let pages;
+    try {
+      pages = rasterizePages(converted.pdf, td, "slide", { dpi });
+    } catch (e) {
+      console.error((e as Error).message);
+      return 1;
+    }
+    // A shorter deck must not leave the slides of an earlier render of the same name behind.
+    for (const f of readdirSync(out)) if (/^slide-\d+\.png$/.test(f)) rmSync(join(out, f));
+    for (const p of pages) {
+      const dest = join(out, `slide-${String(p.page).padStart(2, "0")}.png`);
+      copyFileSync(p.path, dest);
+      console.log(dest);
+    }
+    console.log(`# ${pages.length} slides rendered`);
+    return 0;
+  } finally {
+    rmSync(td, { recursive: true, force: true });
+  }
 }
 
-const ppm = spawnSync(
-  "pdftoppm",
-  ["-r", String(dpi), "-png", pdf, join(td, "slide")],
-  { stdio: "inherit" },
-);
-if (ppm.status !== 0) process.exit(ppm.status ?? 1);
-
-const raw = readdirSync(td)
-  .filter((f) => /^slide-\d+\.png$/.test(f))
-  .sort((a, b) => parseInt(a.split("-")[1]!, 10) - parseInt(b.split("-")[1]!, 10));
-
-let count = 0;
-for (const f of raw) {
-  count++;
-  const dest = join(out, `slide-${String(count).padStart(2, "0")}.png`);
-  copyFileSync(join(td, f), dest);
-  console.log(dest);
-}
-console.log(`# ${count} slides rendered`);
+process.exit(main(file));

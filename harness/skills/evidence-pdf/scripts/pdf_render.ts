@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, renameSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { basename, join } from "node:path";
-import { spawnSync } from "node:child_process";
 import { loadPdf } from "../../_shared/pdf.js";
+import { rasterizePages, renderRoot } from "../../_shared/raster.js";
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -29,9 +29,10 @@ const file = positionals[0];
 const pageNo = parseInt(positionals[1] ?? "", 10);
 const dpi = parseInt(values.dpi ?? "150", 10);
 const crop = values.crop;
+const box = crop ? crop.split(",").map((v) => parseFloat(v)) : null;
 
-if (!file || !pageNo) {
-  console.error("usage: pdf_render.py FILE PAGE [--dpi 150] [--crop x0,y0,x1,y1]");
+if (!file || !pageNo || !(dpi > 0) || (box && (box.length !== 4 || box.some((v) => !isFinite(v))))) {
+  console.error("usage: pdf_render.js FILE PAGE [--dpi 150] [--crop x0,y0,x1,y1]");
   process.exit(2);
 }
 
@@ -42,46 +43,32 @@ if (pageNo < 1 || pageNo > pdf.numPages) {
 }
 const page = await pdf.getPage(pageNo);
 const viewport = page.getViewport({ scale: 1 });
-let suffix = "";
-const args = [
-  "-r",
-  String(dpi),
-  "-f",
-  String(pageNo),
-  "-l",
-  String(pageNo),
-  "-png",
-  "-singlefile",
-];
-if (crop) {
-  const [x0, y0, x1, y1] = crop.split(",").map((v) => parseFloat(v));
-  const w = viewport.width;
-  const h = viewport.height;
-  const px = (dpi / 72) * w;
-  const py = (dpi / 72) * h;
-  args.push(
-    "-x",
-    String(Math.round(x0 * px)),
-    "-y",
-    String(Math.round(y0 * py)),
-    "-W",
-    String(Math.round((x1 - x0) * px)),
-    "-H",
-    String(Math.round((y1 - y0) * py)),
-  );
-  suffix = "_crop";
-}
+const suffix = box ? "_crop" : "";
 
-const outDir = "/tmp/pdf_pages";
+const outDir = join(renderRoot(), "pdf_pages");
 mkdirSync(outDir, { recursive: true });
 const stem = basename(file).replace(/\.pdf$/i, "");
-const prefix = join(outDir, `${stem}_p${pageNo}${suffix}`);
-const r = spawnSync("pdftoppm", [...args, file, prefix], { encoding: "utf-8" });
-if (r.status !== 0) {
-  console.error(r.stderr || r.stdout);
-  process.exit(r.status ?? 1);
+const name = `${stem}_p${pageNo}${suffix}`;
+let rendered;
+try {
+  rendered = rasterizePages(file, outDir, name, {
+    dpi,
+    first: pageNo,
+    last: pageNo,
+    crop: box
+      ? {
+          box: box as [number, number, number, number],
+          width: viewport.width,
+          height: viewport.height,
+        }
+      : undefined,
+  });
+} catch (e) {
+  console.error((e as Error).message);
+  process.exit(1);
 }
-const png = `${prefix}.png`;
+const png = join(outDir, `${name}.png`);
+renameSync(rendered[0]!.path, png);
 let label = "n/a";
 try {
   const labels = await pdf.getPageLabels();

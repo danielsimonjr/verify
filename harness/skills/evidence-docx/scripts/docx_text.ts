@@ -12,18 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/**
+ * Paragraphs (with styles) and, optionally, tables of a .docx in reading order.
+ *
+ *     node docx_text.js FILE [--tables]
+ *
+ * Paragraph lines:  [Style] text        Table dump (with --tables):
+ *                                         ## table 3 (5 rows x 4 cols)
+ *                                         cell<TAB>cell<TAB>...
+ *
+ * A style is shown by its name ("Heading 1"), not its id ("Heading1"). The lines are the ones
+ * the python-docx version of this script printed.
+ */
+
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import JSZip from "jszip";
-import { XMLParser } from "fast-xml-parser";
 
-const W =
-  "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-const parser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  removeNSPrefix: true,
-});
+import { docxParagraphText, paragraphStyles, styleNameOf, tableRows } from "../../_shared/docx.js";
+import { readPart } from "../../_shared/opc.js";
+import { pyStrip } from "../../_shared/pytext.js";
+import { childrenNamed, descend, findAll } from "../../_shared/xml.js";
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -31,104 +40,43 @@ const { positionals, values } = parseArgs({
 });
 const file = positionals[0];
 if (!file) {
-  console.error("usage: docx_text.py FILE [--tables]");
+  console.error("usage: docx_text.js FILE [--tables]");
   process.exit(2);
 }
 
 const zip = await JSZip.loadAsync(readFileSync(file));
-const docXml = await zip.file("word/document.xml")!.async("string");
-const doc = parser.parse(docXml);
-
-function local(el: unknown): string {
-  if (!el || typeof el !== "object") return "";
-  const o = el as Record<string, unknown>;
-  return String(o["w:tag"] ?? o.tag ?? "");
+const document = await readPart(zip, "word/document.xml");
+const body = descend(document, "w:body");
+if (!body) {
+  console.error(`cannot read ${file}: not a Word file (no word/document.xml body)`);
+  process.exit(1);
 }
 
-function textOfPara(p: unknown): string {
-  if (!p || typeof p !== "object") return "";
-  const o = p as Record<string, unknown>;
-  const runs = o.r ?? o["w:r"];
-  const arr = Array.isArray(runs) ? runs : runs ? [runs] : [];
-  let t = "";
-  for (const r of arr) {
-    if (!r || typeof r !== "object") continue;
-    const ro = r as Record<string, unknown>;
-    const ts = ro.t ?? ro["w:t"];
-    if (typeof ts === "string") t += ts;
-    else if (ts && typeof ts === "object" && "#text" in (ts as object)) {
-      t += String((ts as { "#text": string })["#text"]);
-    }
-  }
-  return t;
-}
-
-function styleOfPara(p: unknown): string {
-  if (!p || typeof p !== "object") return "Normal";
-  const o = p as Record<string, unknown>;
-  const pPr = o.pPr ?? o["w:pPr"];
-  if (!pPr || typeof pPr !== "object") return "Normal";
-  const pPro = pPr as Record<string, unknown>;
-  const ps = pPro.pStyle ?? pPro["w:pStyle"];
-  if (!ps || typeof ps !== "object") return "Normal";
-  return String((ps as { "@_w:val": string; "@_val": string })["@_w:val"] ??
-    (ps as { "@_val": string })["@_val"] ??
-    "Normal");
-}
-
-function walkBody(body: unknown): { paragraphs: unknown[]; tables: unknown[] } {
-  if (!body || typeof body !== "object") return { paragraphs: [], tables: [] };
-  const o = body as Record<string, unknown>;
-  const ps = o.p ?? o["w:p"];
-  const ts = o.tbl ?? o["w:tbl"];
-  return {
-    paragraphs: Array.isArray(ps) ? ps : ps ? [ps] : [],
-    tables: Array.isArray(ts) ? ts : ts ? [ts] : [],
-  };
-}
-
-const body = doc?.document?.body ?? doc?.["w:document"]?.["w:body"];
-const { paragraphs, tables } = walkBody(body);
-
-let inlineImages = 0;
-const docStr = docXml;
-inlineImages = (docStr.match(/<w:drawing/g) ?? []).length;
-
-const sections = (docStr.match(/<w:sectPr/g) ?? []).length || 1;
+const paragraphs = childrenNamed(body, "w:p");
+const tables = childrenNamed(body, "w:tbl");
+const sections =
+  childrenNamed(body, "w:sectPr").length + paragraphs.filter((p) => descend(p, "w:pPr", "w:sectPr")).length;
+// Pictures set in the text line (`wp:inline`); floating ones (`wp:anchor`) are not counted.
+const inlineImages = findAll(document, "w:p")
+  .flatMap((p) => childrenNamed(p, "w:r"))
+  .flatMap((r) => childrenNamed(r, "w:drawing"))
+  .flatMap((d) => childrenNamed(d, "wp:inline")).length;
 
 console.log(
   `# ${file}: ${paragraphs.length} paragraphs, ${tables.length} tables, ${sections} sections, ${inlineImages} inline images`,
 );
 
+const styles = await paragraphStyles(zip);
 for (const p of paragraphs) {
-  const text = textOfPara(p);
-  if (text.trim()) console.log(`[${styleOfPara(p)}] ${text}`);
+  const text = docxParagraphText(p);
+  if (pyStrip(text)) console.log(`[${styleNameOf(p, styles) || "Normal"}] ${text}`);
 }
 
 if (values.tables) {
-  for (let i = 0; i < tables.length; i++) {
-    const t = tables[i];
-    const rows = (t as Record<string, unknown>).tr ??
-      (t as Record<string, unknown>)["w:tr"];
-    const rowArr = Array.isArray(rows) ? rows : rows ? [rows] : [];
-    let ncols = 0;
-    const rowTexts: string[][] = [];
-    for (const row of rowArr) {
-      const cells = (row as Record<string, unknown>).tc ??
-        (row as Record<string, unknown>)["w:tc"];
-      const cellArr = Array.isArray(cells) ? cells : cells ? [cells] : [];
-      ncols = Math.max(ncols, cellArr.length);
-      const line: string[] = [];
-      for (const cell of cellArr) {
-        const paras = (cell as Record<string, unknown>).p ??
-          (cell as Record<string, unknown>)["w:p"];
-        const parr = Array.isArray(paras) ? paras : paras ? [paras] : [];
-        const ct = parr.map((pp) => textOfPara(pp)).join(" ");
-        line.push(ct.replace(/\n/g, " ").trim());
-      }
-      rowTexts.push(line);
-    }
-    console.log(`\n## table ${i + 1} (${rowArr.length} rows x ${ncols} cols)`);
-    for (const line of rowTexts) console.log(line.join("\t"));
-  }
+  tables.forEach((table, i) => {
+    const rows = tableRows(table);
+    const ncols = Math.max(0, ...rows.map((r) => r.length));
+    console.log(`\n## table ${i + 1} (${rows.length} rows x ${ncols} cols)`);
+    for (const row of rows) console.log(row.map((c) => pyStrip(c.replace(/\n/g, " "))).join("\t"));
+  });
 }

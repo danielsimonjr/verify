@@ -20,27 +20,63 @@ import {
 } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
-GlobalWorkerOptions.workerSrc = require.resolve(
-  "pdfjs-dist/legacy/build/pdf.worker.mjs",
-);
+// A file URL, not a path: Node's ESM loader rejects "C:\..." on Windows.
+GlobalWorkerOptions.workerSrc = pathToFileURL(
+  require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs"),
+).href;
 
+/** Open the PDF at `path` with pdf.js; the system fonts are used for text that has none embedded. */
 export async function loadPdf(path: string) {
   const data = new Uint8Array(readFileSync(path));
   return getDocument({ data, useSystemFonts: true }).promise;
 }
 
+/** One run of text: `top` from the displayed page's top edge, `x0` and `x1` from its left edge, in pt. */
 export type Word = { top: number; x0: number; x1: number; text: string };
 
-/** Group pdf.js text items into words (approximates pdfplumber extract_words). */
+// pdfminer (so pdfplumber) boxes a glyph run from baseline + descent up one em; pdf.js
+// reports the same descent per font, and this is the fallback when it does not.
+const DEFAULT_DESCENT = -0.207;
+
+/**
+ * Words with a top-left origin in the coordinates of the page as displayed.
+ *
+ * pdf.js text transforms are in PDF user space (origin bottom-left, y up, page /Rotate
+ * ignored). The four corners of each run's box go through the page viewport, which
+ * flips y and applies the rotation, so `top` grows downward and rotated pages read as
+ * they look.
+ */
 export async function extractWords(page: PDFPageProxy): Promise<Word[]> {
   const content = await page.getTextContent();
+  const viewport = page.getViewport({ scale: 1 });
   const words: Word[] = [];
   for (const item of content.items) {
     if (!("str" in item) || !item.str?.trim()) continue;
-    const [, , , , x, y] = item.transform;
-    const w = item.width ?? item.str.length * 5;
-    words.push({ top: y, x0: x, x1: x + w, text: item.str });
+    const [a, b, c, d, e, f] = item.transform;
+    const width = item.width ?? item.str.length * 5;
+    const descent = content.styles[item.fontName]?.descent ?? DEFAULT_DESCENT;
+    const along = Math.hypot(a, b) || 1;
+    const ux = (a / along) * width;
+    const uy = (b / along) * width;
+    // Box corners in user space: baseline-left + descent, then one em up and one run across.
+    const blx = e + c * descent;
+    const bly = f + d * descent;
+    const corners = [
+      [blx, bly],
+      [blx + ux, bly + uy],
+      [blx + c, bly + d],
+      [blx + c + ux, bly + d + uy],
+    ].map(([x, y]) => viewport.convertToViewportPoint(x, y));
+    const xs = corners.map((p) => p[0]);
+    const ys = corners.map((p) => p[1]);
+    words.push({
+      top: Math.min(...ys),
+      x0: Math.min(...xs),
+      x1: Math.max(...xs),
+      text: item.str,
+    });
   }
   words.sort((a, b) => Math.round(a.top / 3) - Math.round(b.top / 3) || a.x0 - b.x0);
   return words;
