@@ -1,13 +1,9 @@
-import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describeFailure, run } from "../harness/grade/proc.ts";
-
-// Tests here start child processes. On a loaded Windows host one measured 3.8 s, against
-// Bun's 5 s default; the bound is per file in Bun.
-setDefaultTimeout(30_000);
 
 const RT = process.execPath; // bun under `bun test`, node otherwise: both take `-e`
 const sh = (code: string, extra: Record<string, unknown> = {}) =>

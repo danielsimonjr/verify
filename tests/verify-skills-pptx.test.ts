@@ -1,10 +1,7 @@
-import { describe, expect, setDefaultTimeout, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-
-// Child-process tests: Bun's 5 s default timed one out at 5.1 s on a loaded host.
-setDefaultTimeout(30_000);
 
 const FIXTURES = join(import.meta.dir, "fixtures", "verify-skills");
 const DECK = join(FIXTURES, "deck.pptx");
