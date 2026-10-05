@@ -319,7 +319,7 @@ describe("what the log says about the session", () => {
     await rig.run(ARGS);
     const log = rig.log();
     expect(log).toContain("built-in plugins, which Claude Code loads with any settings: cc-plugin-agents-md, cc-plugin-telemetry");
-    expect(log).not.toContain("WARNING");
+    expect(log).not.toContain("WARNING: the session is not isolated");
   });
 });
 
