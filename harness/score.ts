@@ -264,7 +264,12 @@ function mean(xs: number[]): number {
 }
 
 function summarize(cell: string, rows: Record<string, Record<string, unknown>>, unfinished: string[]) {
-  const scored = Object.values(rows).filter((r) => r.final !== null && r.final !== undefined);
+  // By task key, not by completion order: the seeded bootstrap resamples these rows by position, so
+  // the order in which the graders happened to finish would move the interval from run to run.
+  const scored = Object.keys(rows)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .map((key) => rows[key]!)
+    .filter((r) => r.final !== null && r.final !== undefined);
   const out: Record<string, unknown> = {
     cell,
     n_scored: scored.length,

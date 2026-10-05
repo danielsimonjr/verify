@@ -157,6 +157,25 @@ describe("score: progress is persisted as tasks finish", () => {
     for (const key of keys) expect(partial).toContain(`"key":"${key}"`);
   }, 20_000);
 
+  test("the bootstrap CI does not depend on the order in which tasks finish grading", async () => {
+    const keys = ["t1", "t2", "t3", "t4", "t5", "t6"];
+    const outScore: Record<string, number> = { t1: 0.2, t2: 0.9, t3: 0.4, t4: 0.7, t5: 0.1, t6: 0.6 };
+    const ciWith = async (delayOf: (key: string) => number): Promise<unknown> => {
+      const { cell, data } = makeCell(keys.map((key) => ({ key })));
+      const api = graders(async (key, dir) => {
+        if (isOut(dir)) await new Promise((r) => setTimeout(r, delayOf(key)));
+        return { score: isOut(dir) ? outScore[key]! : 0.5 };
+      });
+      const { result } = await quiet(() => main([cell, "--workers", "6"], { dataRoot: data, grade: api }));
+      expect(result).toBe(0);
+      const { summary } = readScores(cell);
+      return [summary.select_gain_ci95, summary.final_gain_ci95];
+    };
+    const forward = await ciWith((key) => 20 * keys.indexOf(key));
+    const reverse = await ciWith((key) => 20 * (keys.length - keys.indexOf(key)));
+    expect(reverse).toEqual(forward);
+  }, 30_000);
+
   test("the arithmetic: final = select + (out - base_regraded), clamped to [0, 1]", async () => {
     const { cell, data } = makeCell([{ key: "a", scores: { r1: 0.5, r2: 0.7 } }]);
     await quiet(() =>
