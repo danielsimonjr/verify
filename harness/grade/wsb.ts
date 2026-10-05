@@ -226,8 +226,10 @@ export function gradeBatch(
   workers = 8,
   timeout = 7_200_000,
 ): Record<string, GradeResult> {
-  const out: Record<string, GradeResult> = {};
-  const metas: Record<string, Record<string, unknown>> = {};
+  // No prototype: a task named `__proto__` would otherwise set the prototype, never reach
+  // Object.entries, and its pending pair in score would never complete.
+  const out: Record<string, GradeResult> = Object.create(null);
+  const metas: Record<string, Record<string, unknown>> = Object.create(null);
   const stageRoot = mkdtempSync(join(TMP_DIR, "vh_wsbb_"));
   try {
     chmod(stageRoot, 0o777);
