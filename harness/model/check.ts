@@ -96,7 +96,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return 0;
     }
     if (isClaudeCodeProvider(values.provider as string | undefined)) {
-      return claudeCheck(values as Record<string, unknown>);
+      // `await`: a rejection must reach the catch below, which exits 2 for a bad argument.
+      return await claudeCheck(values as Record<string, unknown>);
     }
     const timeoutSec = optionalNumber("request-timeout", values["request-timeout"] as string | undefined);
     const config = resolveLocalConfig({

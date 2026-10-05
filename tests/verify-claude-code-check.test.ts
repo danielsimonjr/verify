@@ -184,6 +184,13 @@ describe("veriharness model-check --provider claude-code, the command line", () 
     expect(r.stdout).toBe("");
   });
 
+  test("a --request-timeout that is not a number exits 2, with the reason on stderr", async () => {
+    const r = await cli("--provider", "claude-code", "--model", MODEL, "--request-timeout", "abc");
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("invalid request-timeout 'abc'");
+    expect(r.stdout).toBe("");
+  });
+
   test("the usage text names the provider", async () => {
     const r = await cli("--help");
     expect(r.code).toBe(0);
