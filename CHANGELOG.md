@@ -39,7 +39,7 @@ All notable changes to this project are recorded here. The format follows
 - CHARTER.md matches MISSION.md, and states the `# cut at N cells` and 400,000-character limits of the rendered views (#11).
 - `docs/local-models.md` and the context-length messages: load the model after setting `OLLAMA_CONTEXT_LENGTH`, and create a variant with `ollama create -f Modelfile` (#11).
 - `VERIHARNESS_TMP` defaults to the OS temp directory when `/var/tmp` does not exist (#11).
-- Tests: the env-derive timeout test gives its stub 2 s to start instead of 300 ms, and the Windows command-line test makes about 280 folders instead of 1,500, whose delete outlasted the 5 s cleanup hook (#11).
+- Tests: the env-derive timeout test gives its stub 2 s to start instead of 300 ms, and the Windows command-line test makes about 280 folders instead of 1,500, whose delete outlasted the 5 s cleanup hook. Nine test files that start child processes set a 30 s default: their slowest tests measured 3.2-5.3 s on a loaded Windows host, and Bun's 5 s default failed a different one on each run. Bun 1.4.2 reads no test timeout from `bunfig.toml`, and a preloaded `setDefaultTimeout` reaches only the first file (#11).
 
 ### Security
 - Staging deliverables for grading refuses symlinks instead of copying the files that they point at (#5).
