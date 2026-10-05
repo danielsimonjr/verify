@@ -1,7 +1,7 @@
 // A stand-in for the APEX grading runner (`python -m runner.main`). It records how it was started
 // and then behaves as FAKE_MODE says. Test fixture only.
 import { spawn } from "node:child_process";
-import { appendFileSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const flags = {};
@@ -32,7 +32,20 @@ const done = () => {
 
 const mode = process.env.FAKE_MODE ?? "ok";
 if (mode === "ok") done();
-else if (mode === "sleep") setTimeout(done, Number(process.env.SLEEP_MS ?? 500));
+else if (mode === "handshake") {
+  // Writes READY_FILE, then waits for GO_FILE, which the grading process's event loop writes only
+  // after it sees READY_FILE; SAW_FILE records whether GO_FILE came. A grade that blocks that loop
+  // for the runner's whole life cannot answer before this gives up.
+  writeFileSync(process.env.READY_FILE, "");
+  const deadline = Date.now() + 5_000;
+  const poll = () => {
+    const go = existsSync(process.env.GO_FILE);
+    if (!go && Date.now() < deadline) return void setTimeout(poll, 10);
+    writeFileSync(process.env.SAW_FILE, go ? "go" : "no-go");
+    done();
+  };
+  poll();
+}
 else if (mode === "tree") {
   const gc = spawn(process.execPath, ["-e", "setTimeout(() => {}, 25000)"], { stdio: "ignore" });
   writeFileSync(process.env.PID_FILE, String(gc.pid));

@@ -1,5 +1,6 @@
 // Runs one grader scenario in its own process, so the environment it reads at import time is the
 // test's own. Prints one JSON line. Test fixture only; started by tests/verify-pipeline-grade.test.ts.
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -25,21 +26,13 @@ async function apexGrade(timeout?: number) {
 if (scenario === "apex-grade") {
   out({ ...(await apexGrade(Number(env.SCENARIO_TIMEOUT ?? 30_000))), pid: process.pid });
 } else if (scenario === "apex-gap") {
-  // How long the event loop stalls while a grade is running. One quick grade first, so module
-  // loading and the first zip are not counted; then a grade whose runner takes 800 ms.
-  env.SLEEP_MS = "0";
-  await apexGrade();
-  env.SLEEP_MS = "800";
-  let last = Date.now();
-  let maxGap = 0;
-  const iv = setInterval(() => {
-    const now = Date.now();
-    maxGap = Math.max(maxGap, now - last);
-    last = now;
-  }, 20);
+  // The runner (FAKE_MODE=handshake) writes READY_FILE and waits for GO_FILE, which this loop writes
+  // only once READY_FILE exists. A grade that blocked the loop while the runner ran, as spawnSync
+  // did, could not answer until the runner gave up.
+  const iv = setInterval(() => existsSync(env.READY_FILE!) && writeFileSync(env.GO_FILE!, ""), 10);
   const result = await apexGrade();
   clearInterval(iv);
-  out({ maxGap, result });
+  out({ saw: readFileSync(env.SAW_FILE!, "utf8"), result });
 } else if (scenario === "apex-two") {
   const a = await apexGrade();
   const b = await apexGrade();

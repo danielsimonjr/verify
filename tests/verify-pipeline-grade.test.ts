@@ -100,10 +100,13 @@ describe("apex grade", () => {
   });
 
   test("the event loop keeps running while the runner works (no spawnSync in the async worker)", () => {
-    const r = scenario("apex-gap", { FAKE_MODE: "sleep" });
+    // The runner signals that it has started and waits for the grading process's event loop to
+    // answer. spawnSync holds the loop for the whole run, so the runner would give up after 5 s
+    // and record no-go.
+    const files = { READY_FILE: join(root, "ready"), GO_FILE: join(root, "go"), SAW_FILE: join(root, "saw") };
+    const r = scenario("apex-gap", { FAKE_MODE: "handshake", ...files });
     expect(r.json.result.score).toBe(0.5);
-    // spawnSync holds the loop for the whole 800 ms run: the largest gap would be >= 800 ms.
-    expect(r.json.maxGap).toBeLessThan(400);
+    expect(r.json.saw).toBe("go");
   });
 
   test("a timeout is an error that says so, and kills the runner's own children", () => {
