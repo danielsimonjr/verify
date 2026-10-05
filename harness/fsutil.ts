@@ -39,19 +39,24 @@ export function partition(text: string, sep: string): [string, string] {
   return i < 0 ? [text, ""] : [text.slice(0, i), text.slice(i + sep.length)];
 }
 
+/** Read a whole file as text. */
 export function readText(path: string, encoding: BufferEncoding = "utf8"): string {
   return readFileSync(path, { encoding });
 }
 
+/** Write text as UTF-8, creating the parent directories. */
 export function writeText(path: string, text: string): void {
   ensureDir(dirname(path));
   writeFileSync(path, text, "utf8");
 }
 
+/** Options for renameReplacing and writeFileAtomic. `rename`, `write` and `platform` exist for tests. */
 export type RenameOptions = {
   /** How long to keep retrying a transient failure. */
   budgetMs?: number;
   rename?: (from: string, to: string) => void;
+  /** Writes the temp file in writeFileAtomic. renameReplacing does not use it. */
+  write?: (path: string, data: string | Uint8Array) => void;
   platform?: NodeJS.Platform;
 };
 
@@ -63,8 +68,8 @@ const TRANSIENT_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
  * On Windows a rename onto an existing file fails with EPERM, EACCES or EBUSY while another
  * process holds the target open without delete sharing: an antivirus scan of a file that was
  * just written, or the search indexer. The handle closes on its own, so those errors are retried
- * with a growing pause until `budgetMs` runs out, as graceful-fs does. Elsewhere the same codes
- * mean a real permission problem and are thrown at once, as is every other error.
+ * with a growing pause until `budgetMs` runs out. Elsewhere the same codes mean a real permission
+ * problem and are thrown at once, as is every other error.
  */
 export function renameReplacing(from: string, to: string, opts: RenameOptions = {}): void {
   const { budgetMs = 5000, rename = renameSync, platform = process.platform } = opts;
@@ -83,20 +88,27 @@ export function renameReplacing(from: string, to: string, opts: RenameOptions = 
 
 /**
  * Write a file through a temp file and a rename, so a crash never leaves a half-written file.
- * A rename that fails for good removes the temp file.
+ * A write or rename that fails for good removes the temp file when it can, and throws its own error.
  */
 export function writeFileAtomic(path: string, data: string | Uint8Array, opts?: RenameOptions): void {
   ensureDir(dirname(path));
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, data);
+  const write = opts?.write ?? writeFileSync;
   try {
+    write(tmp, data);
     renameReplacing(tmp, path, opts);
   } catch (e) {
-    rmSync(tmp, { force: true });
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // The temp file cannot be removed, for example because another process holds it open.
+      // Report why the write failed, not why the cleanup failed.
+    }
     throw e;
   }
 }
 
+/** Parse a JSON file. Null when the file is missing or is not valid JSON; use readJsonStrict when either is an error. */
 export function readJson<T = unknown>(path: string): T | null {
   try {
     return JSON.parse(readText(path)) as T;
@@ -105,22 +117,27 @@ export function readJson<T = unknown>(path: string): T | null {
   }
 }
 
+/** Write `obj` as JSON with a one-space indent, creating the parent directories. */
 export function writeJson(path: string, obj: unknown): void {
   writeText(path, JSON.stringify(obj, null, 1));
 }
 
 /**
- * Create `path` and its parents. The path is resolved first: Bun on Windows throws EEXIST for a
- * recursive mkdir of "." or ".." (oven-sh/bun#44576), where Node succeeds.
+ * Create `path` and its parents. A directory that exists is left alone, because a recursive mkdir
+ * of one can still throw: EPERM for a Windows drive root such as "C:\" (Node and Bun), and EEXIST
+ * for "." or ".." under Bun on Windows (oven-sh/bun#44576). The path is resolved for the same Bun bug.
  */
 export function ensureDir(path: string): void {
+  if (isDir(path)) return;
   mkdirSync(resolve(path), { recursive: true });
 }
 
+/** Remove a file or a directory tree. A missing path is not an error. */
 export function rmrf(path: string): void {
   rmSync(path, { recursive: true, force: true });
 }
 
+/** True when `path` is a directory, following a symlink. False when it does not exist. */
 export function isDir(path: string): boolean {
   try {
     return statSync(path).isDirectory();
@@ -129,6 +146,7 @@ export function isDir(path: string): boolean {
   }
 }
 
+/** True when `path` is a regular file, following a symlink. False when it does not exist. */
 export function isFile(path: string): boolean {
   try {
     return statSync(path).isFile();
@@ -137,6 +155,7 @@ export function isFile(path: string): boolean {
   }
 }
 
+/** True when `path` itself is a symbolic link. The link is not followed. */
 export function isSymlink(path: string): boolean {
   try {
     return lstatSync(path).isSymbolicLink();
@@ -145,6 +164,7 @@ export function isSymlink(path: string): boolean {
   }
 }
 
+/** Every file under `root`, depth first. Symlinks are skipped unless `followLinks` is set; an unreadable directory is skipped. */
 export function walkFiles(
   root: string,
   opts: { followLinks?: boolean } = {},
@@ -173,6 +193,7 @@ export function walkFiles(
   return out;
 }
 
+/** Copy one file, creating the destination's parent directories. */
 export function copyFile(src: string, dst: string): void {
   ensureDir(dirname(dst));
   copyFileSync(src, dst);
@@ -224,27 +245,33 @@ export function copyTree(src: string, dst: string, filter?: (rel: string) => boo
   });
 }
 
+/** Create a directory symlink at `linkPath` that points to `target`, creating the parent directories. */
 export function symlinkDir(target: string, linkPath: string): void {
   ensureDir(dirname(linkPath));
   symlinkSync(target, linkPath, "dir");
 }
 
+/** Set the permission bits of `path`. */
 export function chmod(path: string, mode: number): void {
   chmodSync(path, mode);
 }
 
+/** True when `path` exists. A symlink is followed, so a dangling link is false. */
 export function exists(path: string): boolean {
   return existsSync(path);
 }
 
+/** Size of a file in bytes. Throws when the file does not exist. */
 export function fileSize(path: string): number {
   return statSync(path).size;
 }
 
+/** Modification time in seconds since the epoch, as Python's os.path.getmtime returns it. */
 export function mtime(path: string): number {
   return statSync(path).mtimeMs / 1000;
 }
 
+/** The path of `to` relative to `from`, with forward slashes on every platform. */
 export function posixRel(from: string, to: string): string {
   return relative(from, to).split(sep).join("/");
 }
