@@ -28,6 +28,10 @@ All notable changes to this project are recorded here. The format follows
 - Score: graded tasks are appended to `scores.partial.jsonl` as they finish, so a rerun resumes (#7).
 - Materialize: meta is written before the done-marker; task keys are checked before any delete; the leak blocklist holds on Windows paths; the renderers and the five adapters match the Python they were ported from (#8).
 - Grade: graders run asynchronously, stop the processes and containers that they start on a timeout, and report why they failed; `grade` refuses unknown options (#8).
+- Skills: OOXML parts are read by namespace, so a DOCX or PPTX that binds the standard namespace to another prefix, or to the default namespace, reads as before (#13).
+- Skills: the LibreOffice converter removes a stale PDF before it runs and reports its exit status or signal when it prints nothing (#13).
+- Jail: a Node or Python install under `$HOME` (nvm, pyenv) stays visible and read-only (#13).
+- Grade: APEX rejects a runner that wrote `grades.json` and then exited nonzero or was signalled; the judge-key counter is no longer wrapped at 1,000,000 (#13).
 - Windows: an atomic write retries while an antivirus scan or the search indexer holds the target open; a relative output path in the current directory works under Bun (#8).
 - Grade: a timed-out SB2 recalc waits for its `docker kill` (up to 40 s) before it returns. It waited 10 s, and the grade CLI then exited and ended a slower kill, which left the container running (#10).
 - `ensureDir` accepts a directory that exists, such as a Windows drive root, where a recursive mkdir throws EPERM in Node and Bun (#10).
@@ -52,6 +56,8 @@ All notable changes to this project are recorded here. The format follows
 - `pptx_text` tests set the 30 s default timeout of the other child-process test files (#12).
 
 ### Security
+- SB2 grading refuses a `<task>_output.xlsx` that is a symlink, so a deliverable cannot make the grader read a host file (#13).
+- The jail stops when a read-only remount fails, instead of warning and running with a writable skills, vendor or interpreter directory (#13).
 - Staging deliverables for grading refuses symlinks instead of copying the files that they point at (#5).
 - Grader and judge credentials no longer reach the verifier session (#7).
 - Jail: the verifier command runs with no capabilities and `no_new_privs`, so it cannot unmount the covers or remount evidence read-write; `setpriv` is required (#7).
