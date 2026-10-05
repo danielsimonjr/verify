@@ -13,7 +13,7 @@
 //              "writes":   [{ "path", "content" }]     files to create under the cwd, as the tools would
 //              "result":   { "is_error", "text", "errors" }   the final result event (default: success, "done")
 //              "stderr":   "text",  "exit": 0,         what to print on stderr, and the exit code
-//              "hang": true,                           print init, then never exit
+//              "hang": true,                           print init, then wait 10 minutes (STUB_HANG_MS) and exit 1
 //              "grandchild": "<path prefix>",          start a detached child; its pid goes to <prefix>.pid
 //              "persist": false }                      do not save the session (default: save it)
 //
@@ -112,7 +112,7 @@ emit({
 });
 
 if (action.grandchild) {
-  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10 * 60_000)"], {
     detached: true,
     stdio: "ignore",
     windowsHide: true,
@@ -122,7 +122,10 @@ if (action.grandchild) {
 }
 
 if (action.hang) {
-  await new Promise(() => {});
+  // Long, but not forever: a harness that fails to kill the stub must not leave an immortal process.
+  // The timer is the only thing that keeps the event loop alive.
+  await new Promise((done) => setTimeout(done, Number(process.env.STUB_HANG_MS) || 10 * 60_000));
+  process.exit(1);
 }
 
 for (const w of action.writes ?? []) {

@@ -503,6 +503,22 @@ describe("a turn that hangs", () => {
   }, 60_000);
 });
 
+describe("the stub's hang", () => {
+  test("ends by itself, so a broken kill cannot leave an immortal process", async () => {
+    rig.script([{ action: { hang: true } }]);
+    const stub = join(import.meta.dir, "fixtures", "verify-claude-code", "stub.mjs");
+    const child = Bun.spawn([process.execPath, stub, "-p"], {
+      stdin: new Blob(["hello"]),
+      stdout: "ignore",
+      stderr: "ignore",
+      env: { ...process.env, STUB_DIR: rig.stubDir, STUB_SCRIPT: join(rig.root, "script.json"), STUB_HANG_MS: "300" },
+    });
+    const winner = await Promise.race([child.exited.then(() => "exited"), new Promise((r) => setTimeout(() => r("alive"), 20_000))]);
+    if (winner === "alive") child.kill();
+    expect(winner).toBe("exited");
+  }, 30_000);
+});
+
 describe("starting claude", () => {
   test("a missing program stops the task before any turn, with a message that says what to do", async () => {
     const { code, stderr } = await runCapturingStderr(ARGS, { claudeCommand: ["no-such-claude-program-for-test"] });
