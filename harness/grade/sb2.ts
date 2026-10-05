@@ -107,7 +107,7 @@ async function recalc(stage: string, o: Sb2Options): Promise<void> {
   const r = await run(docker!, args, {
     timeoutMs: o.recalcTimeoutMs ?? 900_000,
     // Killing the docker CLI does not stop the container: the daemon owns it. Stop it by name.
-    onTimeout: () => run(docker!, [...dockerArgs, "kill", name], kill),
+    onKill: () => run(docker!, [...dockerArgs, "kill", name], kill),
     // Wait as long as the kill may take, its own stop included: the grade CLI exits on the result,
     // which ends a kill that is still running and leaves the container up.
     stopWaitMs: kill.timeoutMs + kill.stopWaitMs + 5_000,
