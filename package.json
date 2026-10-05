@@ -24,6 +24,7 @@
     "env:derive": "bun harness/env/derive.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/harness/cli.js",
+    "smoke": "node tests/smoke/built-cli.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "bun test"
   },
