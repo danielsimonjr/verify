@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { mkdirSync, renameSync } from "node:fs";
+import { renameSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { basename, join } from "node:path";
+import { ensureDir } from "../../_shared/dirs.js";
 import { loadPdf } from "../../_shared/pdf.js";
 import { rasterizePages, renderRoot } from "../../_shared/raster.js";
 
@@ -46,7 +47,7 @@ const viewport = page.getViewport({ scale: 1 });
 const suffix = box ? "_crop" : "";
 
 const outDir = join(renderRoot(), "pdf_pages");
-mkdirSync(outDir, { recursive: true });
+ensureDir(outDir);
 const stem = basename(file).replace(/\.pdf$/i, "");
 const name = `${stem}_p${pageNo}${suffix}`;
 let rendered;

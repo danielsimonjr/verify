@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ExcelJS from "exceljs";
@@ -71,18 +71,22 @@ describe("renderers", () => {
 
   test("renderCellsTsv writes header and formula rows", async () => {
     const dir = mkdtempSync(join(tmpdir(), "vh-cells-"));
-    const xlsx = join(dir, "t.xlsx");
-    const tsv = join(dir, "t.xlsx.cells.tsv");
-    const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet("Sheet1");
-    ws.getCell("A1").value = "hello";
-    ws.getCell("B1").value = { formula: "A1", result: "hello" };
-    await wb.xlsx.writeFile(xlsx);
-    expect(await renderCellsTsv(xlsx, tsv)).toBe(true);
-    const body = await Bun.file(tsv).text();
-    expect(body.startsWith("# sheets: Sheet1;")).toBe(true);
-    expect(body).toContain("Sheet1!A1\thello\t");
-    expect(body).toContain("Sheet1!B1\thello\t=A1");
+    try {
+      const xlsx = join(dir, "t.xlsx");
+      const tsv = join(dir, "t.xlsx.cells.tsv");
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet("Sheet1");
+      ws.getCell("A1").value = "hello";
+      ws.getCell("B1").value = { formula: "A1", result: "hello" };
+      await wb.xlsx.writeFile(xlsx);
+      expect(await renderCellsTsv(xlsx, tsv)).toBe(true);
+      const body = await Bun.file(tsv).text();
+      expect(body.startsWith("# sheets: Sheet1;")).toBe(true);
+      expect(body).toContain("Sheet1!A1\thello\t");
+      expect(body).toContain("Sheet1!B1\thello\t=A1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

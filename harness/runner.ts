@@ -14,7 +14,7 @@
 
 /** Batch runner: drive materialized tasks through the driver with one global work pool. */
 
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, writeSync } from "node:fs";
+import { closeSync, cpSync, mkdirSync, openSync, readdirSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";

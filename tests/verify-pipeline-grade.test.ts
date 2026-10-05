@@ -162,7 +162,7 @@ describe("apex grade", () => {
     expect(used).toHaveLength(2);
     const keys = ["k0", "k1", "k2", "k3", "k4", "k5", "k6"];
     const first = keys.indexOf(used[0]!);
-    expect(keys[(first + 1) % 7]).toBe(used[1]);
+    expect(keys[(first + 1) % 7]).toBe(used[1]!);
   });
 
   test("a one-shot process starts at keys[pid % n], not always at the first key", () => {

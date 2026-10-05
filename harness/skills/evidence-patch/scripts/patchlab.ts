@@ -15,7 +15,6 @@
 import {
   cpSync,
   existsSync,
-  mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -25,6 +24,8 @@ import {
 import { parseArgs } from "node:util";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { ensureDir } from "../../_shared/dirs.js";
+import { splitFirst } from "../../_shared/pytext.js";
 
 const JUNK =
   /(^|\/)(__pycache__|\.pytest_cache|node_modules|\.git|\.venv|[^/]+\.egg-info)(\/|$)|\.pyc$/;
@@ -127,7 +128,7 @@ async function cmdBuild(a: {
   const lab = resolve(a.out);
   const base = join(lab, "_base");
   if (!existsSync(base)) {
-    mkdirSync(lab, { recursive: true });
+    ensureDir(lab);
     cpSync(resolve(a.base), base, {
       recursive: true,
       filter: (src) => !src.includes("__pycache__") && !src.endsWith(".git"),
@@ -141,7 +142,7 @@ async function cmdBuild(a: {
     console.error("every candidate is NAME=PATCH");
     process.exit(1);
   }
-  const pairs = a.cands.map((x) => x.split("=", 2) as [string, string]);
+  const pairs = a.cands.map((x) => splitFirst(x, "="));
   const out: Record<string, unknown> = {};
   const chunks: Promise<{ name: string; info: unknown }>[] = [];
   for (const [name, patch] of pairs) chunks.push(buildOne(lab, name, patch));

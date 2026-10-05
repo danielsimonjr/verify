@@ -3,6 +3,14 @@
 # undetected (tests/harness.test.ts asserted the checkout path contained
 # "workspace"). A clean-clone runner is what catches that class of defect.
 #
+# Two jobs:
+#   build  Typecheck, test, build and smoke-run the built CLI on Linux AND Windows.
+#          Windows is the platform of the native `--env none` mode, and Bun differs
+#          from Node there (oven-sh/bun#44576), so a Linux-only run proves little.
+#   jail   Runs harness/scripts/jail_run.sh on a real kernel. The unit tests fake the
+#          host; only a real mount namespace shows whether a cover or a read-only bind
+#          holds against the root that `unshare -r` hands the caller.
+#
 # The live Ollama and llama.cpp checks are NOT run here. They self-gate on
 # VERIHARNESS_LIVE_OLLAMA / VERIHARNESS_LIVE_LLAMACPP, which are deliberately
 # left unset: a hosted runner has no local model server, and on the development
@@ -26,14 +34,24 @@ concurrency:
 
 jobs:
   build:
-    name: Typecheck & Test
-    runs-on: ubuntu-latest
+    name: Typecheck, Test & Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing must not hide the other's result.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.4.2"
+
+      # The built CLI runs under Node (package.json "engines"), and several tests start `node`.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
 
       # --frozen-lockfile so a manifest change without a lockfile update fails
       # here rather than resolving to something the lockfile never recorded.
@@ -45,3 +63,25 @@ jobs:
 
       - name: Test
         run: bun test
+
+      - name: Build
+        run: bun run build
+
+      # `--help` proves only that dist/ loads. The smoke run needs the checkout around dist/:
+      # the prompts and skills are plain files that tsc does not emit.
+      - name: Smoke-run the built CLI
+        run: node tests/smoke/built-cli.mjs
+
+  jail:
+    name: Jail (real kernel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Ubuntu 24.04 stops an unprivileged `unshare -r` by default. The jail needs it, and the
+      # job runs on a throwaway VM, so lifting the restriction here weakens nothing that matters.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Check the covers and the read-only binds
+        run: bash tests/jail/check.sh
