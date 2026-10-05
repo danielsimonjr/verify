@@ -21,6 +21,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { timerDelay } from "../timer.js";
 
+/** How {@link run} starts a process and when it stops it. Every run has a timeout. */
 export type RunOptions = {
   input?: string;
   timeoutMs: number;
@@ -29,14 +30,19 @@ export type RunOptions = {
   /** Most stdout bytes kept (default 256 MiB). More than that kills the process and sets `truncated`. */
   maxStdout?: number;
   /**
-   * Runs when the timeout fires, besides the tree kill: stop what the tree cannot reach (a container).
-   * The result waits for it, so a caller that exits on the result does not cut the stop short.
+   * Runs when run() kills the process (the timeout, or stdout past `maxStdout`), besides the tree kill:
+   * stop what the tree cannot reach (a container). The result waits for it, so a caller that exits on
+   * the result does not cut the stop short.
    */
-  onTimeout?: () => Promise<unknown>;
-  /** How long a timeout waits for the kill and onTimeout before it returns anyway (default 10 s). */
+  onKill?: () => Promise<unknown>;
+  /** How long a kill waits for the tree kill and onKill before run() returns anyway (default 10 s). */
   stopWaitMs?: number;
 };
 
+/**
+ * What {@link run} resolves with. A process that could not start sets `error`; a kill sets `timedOut` or
+ * `truncated`.
+ */
 export type RunResult = {
   status: number | null;
   signal: NodeJS.Signals | null;
@@ -132,6 +138,10 @@ function untrack(c: ChildProcess): void {
   if (!live.size) release();
 }
 
+/**
+ * Runs `cmd` without blocking the event loop. The timeout and the stdout cap both kill the whole process tree and
+ * run `onKill`. The promise never rejects: every failure is in the result.
+ */
 export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunResult> {
   return new Promise((resolve) => {
     const maxStdout = opts.maxStdout ?? DEFAULT_MAX_STDOUT;
@@ -185,13 +195,27 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
     const c = child;
     track(c);
 
+    // The timeout and the stdout cap stop the run the same way. The child closes as soon as the tree
+    // kill lands, which can be before onKill has stopped the container, so finish() waits for both,
+    // up to stopWaitMs.
+    const stop = (): void => {
+      if (stopping) return;
+      clearTimeout(timer);
+      stopping = settleWithin(
+        Promise.allSettled([killTree(c), Promise.resolve().then(() => opts.onKill?.())]),
+        stopWaitMs,
+      );
+      // A process that survives the kill must not hold the caller for ever.
+      stopTimer = setTimeout(() => finish(null, "SIGKILL"), stopWaitMs);
+    };
+
     c.stdout!.on("data", (b: Buffer) => {
       if (truncated) return;
       out.push(b);
       outBytes += b.length;
       if (outBytes > maxStdout) {
         truncated = true;
-        void killTree(c);
+        stop();
       }
     });
     c.stderr!.on("data", (b: Buffer) => {
@@ -212,14 +236,7 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
 
     timer = setTimeout(() => {
       timedOut = true;
-      // The child closes as soon as the tree kill lands, which can be before onTimeout has stopped
-      // the container. finish() waits for both, up to stopWaitMs.
-      stopping = settleWithin(
-        Promise.allSettled([killTree(c), Promise.resolve().then(() => opts.onTimeout?.())]),
-        stopWaitMs,
-      );
-      // A process that survives the kill must not hold the caller for ever.
-      stopTimer = setTimeout(() => finish(null, "SIGKILL"), stopWaitMs);
+      stop();
     }, timerDelay(opts.timeoutMs));
   });
 }

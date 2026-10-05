@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -63,17 +63,24 @@ describe("run", () => {
     expect(describeFailure(r, "runner")).toBe("runner: timed out after 400 ms");
   });
 
-  test("a timeout kills the grandchildren too, not only the child's pid", async () => {
+  // The timeout and the stdout cap stop a run the same way, so this covers both. The parent writes the
+  // grandchild's pid and only then floods stdout: the kill cannot land before the grandchild exists,
+  // however slowly a loaded host starts the two processes. On Windows the grandchild is detached:
+  // measured, a child that Bun or Node starts without `detached` dies when its parent is killed, so a
+  // kill that spared it would pass. A judge's helper process has no such tie to its parent. On POSIX it
+  // stays attached: a detached child leads its own session, which the group kill does not reach.
+  test("the kill reaches the grandchildren, not only the child's pid", async () => {
     const pidFile = join(dir, "grandchild.pid");
     const parent =
       "const {spawn}=require('node:child_process');const fs=require('node:fs');" +
-      "const c=spawn(process.execPath,['-e','setTimeout(()=>{},25000)'],{stdio:'ignore'});" +
-      "fs.writeFileSync(process.env.PID_FILE,String(c.pid));setTimeout(()=>{},60000)";
+      "const c=spawn(process.execPath,['-e','setTimeout(()=>{},25000)']," +
+      "{stdio:'ignore',windowsHide:true,detached:process.platform==='win32'});" +
+      "fs.writeFileSync(process.env.PID_FILE,String(c.pid));" +
+      "for(;;)process.stdout.write('x'.repeat(65536))";
     let pid = 0;
     try {
-      const r = await sh(parent, { timeoutMs: 2_500, env: { ...process.env, PID_FILE: pidFile } });
-      expect(r.timedOut).toBe(true);
-      expect(existsSync(pidFile)).toBe(true);
+      const r = await sh(parent, { maxStdout: 1024 * 1024, env: { ...process.env, PID_FILE: pidFile } });
+      expect([r.truncated, r.timedOut]).toEqual([true, false]);
       pid = Number(readFileSync(pidFile, "utf8"));
       expect(pid).toBeGreaterThan(0);
       // Give the OS a moment to reap the killed processes.
@@ -84,21 +91,21 @@ describe("run", () => {
     }
   });
 
-  test("onTimeout runs when the timeout fires", async () => {
+  test("onKill runs when the timeout fires", async () => {
     let called = false;
     await sh("setTimeout(() => {}, 60000)", {
       timeoutMs: 300,
-      onTimeout: async () => {
+      onKill: async () => {
         called = true;
       },
     });
     expect(called).toBe(true);
   });
 
-  // A one-shot grader exits on the result. If the result came back before onTimeout finished,
+  // A one-shot grader exits on the result. If the result came back before onKill finished,
   // the `docker kill` it starts would die with the grader and the container would keep running.
-  test("returns only after onTimeout has finished", async () => {
-    // onTimeout holds for 3 s, longer than any tree kill (taskkill measured about 1 s on Windows), so a
+  test("returns only after onKill has finished", async () => {
+    // onKill holds for 3 s, longer than any tree kill (taskkill measured about 1 s on Windows), so a
     // run() that returned when the child died would return first on every platform. The test does not
     // read the child's pid: the child only has to be spawned, not started, when the timer fires, so
     // the result does not depend on how fast Node starts.
@@ -106,7 +113,7 @@ describe("run", () => {
     const t0 = Date.now();
     const r = await sh("setTimeout(() => {}, 60000)", {
       timeoutMs: 300,
-      onTimeout: async () => {
+      onKill: async () => {
         await new Promise((res) => setTimeout(res, 3_000));
         stopped = true;
       },
@@ -114,14 +121,31 @@ describe("run", () => {
     expect(r.timedOut).toBe(true);
     expect(stopped).toBe(true);
     expect(Date.now() - t0).toBeGreaterThanOrEqual(3_000);
-  }, 20_000); // timer 0.3 s + onTimeout 3 s + stopWait; the kill runs inside the 3 s
+  }, 20_000); // timer 0.3 s + onKill 3 s + stopWait; the kill runs inside the 3 s
 
-  test("an onTimeout that never settles does not hold the caller past the stop wait", async () => {
+  // An SB2 recalc whose output passes the cap must stop its container too: the daemon owns it, so the
+  // tree kill alone leaves it running.
+  test("the stdout cap runs onKill too, and returns only after it has finished", async () => {
+    let stopped = false;
+    const t0 = Date.now();
+    const r = await sh("for (;;) process.stdout.write('x'.repeat(65536))", {
+      maxStdout: 1024 * 1024,
+      onKill: async () => {
+        await new Promise((res) => setTimeout(res, 2_000));
+        stopped = true;
+      },
+    });
+    expect([r.truncated, r.timedOut]).toEqual([true, false]);
+    expect(stopped).toBe(true);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(2_000);
+  }, 20_000);
+
+  test("an onKill that never settles does not hold the caller past the stop wait", async () => {
     const t0 = Date.now();
     const r = await sh("setTimeout(() => {}, 60000)", {
       timeoutMs: 300,
       stopWaitMs: 1_000,
-      onTimeout: () => new Promise(() => {}),
+      onKill: () => new Promise(() => {}),
     });
     expect(r.timedOut).toBe(true);
     expect(Date.now() - t0).toBeLessThan(6_000);
