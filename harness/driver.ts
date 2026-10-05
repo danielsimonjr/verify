@@ -170,9 +170,9 @@ export function isTransient(stderr: string): boolean {
 /**
  * Variables only the graders read: judge endpoints and keys, and the location of the benchmark
  * checkouts that hold the answer keys. The jail hides the filesystem but a child inherits the
- * environment whole, so a verifier could print these.
+ * environment whole, so a verifier could print these. Matched in any case: Windows ignores case in names.
  */
-const GRADER_ONLY_ENV = /^(JB_JUDGE_|APEX_|JUDGE_|WB_LITELLM_|VERIHARNESS_(BENCH_ROOT|WB_INDEX|IMAGE_))/;
+const GRADER_ONLY_ENV = /^(JB_JUDGE_|APEX_|JUDGE_|WB_LITELLM_|VERIHARNESS_(BENCH_ROOT|WB_INDEX|IMAGE_))/i;
 
 /**
  * The environment for a verifier session: the host's, minus what only a grader may see, plus
