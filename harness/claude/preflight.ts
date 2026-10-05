@@ -28,7 +28,7 @@ import { join } from "node:path";
 import { runWithBudget } from "../runtime.js";
 import { classifyFailure } from "./errors.js";
 import { withoutSessionMarkers } from "./env.js";
-import { parseStream, type StreamInit } from "./stream.js";
+import { parseStream, splitPlugins, type StreamInit } from "./stream.js";
 
 /** The executable: `--claude-bin`, else `VERIHARNESS_CLAUDE_BIN`, else `claude` from `PATH`. */
 export function claudeCommand(flag: string | undefined, env: NodeJS.ProcessEnv = process.env): string[] {
@@ -75,6 +75,8 @@ export interface ModelCheckReport {
   /** Where the credential comes from, as the CLI reports it (an environment variable, a login, none). */
   keySource: string;
   tools: string[];
+  /** Plugins that ship inside Claude Code (`cc-plugin-*`); they load with any settings and are not a warning. */
+  builtinPlugins: string[];
   warnings: string[];
   reply: string;
 }
@@ -140,7 +142,8 @@ function report(opts: ModelCheckOptions, cliVersion: string, init: StreamInit | 
   if (init === undefined) warnings.push("the turn printed no system/init event, so the model and key source are unknown");
   if (init && init.tools.length) warnings.push(`the session has tools although none were enabled: ${init.tools.join(", ")}`);
   if (init && init.mcpServers.length) warnings.push(`the session started MCP servers: ${init.mcpServers.join(", ")}`);
-  if (init && init.plugins.length) warnings.push(`the session loaded plugins: ${init.plugins.join(", ")}`);
+  const { builtin, other } = splitPlugins(init?.plugins ?? []);
+  if (other.length) warnings.push(`the session loaded plugins: ${other.join(", ")}`);
   if (init?.model && init.model !== opts.model) {
     warnings.push(`asked for ${opts.model}, Claude Code reports ${init.model}`);
   }
@@ -152,6 +155,7 @@ function report(opts: ModelCheckOptions, cliVersion: string, init: StreamInit | 
     keySource: init?.apiKeySource ?? "unknown",
     tools: init?.tools ?? [],
     warnings,
+    builtinPlugins: builtin,
     reply: reply.trim().slice(0, 200),
   };
 }

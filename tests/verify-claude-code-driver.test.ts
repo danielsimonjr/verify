@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { SESSION_MARKERS } from "../harness/claude/index.ts";
 import { SKILLS_DIR } from "../harness/config.ts";
 import { parseDriverArgv } from "../harness/driver.ts";
-import { ELIM, happyRules, makeRig, writeRule, type Call, type Rig } from "./fixtures/verify-claude-code/rig.ts";
+import { ELIM, happyRules, makeRig, writeRule, type Call, type Rig, type Rule } from "./fixtures/verify-claude-code/rig.ts";
 
 let rig: Rig;
 beforeEach(() => {
@@ -33,6 +33,11 @@ function sessionOf(call: Call): { id: string; mode: "new" | "resume" } {
   const fresh = after(call.argv, "--session-id");
   if (fresh !== undefined) return { id: fresh, mode: "new" };
   return { id: after(call.argv, "--resume")!, mode: "resume" };
+}
+
+/** `rules`, each with `extra` added to what its call does (here: what the init event reports). */
+function withInit(rules: Rule[], extra: Record<string, unknown>): Rule[] {
+  return rules.map((r) => ({ ...r, action: { ...r.action, ...extra } }));
 }
 
 /** What a run wrote to stderr, with the exit code. */
@@ -283,12 +288,18 @@ describe("what the log says about the session", () => {
   });
 
   test("an MCP server or a plugin in the session is a warning", async () => {
-    rig.script([
-      { match: "# Discrimination", action: { mcpServers: ["leaky"], plugins: ["extra"] } },
-      ...happyRules(rig.ws),
-    ]);
+    // Every call reports it: the first init event the driver sees is the one it logs, and the two investigations run together.
+    rig.script(withInit(happyRules(rig.ws), { mcpServers: ["leaky"], plugins: ["extra"] }));
     await rig.run(ARGS);
     expect(rig.log()).toContain("WARNING: the session is not isolated: mcp server leaky, plugin extra");
+  });
+
+  test("the plugins built into Claude Code are logged, and are not a warning", async () => {
+    rig.script(withInit(happyRules(rig.ws), { plugins: ["cc-plugin-agents-md", "cc-plugin-telemetry"] }));
+    await rig.run(ARGS);
+    const log = rig.log();
+    expect(log).toContain("built-in plugins, which Claude Code loads with any settings: cc-plugin-agents-md, cc-plugin-telemetry");
+    expect(log).not.toContain("WARNING");
   });
 });
 

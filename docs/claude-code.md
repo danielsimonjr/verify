@@ -26,7 +26,7 @@ bun harness/cli.ts runner --run-name demo --cells sb2:haiku --env none --lane-ma
 
 `--model` is required and is a full model id. The lanes `haiku` (`claude-haiku-4-5-20251001`) and `sonnet` (`claude-sonnet-5-5`) are in `harness/config.ts`. A lane applies to a runner cell the same way as `flash` and `opus`.
 
-`model-check` runs one isolated turn with no tools and no saved session. It prints a JSON report with the fields `provider`, `requestedModel`, `model` (the model Claude Code reports), `cliVersion`, `keySource` (for example `none` for a subscription login, or the name of the variable that supplied a key), `tools`, `warnings` and `reply`. It exits with 1 when the CLI does not start or the turn fails, and the error says which. It exits with 2 when the arguments are wrong.
+`model-check` runs one isolated turn with no tools and no saved session. It prints a JSON report with the fields `provider`, `requestedModel`, `model` (the model Claude Code reports), `cliVersion`, `keySource` (as Claude Code reports it; `none` with a subscription login), `tools`, `warnings`, `builtinPlugins` and `reply`. It exits with 1 when the CLI does not start or the turn fails, and the error says which. It exits with 2 when the arguments are wrong.
 
 The driver starts a task with `claude --version` only. It does not spend a model turn on a preflight.
 
@@ -58,12 +58,14 @@ The message goes to standard input. It never goes on the command line. A mission
 
 The pi tool names map to Claude Code tool names: `read` to `Read`, `bash` to `Bash`, `grep` to `Grep`, `find` and `ls` to `Glob`, `edit` to `Edit`, `write` to `Write`.
 
-The first `system/init` event of a task goes to `driver.log`: the CLI version, the model, the credential source and the tool list. The driver logs a warning when the event lists an MCP server or a plugin, because the isolation flags should have removed both.
+The first `system/init` event of a task goes to `driver.log`: the CLI version, the model, the credential source and the tool list. The driver logs a warning when the event lists an MCP server or a plugin that is not built in, because the isolation flags should have removed both.
+
+Claude Code loads its own built-in plugins whatever the setting sources are. Their names start with `cc-plugin-`, for example `cc-plugin-agents-md`, `cc-plugin-telemetry` and `cc-plugin-plugin-authoring`. The driver logs them on a separate line and does not warn about them. `model-check` lists them in `builtinPlugins`.
 
 ### What these flags do not guarantee
 
 - `--env none` is not a security boundary. The verifier's `Bash` tool runs on the host with the permissions of the user who started the driver. Run the driver on a host where that is acceptable.
-- The harness does not check whether a `CLAUDE.md` in a parent directory of the task directory loads into the session. Keep the runs directory free of such files.
+- The harness does not check whether a `CLAUDE.md` or `AGENTS.md` in a parent directory of the task directory loads into the session. The built-in plugins above are not disabled by any flag the driver passes. To see what a session loaded, read the first lines of its transcript in `session/<name>/`, and keep `CLAUDE.md` and `AGENTS.md` files out of the directories above the runs directory.
 - The skills use `/tmp/...` paths for rendered pages, and the evidence skills tell the verifier to open them with `Read`. On Windows, `Read` needs a native path, so a verifier that follows the text literally can fail to open a rendered page. The text evidence (`.cells.tsv`, `.text.txt`) is not affected.
 
 ## Sessions and files

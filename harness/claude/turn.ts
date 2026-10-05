@@ -29,7 +29,7 @@ import { ensureDir, fileSize } from "../fsutil.js";
 import { runWithBudget } from "../runtime.js";
 import { classifyFailure } from "./errors.js";
 import { claudeConfigDir, findPersisted, movePersisted } from "./persisted.js";
-import { claudeOwnRecord, parseStream, type StreamInit, type StreamResult } from "./stream.js";
+import { claudeOwnRecord, parseStream, splitPlugins, type StreamInit, type StreamResult } from "./stream.js";
 
 /** The settings every turn adds: no hook of the user's or of a plugin runs. */
 const SETTINGS = '{"disableAllHooks":true}';
@@ -49,7 +49,7 @@ export interface ClaudeArgsInput {
  * The arguments of a verifier turn, after the command that names the executable. Isolation is in these
  * flags: no user, project or local settings, no MCP server but those of `--settings` (none), no hook,
  * only the named tools. `announce` logs a warning when the session still reports an MCP server or a
- * plugin. The prompt is not here: it is stdin.
+ * plugin that is not built into Claude Code. The prompt is not here: it is stdin.
  */
 export function claudeArgs(input: ClaudeArgsInput): string[] {
   return [
@@ -157,9 +157,11 @@ export class ClaudeRuntime {
       `claude-code ${init.version ?? "?"}: model=${init.model ?? "?"} keySource=${init.apiKeySource ?? "?"} ` +
         `tools=${init.tools.join(",")}`,
     );
+    const { builtin, other } = splitPlugins(init.plugins);
+    if (builtin.length) this.options.log(`built-in plugins, which Claude Code loads with any settings: ${builtin.join(", ")}`);
     const leaked = [
       ...init.mcpServers.map((n) => `mcp server ${n}`),
-      ...init.plugins.map((n) => `plugin ${n}`),
+      ...other.map((n) => `plugin ${n}`),
     ];
     if (leaked.length) {
       this.options.log(`WARNING: the session is not isolated: ${leaked.join(", ")}`);

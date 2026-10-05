@@ -62,6 +62,18 @@ function names(list: unknown): string[] {
   return list.map((x) => (typeof x === "string" ? x : String((x as { name?: unknown } | null)?.name ?? "")));
 }
 
+/**
+ * Plugins that ship inside the Claude Code program are named `cc-plugin-*` (2.1.289: agents-md, telemetry,
+ * plugin-authoring, among others). They load whatever the setting sources say, so they are no sign that the
+ * isolation failed. Any other plugin is.
+ */
+export function splitPlugins(plugins: readonly string[]): { builtin: string[]; other: string[] } {
+  return {
+    builtin: plugins.filter((n) => n.startsWith("cc-plugin-")),
+    other: plugins.filter((n) => !n.startsWith("cc-plugin-")),
+  };
+}
+
 /** The first `system/init` event and the last `result` event in `text`; either may be absent. */
 export function parseStream(text: string): { init?: StreamInit; result?: StreamResult } {
   let init: StreamInit | undefined;
