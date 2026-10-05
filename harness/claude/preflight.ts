@@ -65,6 +65,7 @@ export function startCheck(
   return { ok: true, version };
 }
 
+/** What `model-check` reports about one Claude Code turn. */
 export interface ModelCheckReport {
   provider: "claude-code";
   requestedModel: string;
@@ -81,8 +82,10 @@ export interface ModelCheckReport {
   reply: string;
 }
 
+/** Raised when the `claude` program cannot start or the check turn fails. */
 export class ClaudeCheckError extends Error {}
 
+/** The inputs of one `model-check` turn. */
 export interface ModelCheckOptions {
   command: readonly string[];
   model: string;

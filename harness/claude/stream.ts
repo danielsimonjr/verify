@@ -25,6 +25,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isFile, readJson } from "../fsutil.js";
 
+/** What the first `system/init` event of a turn reports. */
 export interface StreamInit {
   model?: string;
   version?: string;
@@ -36,6 +37,7 @@ export interface StreamInit {
   plugins: string[];
 }
 
+/** What the last `result` event of a turn reports. */
 export interface StreamResult {
   isError: boolean;
   subtype?: string;

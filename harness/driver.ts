@@ -201,6 +201,7 @@ export function hasSessionFile(dir: string): boolean {
 
 let logLock = false;
 
+/** Append one timestamped line to the task's `driver.log`. */
 export function log(ws: string, msg: string): void {
   const line = `[${new Date().toISOString().replace("T", " ").slice(0, 19)}] ${msg}`;
   while (logLock) {
@@ -215,6 +216,7 @@ export function log(ws: string, msg: string): void {
   }
 }
 
+/** The name of the rollout that `finish.json` picked as the base; "none" when it picked no rollout. */
 export function baseOf(finish: Record<string, unknown>): string {
   const raw = finish.base ?? finish.pick ?? "";
   const name = String(raw || "")
@@ -293,6 +295,7 @@ export function fitsCommandLine(cmd: readonly string[], platform: NodeJS.Platfor
   return bytes.every((b) => b < POSIX_ARG_LIMIT) && bytes.reduce((a, b) => a + b, 0) < 1_000_000;
 }
 
+/** The plan of one pi turn. */
 export interface PiTurnPlan {
   /** The command, before a jail or container wraps it. */
   cmd: string[];
@@ -302,6 +305,7 @@ export interface PiTurnPlan {
   via: "argv" | "stdin" | "file";
 }
 
+/** The inputs of one pi turn. */
 export interface PiTurnInput {
   piCommand: readonly string[];
   flags: readonly string[];
@@ -539,6 +543,7 @@ function fnmatch(name: string, pattern: string): boolean {
 
 const SKILLS_MODES = ["mounted", "auto"] as const;
 
+/** Render the skill library into the mission text, in the mode the contract asks for. */
 export function renderSkills(
   skillPaths: string[],
   ws: string,
@@ -610,6 +615,7 @@ function bundleFiles(root: string): Set<string> {
   return out;
 }
 
+/** Check `out/deliverables` against the chosen base; the result says whether the bundle is valid and why not. */
 export function validateDelivery(ws: string, base: string): Record<string, unknown> {
   const out = join(ws, "out", "deliverables");
   if (!isDir(out)) {
@@ -653,6 +659,7 @@ export function validateDelivery(ws: string, base: string): Record<string, unkno
   };
 }
 
+/** Remove the harness views from `out/deliverables`, then restore the base files that are missing or empty there; returns the restored paths. */
 export function completeBundle(ws: string, base: string): string[] {
   const out = join(ws, "out", "deliverables");
   if (isDir(out)) {
@@ -684,6 +691,7 @@ function digestFile(p: string): string {
   return createHash("sha256").update(readFileSync(p)).digest("hex");
 }
 
+/** The files of `out/deliverables` that differ from the base rollout. */
 export function changedFiles(ws: string, base: string): string[] {
   const out = join(ws, "out", "deliverables");
   const baseRoot = rolloutDir(ws, base);
@@ -697,6 +705,7 @@ export function changedFiles(ws: string, base: string): string[] {
     .sort();
 }
 
+/** The parsed command line of the driver. */
 export interface DriverArgs {
   contract: string;
   provider?: string;
@@ -948,6 +957,7 @@ export function claudeCodeRefusal(env: string, model: string | undefined, given:
   return null;
 }
 
+/** Parse the driver command line into a workspace and its arguments, or an error message. */
 export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs } | { error: string } {
   const skillsFromArgv: string[] = [];
   const passthrough: string[] = [];
@@ -1192,6 +1202,7 @@ async function runClaudeCode(
   }
 }
 
+/** Run one task workspace; returns the exit code. */
 export async function main(argv: string[] = process.argv.slice(2), deps: DriverDeps = {}): Promise<number> {
   const parsed = parseDriverArgv(argv);
   if ("error" in parsed) {

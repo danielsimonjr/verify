@@ -74,6 +74,7 @@ async function claudeCheck(values: Record<string, unknown>): Promise<number> {
   }
 }
 
+/** Run `model-check`; returns the exit code (0 ok, 1 the check failed, 2 wrong arguments). */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   try {
     const { values } = parseArgs({

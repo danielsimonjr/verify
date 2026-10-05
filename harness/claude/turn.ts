@@ -32,6 +32,7 @@ import { VERIFIER_SETTINGS } from "./env.js";
 import { claudeConfigDir, findPersisted, movePersisted } from "./persisted.js";
 import { claudeOwnRecord, parseStream, splitPlugins, type StreamInit, type StreamResult } from "./stream.js";
 
+/** The inputs of the command line of one verifier turn. */
 export interface ClaudeArgsInput {
   model: string;
   /** Claude Code tool names, comma-separated (`--tools`). */
@@ -128,6 +129,7 @@ export function readHead(path: string, from: number, maxBytes: number): string {
   });
 }
 
+/** The options of a task's Claude Code runtime. */
 export interface ClaudeRuntimeOptions {
   ws: string;
   /** The executable and any leading arguments, e.g. `["claude"]` or `[process.execPath, "stub.mjs"]`. */
