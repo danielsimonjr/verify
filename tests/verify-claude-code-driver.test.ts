@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { SESSION_MARKERS } from "../harness/claude/index.ts";
+import { ClaudeRuntime, SESSION_MARKERS } from "../harness/claude/index.ts";
 import { SKILLS_DIR } from "../harness/config.ts";
 import { parseDriverArgv } from "../harness/driver.ts";
 import { ELIM, happyRules, makeRig, writeRule, type Call, type Rig, type Rule } from "./fixtures/verify-claude-code/rig.ts";
@@ -418,6 +418,32 @@ describe("a usage limit", () => {
       ...happyRules(rig.ws),
     ]);
     expect(await rig.run(ARGS)).toBe(75);
+  });
+});
+
+describe("a usage limit that another session meets during a backoff", () => {
+  test("stops the retries of this turn at once", async () => {
+    rig.script([{ times: 1, action: { result: { is_error: true, text: "API Error: 529 overloaded_error" }, exit: 1 } }]);
+    const charterFile = join(rig.root, "charter.md");
+    writeFileSync(charterFile, "charter");
+    const runtime: ClaudeRuntime = new ClaudeRuntime({
+      ws: rig.ws,
+      command: [process.execPath, join(import.meta.dir, "fixtures", "verify-claude-code", "stub.mjs")],
+      model: MODEL,
+      tools: "Read",
+      charterFile,
+      addDirs: [],
+      env: { ...process.env, STUB_DIR: rig.stubDir, STUB_SCRIPT: join(rig.root, "script.json"), CLAUDE_CONFIG_DIR: rig.configDir },
+      deadline: Date.now() / 1000 + 600,
+      backoff: [0, 0, 0],
+      log: () => {},
+      // The backoff is where the other investigation's turn reports the limit.
+      sleep: async () => {
+        runtime.usageLimit = "You've hit your weekly usage limit";
+      },
+    });
+    expect(await runtime.session("elim").turn("hello", 60, false)).toBe(false);
+    expect(rig.calls()).toHaveLength(1);
   });
 });
 

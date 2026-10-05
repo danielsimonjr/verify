@@ -234,6 +234,11 @@ export class ClaudeSession {
     const transcript = join(this.sessionDir, `${uuid}.jsonl`);
 
     for (let attempt = 0; attempt < o.backoff.length + 1; attempt++) {
+      // Another session of the task can meet the limit while this one waits to retry.
+      if (attempt > 0 && this.runtime.usageLimit !== null) {
+        o.log(`${tag}usage limit reached by another session; no retry`);
+        return false;
+      }
       const budget = Math.min(timeout, o.deadline - Date.now() / 1000);
       if (!(budget > 0)) {
         o.log(`${tag}task deadline reached before turn start; skipping turn`);
