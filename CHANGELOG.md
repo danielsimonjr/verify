@@ -21,7 +21,7 @@ All notable changes to this project are recorded here. The format follows
 - The built CLI resolves its prompts, skills, scripts and data from the repository root, and starts with a Node shebang (#5).
 - WorkBuddy, JobBench and SB2 task keys split at the first `__` only (#5, #8).
 - The `jb` and `wsb` judge preflights fail on a non-2xx response (#5).
-- Model options: zero, negative and fractional `--max-tokens`, `--request-timeout`, `maxTokens`, `timeoutMs` and `retries` are input errors; the Ollama context-window messages state what a user must run (#3).
+- Model options: zero and negative `--request-timeout`, and zero, negative and fractional `--max-tokens`, `maxTokens`, `timeoutMs` and `retries`, are input errors; the Ollama context-window messages state what a user must run (#3).
 - Skill scripts: PDF word coordinates start at the top-left of the displayed page; `pdf_tables` detects tables with pdfplumber; the PPTX, XLSX and PDF renderers fall back to PyMuPDF when Poppler is absent (#6).
 - Materialized views keep PPTX speaker notes, grouped text and shape order, and read DOCX text, headings and merged cells as python-docx does (#6).
 - Driver: a timed-out turn kills its whole process tree; a turn whose agent never started is reported; timeouts and options are validated; a base name from `finish.json` must be a real rollout (#7).
