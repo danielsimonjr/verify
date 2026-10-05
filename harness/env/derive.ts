@@ -35,6 +35,7 @@ import * as config from "../config.js";
 import { isMain } from "../runtime.js";
 import { parseCount } from "../count.js";
 import { mapPool } from "../pool.js";
+import { timerDelay } from "../timer.js";
 import { exists, readText } from "../fsutil.js";
 
 export const STACK =
@@ -86,7 +87,7 @@ function runDocker(
       timer = setTimeout(() => {
         timedOut = true;
         child.kill();
-      }, opts.timeoutMs);
+      }, timerDelay(opts.timeoutMs));
     }
     child.stderr!.setEncoding("utf8");
     child.stderr!.on("data", (chunk: string) => {

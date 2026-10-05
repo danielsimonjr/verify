@@ -47,7 +47,8 @@ All notable changes to this project are recorded here. The format follows
 - Materialize: a task named `constructor` or `__proto__` is tracked correctly in `meta.json`; a WorkBuddy string reward must match Python `float()` syntax, so `0x10` is an error (#12).
 - The `--skill=NAME` form is accepted like every other `--option=value`; a test and the README say so (#12).
 - `secondsToMs` rejects a value below 0.001 s before rounding, so 0.0005 s no longer rounds up to 1 ms (#12).
-- The WorkBuddy batch grader returns a prototype-free result, so a task named `__proto__` gets its own entry and reaches score (#12).
+- The Workspace-Bench (`wsb`) batch grader returns a prototype-free result, so a task named `__proto__` gets its own entry and reaches score (#12).
+- A caller-supplied timeout above 2^31-1 ms (about 24.8 days) is clamped, because Node fires such a timer at once: `--request-timeout 2147484` aborted every model request after about 1 ms. `secondsToMs` says "finite" for an infinite product (#12).
 - `pptx_text` tests set the 30 s default timeout of the other child-process test files (#12).
 
 ### Security

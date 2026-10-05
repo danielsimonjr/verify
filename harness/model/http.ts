@@ -20,6 +20,8 @@
  * and connection resets are retried. A caller-supplied fetch keeps tests off the network.
  */
 
+import { timerDelay } from "../timer.js";
+
 export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
 export class TransportError extends Error {
@@ -123,7 +125,7 @@ export class HttpClient {
     timeoutMs: number,
   ): Promise<HttpResult> {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const timer = setTimeout(() => ctrl.abort(), timerDelay(timeoutMs));
     let keepTimer = false;
     try {
       const headers: Record<string, string> = {};

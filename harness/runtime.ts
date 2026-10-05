@@ -25,6 +25,7 @@ import { closeSync, existsSync, openSync, realpathSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
+import { timerDelay } from "./timer.js";
 
 export const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
 
@@ -168,8 +169,6 @@ function describeSpawnError(e: unknown): string {
   return typeof code === "string" && !text.includes(code) ? `${code}: ${text}` : text;
 }
 
-/** setTimeout fires at once, with a warning, for a delay above this. */
-const MAX_TIMER_MS = 2 ** 31 - 1;
 const EXIT_CODES: Record<string, number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
 
 const live = new Map<number, (() => void) | undefined>();
@@ -303,7 +302,7 @@ export function runWithBudget(cmd: string[], opts: BudgetedRunOptions): Promise<
         child.stderr?.destroy();
         settle(null);
       }, 5000);
-    }, Math.min(opts.budgetMs, MAX_TIMER_MS));
+    }, timerDelay(opts.budgetMs));
     child.on("error", (err) => {
       spawnError = describeSpawnError(err);
       settle(null);
