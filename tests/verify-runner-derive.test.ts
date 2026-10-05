@@ -19,11 +19,12 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 /** The stub docker as an argv prefix; it contacts no daemon. */
-function stubDocker(opts: { sleepMs?: number; existing?: string[]; fail?: string[] } = {}): string[] {
+function stubDocker(opts: { sleepMs?: number; barrier?: number; existing?: string[]; fail?: string[] } = {}): string[] {
   return [
     process.execPath,
     STUB,
     `--sleep-ms=${opts.sleepMs ?? 0}`,
+    `--barrier=${opts.barrier ?? 0}`,
     `--existing=${(opts.existing ?? []).join(",")}`,
     `--fail=${(opts.fail ?? []).join(",")}`,
     `--log=${logFile}`,
@@ -33,7 +34,7 @@ function stubDocker(opts: { sleepMs?: number; existing?: string[]; fail?: string
 interface Event {
   pid: number;
   t: number;
-  ev: "start" | "end";
+  ev: "start" | "end" | "gave-up";
   tag: string;
   dockerfile?: string;
 }
@@ -50,7 +51,8 @@ function events(): Event[] {
 function peakBuilds(): number {
   let open = 0;
   let peak = 0;
-  for (const e of events().sort((a, b) => a.t - b.t || (a.ev === "end" ? -1 : 1))) {
+  const builds = events().filter((e) => e.ev !== "gave-up");
+  for (const e of builds.sort((a, b) => a.t - b.t || (a.ev === "end" ? -1 : 1))) {
     open += e.ev === "start" ? 1 : -1;
     peak = Math.max(peak, open);
   }
@@ -61,19 +63,21 @@ const bases = (n: number) => Array.from({ length: n }, (_, i) => `registry.examp
 
 describe("env-derive builds", () => {
   // [4178276686] build() blocked in spawnSync, so the async callback never yielded and mapPool
-  // could not overlap anything: --jobs 8 still built one image at a time.
-  test("four 1 s builds with --jobs 4 take about one second, not four", async () => {
-    const t0 = Date.now();
-    const lines = await deriveImages(bases(4), 4, stubDocker({ sleepMs: 1000 }));
-    const wall = Date.now() - t0;
+  // could not overlap anything: --jobs 8 still built one image at a time. The barrier holds every
+  // build until four have started, so the count does not depend on the host's speed; a serial pool
+  // reaches 1.
+  test("--jobs 4 runs four builds at once", async () => {
+    const lines = await deriveImages(bases(4), 4, stubDocker({ barrier: 4 }));
 
     expect(lines).toEqual([0, 1, 2, 3].map((i) => `vh/task${i}: ok`));
     expect(peakBuilds()).toBe(4);
-    expect(wall).toBeLessThan(2500); // serial would be at least 4000
+    expect(events().some((e) => e.ev === "gave-up")).toBe(false);
   }, 20_000);
 
+  // The barrier makes the first two builds overlap; the sleep keeps each build open long enough
+  // that a pool which ignored --jobs would show more than two.
   test("--jobs bounds how many builds run at once", async () => {
-    await deriveImages(bases(6), 2, stubDocker({ sleepMs: 300 }));
+    await deriveImages(bases(6), 2, stubDocker({ barrier: 2, sleepMs: 300 }));
     expect(events().filter((e) => e.ev === "start")).toHaveLength(6);
     expect(peakBuilds()).toBe(2);
   }, 20_000);

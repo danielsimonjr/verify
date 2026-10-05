@@ -56,6 +56,7 @@ All notable changes to this project are recorded here. The format follows
 - The Workspace-Bench (`wsb`) batch grader returns a prototype-free result, so a task named `__proto__` gets its own entry and reaches score (#12).
 - A caller-supplied timeout above 2^31-1 ms (about 24.8 days) is clamped, because Node fires such a timer at once: `--request-timeout 2147484` aborted every model request after about 1 ms. `secondsToMs` says "finite" for an infinite product (#12).
 - `pptx_text` tests set the 30 s default timeout of the other child-process test files (#12).
+- Tests: the env-derive concurrency test counts the builds that are open at once, behind a barrier in the stub docker, instead of timing them. Under CPU load the time check failed at 4.0 s to 7.1 s against its 2.5 s limit, and the old count failed once at 3 of 4, because a fourth build could start after the first one ended (#14).
 
 ### Security
 - SB2 grading refuses a `<task>_output.xlsx` that is a symlink, so a deliverable cannot make the grader read a host file (#13).
