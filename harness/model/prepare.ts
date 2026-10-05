@@ -25,9 +25,10 @@
  * agent writes). Requesting it on the client still fails closed.
  */
 
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFileAtomic } from "../fsutil.js";
 import { createBackend, type BackendDeps, type LocalModelConfig } from "./config.js";
 import {
   PI_CONTEXT_RESERVE,
@@ -170,7 +171,5 @@ function writeCache(key: string, now: number): void {
     parsed = {};
   }
   parsed[key] = { at: now };
-  const tmp = `${CACHE_PATH}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(parsed));
-  renameSync(tmp, CACHE_PATH);
+  writeFileAtomic(CACHE_PATH, JSON.stringify(parsed));
 }

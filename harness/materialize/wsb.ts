@@ -15,9 +15,9 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { exists, isDir, posixRel, readJson, walkFiles } from "../fsutil.js";
-import { Rollout, Task, srcRoot } from "./base.js";
-import { renderWsbTraj } from "./renderers.js";
+import { exists, isDir, posixRel, walkFiles } from "../fsutil.js";
+import { Rollout, Task, readJsonStrict, srcRoot } from "./base.js";
+import { renderWsbTraj, truthy } from "./renderers.js";
 
 export const POOLS: Record<string, string> = {
   flash: "Gemini-3.5-Flash",
@@ -26,28 +26,45 @@ export const POOLS: Record<string, string> = {
 
 type TaskMeta = { task: string; output_files: string[]; n_rubrics: number };
 
-let metaCache: Record<string, TaskMeta> | null = null;
+let metaCache: { root: string; metas: Record<string, TaskMeta> } | null = null;
 
 function wsbRoot(): string {
   return join(srcRoot(), "benchmarks/wsb_lite/official/evaluation");
 }
 
+/** Task directory names are keys here, so these maps take no inherited property ("constructor"). */
+function nameMap<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
 function taskMeta(): Record<string, TaskMeta> {
-  if (metaCache) return metaCache;
-  const out: Record<string, TaskMeta> = {};
-  const tasksDir = join(wsbRoot(), "tasks");
+  const root = wsbRoot();
+  if (metaCache?.root === root) return metaCache.metas;
+  const out = nameMap<TaskMeta>();
+  const tasksDir = join(root, "tasks");
   for (const t of readdirSync(tasksDir).sort()) {
     const f = join(tasksDir, t, "metadata.json");
     if (!exists(f)) continue;
-    const m = readJson(f) as { task?: string; output_files?: string[]; rubrics?: unknown[] };
+    const m = readJsonStrict<{ task?: unknown; output_files?: unknown; rubrics?: unknown } | null>(f);
     out[t] = {
-      task: m.task ?? "",
-      output_files: (m.output_files ?? []).map(String),
-      n_rubrics: (m.rubrics ?? []).length,
+      task: typeof m?.task === "string" ? m.task : "",
+      output_files: (Array.isArray(m?.output_files) ? m.output_files : []).map(String),
+      n_rubrics: Array.isArray(m?.rubrics) ? m.rubrics.length : 0,
     };
   }
-  metaCache = out;
+  metaCache = { root, metas: out };
   return out;
+}
+
+/**
+ * Python's int(x) for a rubric index; undefined where int() raises (None, "abc", "1.5", NaN,
+ * containers). `Number(null)` is 0, so a rubric with no index would otherwise count as rubric 0.
+ */
+function pyInt(v: unknown): number | undefined {
+  if (typeof v === "boolean") return v ? 1 : 0;
+  if (typeof v === "number") return Number.isFinite(v) ? Math.trunc(v) : undefined;
+  if (typeof v === "string" && /^\s*[+-]?\d+\s*$/.test(v)) return Number.parseInt(v, 10);
+  return undefined;
 }
 
 function spec(meta: TaskMeta): string {
@@ -75,7 +92,7 @@ export function* iterTasks(pool: string): Generator<Task> {
     .map((p) => join(outputRoot, p.name))
     .filter((p) => exists(join(p, ".s_done")))
     .sort();
-  const tasks: Record<string, Task> = {};
+  const tasks = nameMap<Task>();
   for (const run of runs) {
     const seed = run.split("--").pop()!;
     for (const ent of readdirSync(run, { withFileTypes: true })) {
@@ -84,23 +101,20 @@ export function* iterTasks(pool: string): Generator<Task> {
       const meta = metas[ent.name];
       const jf = join(td, "rubrics_judge--claude-opus-4-8.json");
       if (!meta || !meta.n_rubrics || !exists(jf)) continue;
-      const judged = readJson(jf) as {
-        rubrics?: { index?: unknown; passed?: boolean; evidence?: string }[];
+      const judged = readJsonStrict<{
+        rubrics?: { index?: unknown; passed?: unknown; evidence?: unknown }[];
         judge?: { error?: unknown };
-      };
-      const rubrics = judged.rubrics ?? [];
+      } | null>(jf);
+      const rubrics = Array.isArray(judged?.rubrics) ? judged.rubrics : [];
       const ok: Record<number, boolean> = {};
       for (const x of rubrics) {
-        try {
-          ok[Number(x.index)] = Boolean(x.passed);
-        } catch {
-          /* skip */
-        }
+        const i = pyInt(x?.index);
+        if (i !== undefined) ok[i] = truthy(x.passed);
       }
       const failed =
-        Boolean(judged.judge?.error) ||
+        truthy(judged?.judge?.error) ||
         (rubrics.length > 0 &&
-          rubrics.every((x) => String(x.evidence ?? "").startsWith("ClaudeCode judge failed")));
+          rubrics.every((x) => String(x?.evidence ?? "").startsWith("ClaudeCode judge failed")));
       let passed = 0;
       for (let i = 0; i < meta.n_rubrics; i++) {
         if (ok[i]) passed += 1;

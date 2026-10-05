@@ -21,12 +21,13 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 /**
  * Split at the first `sep`, like Python's `str.partition` without the separator.
@@ -43,8 +44,57 @@ export function readText(path: string, encoding: BufferEncoding = "utf8"): strin
 }
 
 export function writeText(path: string, text: string): void {
-  mkdirSync(dirname(path), { recursive: true });
+  ensureDir(dirname(path));
   writeFileSync(path, text, "utf8");
+}
+
+export type RenameOptions = {
+  /** How long to keep retrying a transient failure. */
+  budgetMs?: number;
+  rename?: (from: string, to: string) => void;
+  platform?: NodeJS.Platform;
+};
+
+const TRANSIENT_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+/**
+ * Rename `from` over `to`.
+ *
+ * On Windows a rename onto an existing file fails with EPERM, EACCES or EBUSY while another
+ * process holds the target open without delete sharing: an antivirus scan of a file that was
+ * just written, or the search indexer. The handle closes on its own, so those errors are retried
+ * with a growing pause until `budgetMs` runs out, as graceful-fs does. Elsewhere the same codes
+ * mean a real permission problem and are thrown at once, as is every other error.
+ */
+export function renameReplacing(from: string, to: string, opts: RenameOptions = {}): void {
+  const { budgetMs = 5000, rename = renameSync, platform = process.platform } = opts;
+  const deadline = Date.now() + budgetMs;
+  for (let pause = 10; ; pause = Math.min(pause * 2, 250)) {
+    try {
+      rename(from, to);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? "";
+      if (platform !== "win32" || !TRANSIENT_RENAME_CODES.has(code) || Date.now() + pause > deadline) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pause);
+    }
+  }
+}
+
+/**
+ * Write a file through a temp file and a rename, so a crash never leaves a half-written file.
+ * A rename that fails for good removes the temp file.
+ */
+export function writeFileAtomic(path: string, data: string | Uint8Array, opts?: RenameOptions): void {
+  ensureDir(dirname(path));
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, data);
+  try {
+    renameReplacing(tmp, path, opts);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 export function readJson<T = unknown>(path: string): T | null {
@@ -59,8 +109,12 @@ export function writeJson(path: string, obj: unknown): void {
   writeText(path, JSON.stringify(obj, null, 1));
 }
 
+/**
+ * Create `path` and its parents. The path is resolved first: Bun on Windows throws EEXIST for a
+ * recursive mkdir of "." or ".." (oven-sh/bun#44576), where Node succeeds.
+ */
 export function ensureDir(path: string): void {
-  mkdirSync(path, { recursive: true });
+  mkdirSync(resolve(path), { recursive: true });
 }
 
 export function rmrf(path: string): void {
