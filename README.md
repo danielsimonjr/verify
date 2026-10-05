@@ -378,6 +378,12 @@ without unprivileged user namespaces, or when the data root holds nothing a
 session should not see; the driver refuses to start in `jail` mode on such a
 host and says so), `native` and `native-full` (next section).
 
+Without the jail, a timed-out turn kills the process group of the agent and every
+descendant that is still visible as its child. A descendant that leaves the group with
+`setsid` and loses its parent can outlive the turn. In the jail this cannot happen:
+`unshare -p -f --kill-child` makes the kernel kill every process of the PID namespace when
+the turn ends.
+
 ## Native environments (optional)
 
 By default every turn runs in the host jail. With `--env native` the

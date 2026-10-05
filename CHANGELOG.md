@@ -28,9 +28,10 @@ All notable changes to this project are recorded here. The format follows
 - Score: graded tasks are appended to `scores.partial.jsonl` as they finish, so a rerun resumes (#7).
 - Materialize: meta is written before the done-marker; task keys are checked before any delete; the leak blocklist holds on Windows paths; the renderers and the five adapters match the Python they were ported from (#8).
 - Grade: graders run asynchronously, stop the processes and containers that they start on a timeout, and report why they failed; `grade` refuses unknown options (#8).
-- Skills: OOXML parts are read by namespace, so a DOCX or PPTX that binds the standard namespace to another prefix, or to the default namespace, reads as before (#13).
+- Skills: OOXML parts are read by namespace, so a DOCX or PPTX that binds the standard namespace to another prefix, or to the default namespace, reads as before; the markup-compatibility namespace (`mc:`) is mapped too, and a namespace URI that names an `Object.prototype` member is not taken for a standard one (#13).
 - Skills: the LibreOffice converter removes a stale PDF before it runs and reports its exit status or signal when it prints nothing (#13).
-- Jail: a Node or Python install under `$HOME` (nvm, pyenv) stays visible and read-only (#13).
+- Jail: a Node or Python install under `$HOME` (nvm, pyenv) or under `/tmp` stays visible and read-only: the prefixes are bound back after the last cover (#13).
+- Docs: `--env none` runs can leave a `setsid` descendant of a timed-out turn running; the README and `docs/claude-code.md` say so (#13).
 - Grade: the SB2 batch grader keeps a task key such as `__proto__` in its result instead of dropping it (#13).
 - Grade: APEX rejects a runner that wrote `grades.json` and then exited nonzero or was signalled; the judge-key counter is no longer wrapped at 1,000,000 (#13).
 - Windows: an atomic write retries while an antivirus scan or the search indexer holds the target open; a relative output path in the current directory works under Bun (#8).
