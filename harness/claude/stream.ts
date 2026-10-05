@@ -39,8 +39,10 @@ export interface StreamInit {
 export interface StreamResult {
   isError: boolean;
   subtype?: string;
-  /** The result text; on a failed turn, the CLI's own message. */
+  /** The result text; on a failed turn, the CLI's own message, followed by each entry of `errors`. */
   text: string;
+  /** The `errors` array of the result event, as text. A non-empty array makes the result an error. */
+  errors: string[];
   numTurns?: number;
   costUsd?: number;
 }
@@ -74,6 +76,19 @@ export function splitPlugins(plugins: readonly string[]): { builtin: string[]; o
   };
 }
 
+const NL = String.fromCharCode(10);
+
+function errorTexts(list: unknown): string[] {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((x) => {
+      if (typeof x === "string") return x;
+      const message = (x as { message?: unknown } | null)?.message;
+      return typeof message === "string" ? message : JSON.stringify(x);
+    })
+    .filter((t) => t !== "");
+}
+
 /** The first `system/init` event and the last `result` event in `text`; either may be absent. */
 export function parseStream(text: string): { init?: StreamInit; result?: StreamResult } {
   let init: StreamInit | undefined;
@@ -94,10 +109,13 @@ export function parseStream(text: string): { init?: StreamInit; result?: StreamR
         plugins: names(e.plugins),
       };
     } else if (e.type === "result") {
+      const errors = errorTexts(e.errors);
+      const text = typeof e.result === "string" ? e.result : "";
       result = {
-        isError: e.is_error === true,
+        isError: e.is_error === true || errors.length > 0,
         subtype: typeof e.subtype === "string" ? e.subtype : undefined,
-        text: typeof e.result === "string" ? e.result : "",
+        text: [text, ...errors].filter((t) => t !== "").join(NL),
+        errors,
         numTurns: typeof e.num_turns === "number" ? e.num_turns : undefined,
         costUsd: typeof e.total_cost_usd === "number" ? e.total_cost_usd : undefined,
       };

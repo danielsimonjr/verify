@@ -361,6 +361,21 @@ describe("retries", () => {
     expect(sessionOf(attempts[1]!).id).toBe(sessionOf(attempts[0]!).id);
   });
 
+  test("a transient fault named only in the errors array of a failed result is retried", async () => {
+    const result = { is_error: true, text: "", errors: ["API Error: 529 overloaded_error"] };
+    rig.script([{ match: "# Discrimination", times: 1, action: { result, exit: 1 } }, ...happyRules(rig.ws)]);
+    expect(await rig.run(ARGS)).toBe(0);
+    expect(callsWith("# Discrimination").length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("a result with is_error false and a non-empty errors array fails the turn", async () => {
+    const result = { is_error: false, text: "all done", errors: ["something broke"] };
+    rig.script([{ match: "# Discrimination", action: { result, exit: 0 } }, ...happyRules(rig.ws)]);
+    await rig.run(ARGS);
+    expect(rig.log()).toContain("claude failure (tail): all done");
+    expect(rig.log()).toContain("something broke");
+  });
+
   test("a rate limit that never clears gives up after the backoff is used", async () => {
     rig.script([{ match: "# Discrimination", action: { result: overloaded, exit: 1 } }, ...happyRules(rig.ws)]);
     expect(await rig.run(ARGS)).toBe(1);
@@ -410,6 +425,13 @@ describe("a usage limit", () => {
     expect(finish.repair.error).toBe("usage-limit");
     expect(callsWith("# Repair")).toHaveLength(1);
     expect(callsWith("repair.json yet")).toHaveLength(0);
+  });
+
+  test("is found in the errors array of a result that says is_error false", async () => {
+    const result = { is_error: false, text: "", errors: ["You've hit your weekly usage limit"] };
+    rig.script([{ match: "# Discrimination", action: { result, exit: 0 } }, ...happyRules(rig.ws)]);
+    expect(await rig.run(ARGS)).toBe(75);
+    expect(callsWith("# Discrimination")).toHaveLength(1);
   });
 
   test("is told from a rate limit by its wording, whatever the exit code", async () => {

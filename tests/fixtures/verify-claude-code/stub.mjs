@@ -11,7 +11,7 @@
 //
 // An action: { "toolUses": [{ "name", "input" }]       assistant events the verifier "made"
 //              "writes":   [{ "path", "content" }]     files to create under the cwd, as the tools would
-//              "result":   { "is_error", "text" }      the final result event (default: success, "done")
+//              "result":   { "is_error", "text", "errors" }   the final result event (default: success, "done")
 //              "stderr":   "text",  "exit": 0,         what to print on stderr, and the exit code
 //              "hang": true,                           print init, then never exit
 //              "grandchild": "<path prefix>",          start a detached child; its pid goes to <prefix>.pid
@@ -148,6 +148,7 @@ emit({
   subtype: result.is_error ? "error_during_execution" : "success",
   is_error: result.is_error === true,
   result: result.text ?? "done",
+  ...(result.errors ? { errors: result.errors } : {}),
   num_turns: (action.toolUses ?? []).length + 1,
   total_cost_usd: 0.0123,
 });

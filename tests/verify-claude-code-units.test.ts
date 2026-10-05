@@ -201,7 +201,7 @@ describe("parseStream", () => {
       mcpServers: ["m"],
       plugins: ["p"],
     });
-    expect(seen.result).toEqual({ isError: false, subtype: "success", text: "OK", numTurns: 3, costUsd: 0.5 });
+    expect(seen.result).toEqual({ isError: false, subtype: "success", text: "OK", errors: [], numTurns: 3, costUsd: 0.5 });
   });
 
   test("the last result wins and the first init wins, across turns of one transcript", () => {
@@ -302,6 +302,28 @@ describe("claudeOwnRecord", () => {
 
   test("a session directory that does not exist has no record, without throwing", () => {
     expect(claudeOwnRecord(join(scratch, "absent"), join("/ws", record))).toBeNull();
+  });
+});
+
+describe("parseStream, the errors of a result event", () => {
+  const line = (extra: Record<string, unknown>) =>
+    JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "OK", ...extra }) + String.fromCharCode(10);
+
+  test("a non-empty errors array makes the result an error and puts its text in the reason", () => {
+    const { result } = parseStream(line({ errors: ["No conversation found", { message: "second" }, 7] }));
+    expect(result!.isError).toBe(true);
+    expect(result!.errors).toEqual(["No conversation found", "second", "7"]);
+    expect(result!.text).toContain("OK");
+    expect(result!.text).toContain("No conversation found");
+    expect(result!.text).toContain("second");
+  });
+
+  test("an empty or absent errors array changes nothing, and is_error true stays an error", () => {
+    expect(parseStream(line({ errors: [] })).result!.isError).toBe(false);
+    expect(parseStream(line({})).result).toMatchObject({ isError: false, errors: [], text: "OK" });
+    const failed = parseStream(line({ is_error: true, result: "boom", errors: ["why"] })).result!;
+    expect(failed.isError).toBe(true);
+    expect(failed.text).toBe("boom" + String.fromCharCode(10) + "why");
   });
 });
 
