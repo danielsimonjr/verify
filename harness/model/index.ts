@@ -23,6 +23,7 @@ export {
   isLocalProvider,
   PI_PLACEHOLDER_API_KEY,
   resolveLocalConfig,
+  secondsToMs,
 } from "./config.js";
 export type { BackendDeps, LocalModelConfig, LocalModelInput } from "./config.js";
 export { flagValue, withModelOverride } from "./flags.js";
