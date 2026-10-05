@@ -45,8 +45,9 @@ const venvPython = (): string => join(gradingDir(), ".venv", "bin", "python");
 // Seeded with the pid, as the Python was (itertools.count(os.getpid())): every one-shot
 // `veriharness grade` process would otherwise start at key 0 and never reach the others.
 let keyCounter = process.pid;
+/** The next judge-key index, counting up from the pid. Take it modulo the number of keys. */
 export function nextKey(): number {
-  return keyCounter++ % 1_000_000;
+  return keyCounter++; // not wrapped here: the caller takes it modulo the key count, as Python did
 }
 
 async function tasks(): Promise<Record<string, unknown>[]> {
@@ -234,7 +235,8 @@ export async function grade(
     if (keys.length) env.GEMINI_API_KEY = keys[nextKey() % keys.length]!;
     // Asynchronous: grade() runs inside a worker pool, and a blocking spawnSync serialised it.
     const p = await run(runner[0]!, args, { timeoutMs: timeout, cwd: gradingDir(), env });
-    if (p.timedOut || p.error || p.truncated || !exists(out)) {
+    // A runner that wrote grades.json and then failed or was signalled has not finished: the file may be partial.
+    if (p.timedOut || p.error || p.truncated || p.signal || p.status !== 0 || !exists(out)) {
       return { score: null, error: describeFailure(p, "apex runner"), grader: GRADER };
     }
     let g: Record<string, unknown>;
