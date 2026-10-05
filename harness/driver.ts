@@ -23,8 +23,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import * as config from "./config.js";
 import {
@@ -40,26 +41,39 @@ import {
 } from "./fsutil.js";
 import { Native, imageFor } from "./env/index.js";
 import { canonicalLocalProvider, materializePiHome, prepareLocalProvider, resolveLocalConfig } from "./model/index.js";
-import { isMain } from "./runtime.js";
+import { isMain, runWithBudget } from "./runtime.js";
 import { isView } from "./views.js";
 
 export { readJsonFs as readJson, writeJsonFs as writeJson };
 
 const JAIL = join(config.SCRIPTS_DIR, "jail_run.sh");
 
+/**
+ * The command chain of scripts/jail_run.sh as `unshare` arguments: the namespace flags, then `setpriv`
+ * with the flags that drop every capability, then a no-op. The availability probe runs exactly this, so
+ * a host whose util-linux lacks `--kill-child` or `setpriv` is refused up front instead of failing
+ * every turn. A test keeps it equal to the flags in the script.
+ */
+export const JAIL_PROBE: readonly string[] = [
+  "-r", "-m", "-p", "-f", "--mount-proc", "--kill-child",
+  "setpriv", "--bounding-set=-all", "--inh-caps=-all", "--no-new-privs", "--",
+  "true",
+];
+
+/** Why the mount-namespace jail cannot run on this host, or "" when it can. */
 export function jailUnavailable(): string {
   if (!isFile(JAIL)) {
     return `${JAIL} missing`;
   }
   try {
-    const p = spawnSync("unshare", ["-r", "-m", "-p", "-f", "--mount-proc", "true"], {
+    const p = spawnSync("unshare", [...JAIL_PROBE], {
       encoding: "utf8",
       timeout: 20_000,
     });
     if (p.error) {
       return `unshare: ${p.error.name}`;
     }
-    return p.status === 0 ? "" : `unshare -r -m -p failed: ${(p.stderr || "").trim().slice(0, 120)}`;
+    return p.status === 0 ? "" : `unshare/setpriv failed: ${(p.stderr || "").trim().slice(0, 120)}`;
   } catch (e) {
     return `unshare: ${e instanceof Error ? e.name : "Error"}`;
   }
@@ -129,6 +143,48 @@ const TRANSIENT = [
 ];
 const RETRY_BACKOFF = [30, 90, 180];
 
+/**
+ * True when a failed turn's stderr names a provider or transport fault worth a retry. A status
+ * code only counts as a whole number: "41503 tokens" and "0.429" are not a 503 or a 429.
+ */
+export function isTransient(stderr: string): boolean {
+  return TRANSIENT.some((sig) =>
+    /^\d+$/.test(sig) ? new RegExp(`(?<![\\d.])${sig}(?!\\d)`).test(stderr) : stderr.includes(sig),
+  );
+}
+
+/**
+ * Variables only the graders read: judge endpoints and keys, and the location of the benchmark
+ * checkouts that hold the answer keys. The jail hides the filesystem but a child inherits the
+ * environment whole, so a verifier could print these.
+ */
+const GRADER_ONLY_ENV = /^(JB_JUDGE_|APEX_|JUDGE_|WB_LITELLM_|VERIHARNESS_(BENCH_ROOT|WB_INDEX|IMAGE_))/;
+
+/**
+ * The environment for a verifier session: the host's, minus what only a grader may see, plus
+ * `VERIHARNESS_JAIL_HIDE`. The jail hides the repo, the data root and `$HOME` by itself; this lists
+ * the other places a session must not read, one absolute path per line: the directories the caller
+ * already named, the run outputs (sibling runs, archived grades) and the benchmark checkout (answer
+ * keys). The checkout's path is read from `host` here because the filter above drops it from the result.
+ */
+export function agentEnv(host: NodeJS.ProcessEnv, runs: string = config.RUNS): NodeJS.ProcessEnv {
+  const env = Object.fromEntries(Object.entries(host).filter(([name]) => !GRADER_ONLY_ENV.test(name)));
+  const bench = host.VERIHARNESS_BENCH_ROOT;
+  const hide = [
+    ...(host.VERIHARNESS_JAIL_HIDE ?? "").split("\n"),
+    runs,
+    ...(bench ? [resolve(bench.startsWith("~") ? join(homedir(), bench.slice(1)) : bench)] : []),
+  ].filter((p) => p !== "");
+  env.VERIHARNESS_JAIL_HIDE = [...new Set(hide)].join("\n");
+  return env;
+}
+
+/** True when pi has left a session file in `dir`; false when it left none or the dir does not exist. */
+export function hasSessionFile(dir: string): boolean {
+  if (!isDir(dir)) return false;
+  return readdirSync(dir, { withFileTypes: true }).some((e) => e.isFile() && e.name.endsWith(".jsonl"));
+}
+
 let logLock = false;
 
 export function log(ws: string, msg: string): void {
@@ -153,6 +209,17 @@ export function baseOf(finish: Record<string, unknown>): string {
     .split("/")
     .pop()!;
   return name.toLowerCase() === "" || ["none", "null"].includes(name.toLowerCase()) ? "none" : name;
+}
+
+/**
+ * `<ws>/rollouts/<base>` when `base` names one real rollout directory, else null. The base comes
+ * from finish.json, which a model wrote, so it must be a single path segment: "..", "r1/.." and
+ * "a/b" would otherwise point a read, a copy or a comparison at something that is not a rollout.
+ */
+export function rolloutDir(ws: string, base: string): string | null {
+  if (base === "" || base === "." || base === ".." || basename(base) !== base) return null;
+  const dir = join(ws, "rollouts", base);
+  return isDir(dir) ? dir : null;
 }
 
 class Pi {
@@ -212,7 +279,7 @@ class Pi {
   }
 
   async turn(message: string, timeout: number, continueSession: boolean, tag = ""): Promise<boolean> {
-    const env = { ...process.env };
+    const env = agentEnv(process.env);
     if (this.piHome) env.PI_CODING_AGENT_DIR = this.piHome;
     else env.PI_CODING_AGENT_DIR ??= config.PI_HOME;
     env.GOOGLE_CLOUD_LOCATION ??= "global";
@@ -221,7 +288,7 @@ class Pi {
 
     for (let attempt = 0; attempt < RETRY_BACKOFF.length + 1; attempt++) {
       const budget = Math.min(timeout, this.deadline - Date.now() / 1000);
-      if (budget <= 0) {
+      if (!(budget > 0)) {
         log(this.ws, `${tag}task deadline reached before turn start; skipping turn`);
         return false;
       }
@@ -231,60 +298,34 @@ class Pi {
           `${this.native ? ", native " + this.native.image : ""})`,
       );
       const [cmd, container] = this._cmd(message, continueSession, env);
-      const proc = spawn(cmd[0]!, cmd.slice(1), {
+      const run = await runWithBudget(cmd, {
         cwd: this.ws,
         env,
-        detached: true,
-        stdio: ["ignore", "ignore", "pipe"],
-      });
-      let stderr = "";
-      proc.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8");
+        budgetMs: budget * 1000,
+        onKill: container && this.native ? () => this.native!.kill(container) : undefined,
       });
 
-      const finished = await new Promise<{ ok: boolean; timedOut: boolean }>((resolveP) => {
-        const timer = setTimeout(() => {
-          try {
-            if (proc.pid) process.kill(-proc.pid, "SIGKILL");
-          } catch {
-            proc.kill("SIGKILL");
-          }
-          resolveP({ ok: false, timedOut: true });
-        }, budget * 1000);
-        proc.on("close", (code) => {
-          clearTimeout(timer);
-          resolveP({ ok: code === 0, timedOut: false });
-        });
-        proc.on("error", () => {
-          clearTimeout(timer);
-          resolveP({ ok: false, timedOut: false });
-        });
-      });
-
-      if (finished.timedOut) {
-        await new Promise<void>((r) => proc.on("close", () => r()));
-        if (container && this.native) {
-          this.native.kill(container);
-        }
-        log(this.ws, `${tag}pi turn timed out after ${Math.floor(budget)}s (process group killed)`);
+      if (run.spawnError !== undefined) {
+        log(this.ws, `${tag}pi did not start: ${run.spawnError} (command: ${cmd[0]})`);
+        return false;
+      }
+      if (run.timedOut) {
+        log(this.ws, `${tag}pi turn timed out after ${Math.floor(budget)}s (process tree killed)`);
         return false;
       }
 
-      const rc = proc.exitCode ?? 1;
+      const rc = run.code ?? 1;
       log(this.ws, `${tag}pi exited rc=${rc}`);
       if (rc === 0) {
         return true;
       }
-      log(this.ws, `${tag}pi stderr (tail): ${stderr.slice(-2000)}`);
-      if (!TRANSIENT.some((sig) => stderr.includes(sig)) || attempt === RETRY_BACKOFF.length) {
+      log(this.ws, `${tag}pi stderr (tail): ${run.stderr.slice(-2000)}`);
+      if (!isTransient(run.stderr) || attempt === RETRY_BACKOFF.length) {
         return false;
       }
       log(this.ws, `${tag}transient provider error; retrying in ${RETRY_BACKOFF[attempt]}s`);
       await new Promise((r) => setTimeout(r, RETRY_BACKOFF[attempt]! * 1000));
-      const sessionDir = this.sessionDir;
-      continueSession = readdirSync(sessionDir, { withFileTypes: true }).some(
-        (e) => e.isFile() && e.name.endsWith(".jsonl"),
-      );
+      continueSession = hasSessionFile(this.sessionDir);
     }
     return false;
   }
@@ -349,8 +390,13 @@ export function renderSkills(
   const rolloutsDir = join(ws, "rollouts");
   const delivered = new Set<string>();
   if (isDir(rolloutsDir)) {
+    // <rollout>/deliverables/**, as the Python globbed it. Matching "/deliverables/" anywhere in the
+    // absolute path never matched on Windows (backslashes) and matched EVERY file, trajectories
+    // included, when the workspace itself sat under a directory called "deliverables". The harness's
+    // own rendered views are not deliverables either (CHARTER.md says never to count one).
     for (const p of walkFiles(rolloutsDir)) {
-      if (p.includes("/deliverables/")) {
+      const parts = posixRel(rolloutsDir, p).split("/");
+      if (parts.length >= 3 && parts[1] === "deliverables" && !isView(basename(p))) {
         delivered.add(basename(p));
       }
     }
@@ -417,11 +463,12 @@ export function validateDelivery(ws: string, base: string): Record<string, unkno
     }
     return { valid: true, n_base: 0, n_out: nonempty.length, added: nonempty.slice(0, 20) };
   }
-  const baseDir = join(ws, "rollouts", base, "deliverables");
-  if (!isDir(baseDir)) {
+  const baseRoot = rolloutDir(ws, base);
+  const baseDir = baseRoot === null ? null : join(baseRoot, "deliverables");
+  if (baseDir === null || !isDir(baseDir)) {
     return {
       valid: false,
-      reason: `base rollout '${base}' has no deliverables dir (base must be a rollout name)`,
+      reason: `base rollout '${base}' has no deliverables dir (base must be the name of a rollout)`,
     };
   }
   const need = bundleFiles(baseDir);
@@ -448,7 +495,6 @@ export function validateDelivery(ws: string, base: string): Record<string, unkno
 
 export function completeBundle(ws: string, base: string): string[] {
   const out = join(ws, "out", "deliverables");
-  const baseDir = join(ws, "rollouts", base, "deliverables");
   if (isDir(out)) {
     for (const p of walkFiles(out)) {
       if (isView(basename(p))) {
@@ -456,7 +502,9 @@ export function completeBundle(ws: string, base: string): string[] {
       }
     }
   }
-  if (base === "none" || !isDir(baseDir)) {
+  const baseRoot = base === "none" ? null : rolloutDir(ws, base);
+  const baseDir = baseRoot === null ? null : join(baseRoot, "deliverables");
+  if (baseDir === null || !isDir(baseDir)) {
     return [];
   }
   const restored: string[] = [];
@@ -478,13 +526,13 @@ function digestFile(p: string): string {
 
 export function changedFiles(ws: string, base: string): string[] {
   const out = join(ws, "out", "deliverables");
-  const baseDir = join(ws, "rollouts", base, "deliverables");
+  const baseRoot = rolloutDir(ws, base);
   if (!isDir(out)) return [];
   return [...bundleFiles(out)]
     .filter((rel) => {
       const outP = join(out, rel);
-      const baseP = join(baseDir, rel);
-      return !isFile(baseP) || digestFile(outP) !== digestFile(baseP);
+      const baseP = baseRoot === null ? null : join(baseRoot, "deliverables", rel);
+      return baseP === null || !isFile(baseP) || digestFile(outP) !== digestFile(baseP);
     })
     .sort();
 }
@@ -675,8 +723,14 @@ async function deliver(
   log(ws, `repair: ${JSON.stringify(repairBlock).slice(0, 600)}`);
 }
 
-function resolveSkills(names: string[]): string[] {
-  return names.map((s) => (s.includes("/") ? s : resolve(join(config.SKILLS_DIR, s))));
+/**
+ * Skill names become absolute paths. A bare name lives under the harness skills directory; anything
+ * with a separator (either kind, so a Windows path counts) is a path. It is made absolute because
+ * pi runs with the workspace as its cwd, so a relative path would name a different place to pi than
+ * to this process, which reads the same SKILL.md to render it.
+ */
+export function resolveSkills(names: string[]): string[] {
+  return names.map((s) => (/[\\/]/.test(s) ? resolve(s) : resolve(join(config.SKILLS_DIR, s))));
 }
 
 function optionalNumber(name: string, raw: string | undefined): number | undefined | { error: string } {
@@ -686,13 +740,33 @@ function optionalNumber(name: string, raw: string | undefined): number | undefin
   return n;
 }
 
+/**
+ * A timeout in seconds: finite and above zero. Number("abc") is NaN, and a NaN budget reached
+ * setTimeout, which fires at once, so the turn was killed after one millisecond with nothing logged
+ * to say why; 0 and negative values skipped every turn as "deadline reached".
+ */
+function positiveSeconds(name: string, raw: string | undefined, fallback: number): number | { error: string } {
+  const text = raw ?? String(fallback);
+  const n = text.trim() === "" ? Number.NaN : Number(text);
+  if (!Number.isFinite(n) || n <= 0) {
+    return { error: `invalid ${name} '${text}' (expected a positive number of seconds)` };
+  }
+  return n;
+}
+
+const ENVS = ["jail", "none", "native", "native-full"] as const;
+
 export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs } | { error: string } {
   const skillsFromArgv: string[] = [];
   const passthrough: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    if (a === "--skill") {
-      skillsFromArgv.push(argv[++i]!);
+    if (a === "--skill" || a.startsWith("--skill=")) {
+      const value = a === "--skill" ? argv[++i] : a.slice("--skill=".length);
+      if (value === undefined || value === "" || value.startsWith("--")) {
+        return { error: "--skill needs a skill name or path" };
+      }
+      skillsFromArgv.push(value);
     } else {
       passthrough.push(a);
     }
@@ -733,9 +807,19 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
       return { error: `invalid skills-mode ${skillsMode}` };
     }
     const contract = String(values.contract ?? "artifact");
-    if (!(contract in CONTRACTS)) {
+    if (!Object.hasOwn(CONTRACTS, contract)) {
       return { error: `invalid contract ${contract}` };
     }
+    const env = String(values.env ?? "jail");
+    if (!ENVS.includes(env as (typeof ENVS)[number])) {
+      return { error: `invalid --env '${env}' (expected ${ENVS.join("|")})` };
+    }
+    const turnTimeout = positiveSeconds("--turn-timeout", values["turn-timeout"] as string | undefined, 1800);
+    if (typeof turnTimeout === "object") return turnTimeout;
+    const nudgeTimeout = positiveSeconds("--nudge-timeout", values["nudge-timeout"] as string | undefined, 600);
+    if (typeof nudgeTimeout === "object") return nudgeTimeout;
+    const taskTimeout = positiveSeconds("--task-timeout", values["task-timeout"] as string | undefined, 3600);
+    if (typeof taskTimeout === "object") return taskTimeout;
     const contextSize = optionalNumber("context-size", values["context-size"] as string | undefined);
     if (contextSize && typeof contextSize === "object") return contextSize;
     const temperature = optionalNumber("temperature", values.temperature as string | undefined);
@@ -758,10 +842,10 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
         noSkills: Boolean(values["no-skills"]),
         skillsMode,
         piBin: String(values["pi-bin"]),
-        env: String(values.env ?? "jail"),
-        turnTimeout: Number(values["turn-timeout"] ?? 1800),
-        nudgeTimeout: Number(values["nudge-timeout"] ?? 600),
-        taskTimeout: Number(values["task-timeout"] ?? 3600),
+        env,
+        turnTimeout,
+        nudgeTimeout,
+        taskTimeout,
         baseUrl: values["base-url"] as string | undefined,
         contextSize: contextSize as number | undefined,
         temperature: temperature as number | undefined,

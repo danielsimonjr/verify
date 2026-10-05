@@ -20,22 +20,25 @@
  * sources run under both interpreters.
  */
 
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
 
-export function isMain(metaUrl: string): boolean {
-  const meta = import.meta as ImportMeta & { main?: boolean };
-  if (typeof meta.main === "boolean" && meta.url === metaUrl) {
-    return meta.main;
-  }
-  const argv1 = process.argv[1];
+/**
+ * True when the module at `metaUrl` is the program's entry file.
+ *
+ * Node sets `import.meta.url` to the real path of the entry but leaves `process.argv[1]` as the path
+ * it was started with. `npm i -g` links the bin, so both sides go through `realpathSync.native`:
+ * that follows links and gives one spelling of a Windows path whatever case the shell passed.
+ * `argv1` is a parameter so a test can name the link.
+ */
+export function isMain(metaUrl: string, argv1: string | undefined = process.argv[1]): boolean {
   if (!argv1) return false;
   try {
-    return metaUrl === pathToFileURL(resolve(argv1)).href;
+    return realpathSync.native(fileURLToPath(metaUrl)) === realpathSync.native(resolve(argv1));
   } catch {
     return false;
   }
@@ -69,9 +72,235 @@ export function harnessCommand(metaUrl: string, entry: string, args: string[]): 
   return [process.execPath, script, ...args];
 }
 
-export function python3(): string {
-  const hit = spawnSync("python3", ["-c", "import sys; print(sys.executable)"], {
-    encoding: "utf8",
-  });
-  return hit.status === 0 && hit.stdout.trim() ? hit.stdout.trim() : "python3";
+/**
+ * Every pid in `psTable` (lines of `pid ppid`) that descends from `root`, leaves first, so a
+ * parent is never killed before the children it could still fork from.
+ */
+export function descendantsOf(root: number, psTable: string): number[] {
+  const kids = new Map<number, number[]>();
+  for (const line of psTable.split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const ppid = Number(m[2]);
+    const list = kids.get(ppid);
+    if (list) list.push(pid);
+    else kids.set(ppid, [pid]);
+  }
+  const order: number[] = [];
+  const seen = new Set<number>([root]);
+  const walk = (parent: number): void => {
+    for (const child of kids.get(parent) ?? []) {
+      if (seen.has(child)) continue;
+      seen.add(child);
+      walk(child);
+      order.push(child);
+    }
+  };
+  walk(root);
+  return order;
 }
+
+function signalQuietly(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(pid, signal);
+  } catch {
+    /* already gone, or not ours to signal */
+  }
+}
+
+/**
+ * Kill `pid` and everything that descends from it, including descendants that left its
+ * process group (setsid, `detached: true`). A group kill alone misses those on POSIX, and
+ * Windows has no process groups at all, so `taskkill /T` follows the parent links instead.
+ */
+export function killProcessTree(pid: number): void {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  if (process.platform === "win32") {
+    const hit = spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+      timeout: 15_000,
+    });
+    if (hit.status !== 0) signalQuietly(pid, "SIGKILL");
+    return;
+  }
+  for (let pass = 0; pass < 3; pass++) {
+    const ps = spawnSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8", timeout: 10_000 });
+    const below = ps.status === 0 ? descendantsOf(pid, ps.stdout) : [];
+    for (const child of below) signalQuietly(child, "SIGKILL");
+    signalQuietly(-pid, "SIGKILL");
+    signalQuietly(pid, "SIGKILL");
+    if (!below.length) break;
+  }
+}
+
+export interface BudgetedRun {
+  /** Exit code; null when the process was killed or never started. */
+  code: number | null;
+  timedOut: boolean;
+  /** The last `stderrTailChars` characters of stderr. */
+  stderr: string;
+  /** Set when the process could not be started (missing binary, permission). */
+  spawnError?: string;
+}
+
+export interface BudgetedRunOptions {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  budgetMs: number;
+  stderrTailChars?: number;
+  /** Runs after the tree is killed, on every kill path (e.g. `docker rm -f` of a named container). */
+  onKill?: () => void;
+}
+
+/** Node words a failed spawn as "spawn x ENOENT", Bun as "Executable not found"; keep the errno either way. */
+function describeSpawnError(e: unknown): string {
+  const code = (e as { code?: unknown }).code;
+  const text = e instanceof Error ? e.message : String(e);
+  return typeof code === "string" && !text.includes(code) ? `${code}: ${text}` : text;
+}
+
+/** setTimeout fires at once, with a warning, for a delay above this. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+const EXIT_CODES: Record<string, number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+
+const live = new Map<number, (() => void) | undefined>();
+const signalHandlers = new Map<string, () => void>();
+
+function killLive(): void {
+  for (const [pid, onKill] of live) {
+    killProcessTree(pid);
+    try {
+      onKill?.();
+    } catch {
+      /* the tree is dead; a failed container cleanup must not stop the rest */
+    }
+  }
+  live.clear();
+}
+
+function hookLive(): void {
+  if (signalHandlers.size) return;
+  process.on("exit", killLive);
+  for (const [name, code] of Object.entries(EXIT_CODES)) {
+    const handler = (): void => {
+      killLive();
+      process.exit(code);
+    };
+    signalHandlers.set(name, handler);
+    process.on(name as NodeJS.Signals, handler);
+  }
+}
+
+function unhookLive(): void {
+  if (live.size || !signalHandlers.size) return;
+  process.removeListener("exit", killLive);
+  for (const [name, handler] of signalHandlers) process.removeListener(name as NodeJS.Signals, handler);
+  signalHandlers.clear();
+}
+
+/**
+ * Run `cmd` for at most `budgetMs`, then kill its whole process tree. While it runs the
+ * process is registered, so a driver that dies (signal, process.exit, uncaught error) takes
+ * the turn down with it instead of leaving a model session running with no one to read it.
+ */
+export function runWithBudget(cmd: string[], opts: BudgetedRunOptions): Promise<BudgetedRun> {
+  if (!(opts.budgetMs > 0)) {
+    return Promise.reject(new RangeError(`budget must be a positive number of ms, got ${opts.budgetMs}`));
+  }
+  const tailChars = opts.stderrTailChars ?? 262_144;
+  return new Promise((resolveRun) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(cmd[0]!, cmd.slice(1), {
+        cwd: opts.cwd,
+        env: opts.env,
+        // POSIX: a session of its own, so the group can be killed. Windows: not detached, so the
+        // turn stays in the parent's job object and dies with it.
+        detached: process.platform !== "win32",
+        windowsHide: true,
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+    } catch (e) {
+      resolveRun({ code: null, timedOut: false, stderr: "", spawnError: describeSpawnError(e) });
+      return;
+    }
+    const pid = child.pid;
+    if (pid !== undefined) {
+      live.set(pid, opts.onKill);
+      hookLive();
+    }
+
+    let stderr = "";
+    let timedOut = false;
+    let spawnError: string | undefined;
+    let closeGrace: ReturnType<typeof setTimeout> | undefined;
+    let done = false;
+    const settle = (code: number | null): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      clearTimeout(closeGrace);
+      if (pid !== undefined) live.delete(pid);
+      unhookLive();
+      resolveRun({ code, timedOut, stderr, ...(spawnError === undefined ? {} : { spawnError }) });
+    };
+
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr = (stderr + chunk.toString("utf8")).slice(-tailChars);
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (pid !== undefined) killProcessTree(pid);
+      try {
+        opts.onKill?.();
+      } catch {
+        /* see killLive */
+      }
+      // 'close' waits for every holder of the stderr pipe. The tree is dead, but a process that
+      // got away must not be able to hold the caller forever.
+      closeGrace = setTimeout(() => {
+        child.stderr?.destroy();
+        settle(null);
+      }, 5000);
+    }, Math.min(opts.budgetMs, MAX_TIMER_MS));
+    child.on("error", (err) => {
+      spawnError = describeSpawnError(err);
+      settle(null);
+    });
+    child.on("close", (code) => settle(code));
+  });
+}
+
+// Python 3 only: a bare `python` is Python 2 on some hosts, and that must not pass for a grader's interpreter.
+const PYTHON_PROBE = "import sys; assert sys.version_info[0] >= 3; print(sys.executable)";
+// `python3` is a Microsoft Store stub on many Windows hosts (it exits 9009), so the next names matter there.
+const PYTHON_NAMES: readonly (readonly string[])[] = [["python3"], ["python"], ["py", "-3"]];
+const PYTHON_PROBE_MS = 15_000;
+
+/**
+ * Builds a function that finds a working Python 3 interpreter: the first of `python3`, `python`,
+ * `py -3` whose probe exits 0 and prints its path. The path is remembered once found. A miss is not
+ * remembered, so an interpreter installed later is picked up. With none, the answer is `"python3"`
+ * and the caller's own spawn names what is missing. `run` is a parameter so a test can fake the host.
+ */
+export function pythonFinder(run: typeof spawnSync = spawnSync): () => string {
+  let found: string | undefined;
+  return () => {
+    if (found !== undefined) return found;
+    for (const [cmd, ...pre] of PYTHON_NAMES) {
+      const hit = run(cmd!, [...pre, "-c", PYTHON_PROBE], {
+        encoding: "utf8",
+        timeout: PYTHON_PROBE_MS,
+        windowsHide: true,
+      });
+      const exe = hit.status === 0 ? String(hit.stdout).trim() : "";
+      if (exe) return (found = exe);
+    }
+    return "python3";
+  };
+}
+
+/** Path of a working Python 3 interpreter, as found by {@link pythonFinder}. */
+export const python3: () => string = pythonFinder();
