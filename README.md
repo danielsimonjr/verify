@@ -131,7 +131,8 @@ after a build.
 
 ## Setup
 
-Requirements: Linux with unprivileged user namespaces (for the jail), [Bun](https://bun.sh)
+Requirements: Linux with unprivileged user namespaces and util-linux `unshare` and `setpriv`
+(for the jail), [Bun](https://bun.sh)
 1.1+ for development, Node.js 22.19+ for production and the agent runtime, Python
 3.10+ (LiteLLM, WorkBuddy/SB2 grade bridges, benchmark setup), git, curl, `uv` (for the
 benchmark checkouts), and Docker for the graders and the optional native
@@ -335,12 +336,14 @@ place them in the task-workspace layout described under [Usage](#usage).
 Verifier sessions run inside `harness/scripts/jail_run.sh`, a mount-namespace
 jail (`unshare -r -m -p`, no privileges needed): the task workspace is the
 only visible project state, `spec/`, `workspace/` and `rollouts/` are
-read-only, the rest of `$HOME`, the data root, `/tmp` and `/var/tmp` are
-hidden, host Python and Node stay read-only, and container runtimes are
-masked. Archived scores and benchmark answer keys are therefore unreachable
-from a session. There is no network namespace, so model endpoints stay
-reachable. Graders run on the host after the verifier batch, never inside
-the jail.
+read-only, the rest of `$HOME`, the data root, the run outputs, the benchmark
+checkout, `/tmp` and `/var/tmp` are hidden, host Python and Node stay
+read-only, and container runtimes are masked. The session runs with no
+capabilities, so it cannot undo those mounts. Archived scores and benchmark
+answer keys are therefore unreachable from a session. The task workspace and
+the repo must not be under `/tmp`: the jail refuses such a path. There is no
+network namespace, so model endpoints stay reachable. Graders run on the host
+after the verifier batch, never inside the jail.
 
 The four settings of `--env`: `jail` (default), `none` (no isolation: for hosts
 without unprivileged user namespaces, or when the data root holds nothing a
