@@ -20,7 +20,8 @@ function makeCell(tasks: TaskSpec[]): { cell: string; data: string } {
   const cell = join(root, "runs", "b_pool");
   mkdirSync(join(data, "b", "pool"), { recursive: true });
   mkdirSync(cell, { recursive: true });
-  const meta: Record<string, unknown> = {};
+  // No prototype: `meta["__proto__"] = ...` on a plain object would set the prototype, not a key.
+  const meta: Record<string, unknown> = Object.create(null);
   for (const t of tasks) {
     meta[t.key] = { rollouts: Object.fromEntries(Object.entries(t.scores ?? { r1: 0.5, r2: 0.7 }).map(([r, score]) => [r, { score }])) };
     const ws = join(cell, t.key);
@@ -132,6 +133,28 @@ describe("score: progress is persisted as tasks finish", () => {
     expect(secondPairYet).toBe(false);
     expect(result).toBe(0);
     expect(Object.keys(readScores(cell).tasks)).toEqual(["t1", "t2", "t3", "t4"]);
+  }, 20_000);
+
+  test("batched grading keeps tasks named __proto__ and constructor", async () => {
+    const keys = ["__proto__", "constructor", "t1"];
+    const { cell, data } = makeCell(keys.map((key) => ({ key })));
+    const api: GradeApi = {
+      preflight: async () => "",
+      gradeDeliverables: async () => ({ score: 0.5 }),
+      loadGradeModule: async () => ({
+        grade: () => ({ score: null }),
+        gradeBatch: async (items: [string, string, string | null][]) =>
+          Object.fromEntries(items.map(([key, dir]) => [key, { score: isOut(dir) ? 0.9 : 0.6 }])),
+      }),
+    };
+    const { result } = await quiet(() => main([cell, "--batch", "2", "--workers", "2"], { dataRoot: data, grade: api }));
+    expect(result).toBe(0);
+    const scored = readScores(cell);
+    expect(Object.keys(scored.tasks).sort()).toEqual(["__proto__", "constructor", "t1"]);
+    expect(scored.unfinished).toEqual([]);
+    expect(Object.getOwnPropertyDescriptor(scored.tasks, "__proto__")?.value).toMatchObject({ out_graded: 0.9, base_regraded: 0.6 });
+    const partial = readFileSync(join(cell, "scores.partial.jsonl"), "utf8");
+    for (const key of keys) expect(partial).toContain(`"key":"${key}"`);
   }, 20_000);
 
   test("the arithmetic: final = select + (out - base_regraded), clamped to [0, 1]", async () => {

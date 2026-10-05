@@ -18,6 +18,7 @@ import { appendFileSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import * as config from "./config.js";
+import { parseCount } from "./count.js";
 import { baseOf, readJson, rolloutDir } from "./driver.js";
 import { isDir, isFile, readText, writeJson } from "./fsutil.js";
 import {
@@ -124,7 +125,8 @@ async function* gradeBatched(
   const gradeBatch = mod.gradeBatch;
   if (!gradeBatch) return;
 
-  const pending: Record<string, [GradeResult | null, GradeResult | null]> = {};
+  // A Map: a task may be named `__proto__` or `constructor`, which a plain object would swallow.
+  const pending = new Map<string, [GradeResult | null, GradeResult | null]>();
   const baseItems: [string, string, string | null][] = [];
   const outItems: [string, string, string | null][] = [];
 
@@ -133,14 +135,15 @@ async function* gradeBatched(
     const key = basename(ws);
     const baseDir = join(ws, "rollouts", base, "deliverables");
     const trace = join(baseDir, "..", "trajectory", "agent.json");
-    pending[key] = [
+    const pair: [GradeResult | null, GradeResult | null] = [
       isDir(baseDir) ? null : { score: null, error: "no base" },
       deliveryValid ? null : { score: null, error: "delivery failed the bundle contract" },
     ];
-    if (pending[key][0] === null) {
+    pending.set(key, pair);
+    if (pair[0] === null) {
       baseItems.push([key, baseDir, null]);
     }
-    if (pending[key][1] === null) {
+    if (pair[1] === null) {
       outItems.push([key, join(ws, "out", "deliverables"), trace]);
     }
   }
@@ -155,9 +158,9 @@ async function* gradeBatched(
   );
 
   function* ready(): Generator<[string, GradeResult, GradeResult]> {
-    for (const [key, pair] of Object.entries(pending)) {
+    for (const [key, pair] of [...pending]) {
       if (pair[0] !== null && pair[1] !== null) {
-        delete pending[key];
+        pending.delete(key);
         yield [key, pair[0], pair[1]];
       }
     }
@@ -169,9 +172,8 @@ async function* gradeBatched(
   // file) while the other containers are still grading.
   for await (const [side, res] of iteratePool(batches, containers, (b) => runBatch(gradeBatch, batch, b))) {
     for (const [key, r] of Object.entries(res)) {
-      if (pending[key]) {
-        pending[key][side] = r;
-      }
+      const pair = pending.get(key);
+      if (pair) pair[side] = r;
     }
     yield* ready();
   }
@@ -323,9 +325,7 @@ function parseScoreArgs(argv: string[]) {
 
 /** A whole number >= 1, or null. `Number("abc")` is NaN, which a pool used to read as zero workers. */
 function positiveInt(raw: string | undefined): number | null {
-  if (raw === undefined || !/^\d+$/.test(raw.trim())) return null;
-  const n = Number(raw);
-  return Number.isSafeInteger(n) && n >= 1 ? n : null;
+  return raw === undefined ? null : (parseCount(raw.trim(), 1) ?? null);
 }
 
 export async function main(argv: string[] = process.argv.slice(2), deps: Partial<ScoreDeps> = {}): Promise<number> {
