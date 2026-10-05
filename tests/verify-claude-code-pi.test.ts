@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import * as config from "../harness/config.ts";
@@ -241,18 +241,30 @@ describe("a pi task through the stand-in pi", () => {
     expect(attempts[1]!.argv).toContain("-c");
   });
 
-  // Only Windows has a line limit that 1,500 --skill flags exceed: Linux accepts the same task.
+  // Only Windows has a line limit that a long --skill list exceeds: Linux accepts the same task.
   test.skipIf(process.platform !== "win32")("a command line that cannot be made to fit is a clean failure of the turn, with the reason in the log", async () => {
     rig.script(piHappyRules(rig.ws));
-    const many = Array.from({ length: 1500 }, (_, i) => {
-      const dir = join(rig.root, "many", `evidence-with-a-fairly-long-name-${i}`);
+    // Long folder names keep the count low. 1,500 short ones took 8.5 s to create and up to 6.2 s to
+    // delete on Windows, and the delete ran in the cleanup hook, which has 5 s.
+    const root = join(rig.root, "many");
+    const dirOf = (i: number) => join(root, `evidence-${String(i).padStart(4, "0")}-${"x".repeat(100)}`);
+    const perSkill = windowsCommandLineLength(["--skill", dirOf(0)]) + 1;
+    const many = Array.from({ length: Math.ceil((1.5 * WINDOWS_COMMAND_LINE_LIMIT) / perSkill) }, (_, i) => {
+      const dir = dirOf(i);
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "SKILL.md"), `---\nname: s${i}\ndescription: d\nphase: none\n---\nx`);
       return dir;
     });
-    const argv = [...ARGS, ...many.flatMap((d) => ["--skill", d])];
-    expect(await rig.run(argv, {}, { piCommand })).toBe(1);
-    expect(rig.log()).toContain("pi did not start: the pi command line is too long to start");
-    expect(rig.piCalls()).toHaveLength(0);
+    // The --skill flags alone are over the limit, so neither stdin nor a charter file can make the line fit.
+    expect(windowsCommandLineLength(many.flatMap((d) => ["--skill", d]))).toBeGreaterThan(WINDOWS_COMMAND_LINE_LIMIT);
+    try {
+      const argv = [...ARGS, ...many.flatMap((d) => ["--skill", d])];
+      expect(await rig.run(argv, {}, { piCommand })).toBe(1);
+      expect(rig.log()).toContain("pi did not start: the pi command line is too long to start");
+      expect(rig.piCalls()).toHaveLength(0);
+    } finally {
+      // Inside this test's own bound, not the cleanup hook's.
+      rmSync(root, { recursive: true, force: true });
+    }
   }, 60_000);
 });
