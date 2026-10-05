@@ -20,6 +20,7 @@ import {
   parseStream,
   withoutSessionMarkers,
 } from "../harness/claude/index.ts";
+import { readHead, readTail } from "../harness/claude/turn.ts";
 import { defaultTmpDir } from "../harness/config.ts";
 import { renderSkills, skillRoots } from "../harness/driver.ts";
 import { runWithBudget } from "../harness/runtime.ts";
@@ -324,6 +325,18 @@ describe("parseStream, the errors of a result event", () => {
     const failed = parseStream(line({ is_error: true, result: "boom", errors: ["why"] })).result!;
     expect(failed.isError).toBe(true);
     expect(failed.text).toBe("boom" + String.fromCharCode(10) + "why");
+  });
+});
+
+describe("reading a transcript that is gone", () => {
+  test("readHead and readTail give no text instead of throwing", () => {
+    const gone = join(scratch, "no-such-dir", "t.jsonl");
+    expect(readHead(gone, 0, 100)).toBe("");
+    expect(readTail(gone, 0, 100)).toBe("");
+    const file = join(scratch, "t.jsonl");
+    writeFileSync(file, "abcdef");
+    expect(readHead(file, 2, 100)).toBe("cdef");
+    expect(readTail(file, 0, 3)).toBe("def");
   });
 });
 

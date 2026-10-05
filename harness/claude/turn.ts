@@ -23,9 +23,9 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { ensureDir, fileSize } from "../fsutil.js";
+import { ensureDir } from "../fsutil.js";
 import { runWithBudget } from "../runtime.js";
 import { classifyFailure } from "./errors.js";
 import { VERIFIER_SETTINGS } from "./env.js";
@@ -73,34 +73,59 @@ export function claudeArgs(input: ClaudeArgsInput): string[] {
   ];
 }
 
-/** The tail of `path` from byte `from`, at most `maxBytes` of it. */
-function readTail(path: string, from: number, maxBytes: number): string {
-  const size = statSync(path).size;
-  const start = Math.max(from, size - maxBytes);
-  const len = size - start;
-  if (len <= 0) return "";
-  const fd = openSync(path, "r");
+/**
+ * Run `read` on `path` and give "" when the file or its directory is gone: a verifier that deletes its own
+ * transcript directory in the middle of a turn must not crash the task, only leave the turn without events.
+ */
+function readOrEmpty(read: () => string): string {
   try {
-    const buf = Buffer.alloc(len);
-    readSync(fd, buf, 0, len, start);
-    return buf.toString("utf8");
-  } finally {
-    closeSync(fd);
+    return read();
+  } catch {
+    return "";
   }
 }
 
-/** The head of `path` from byte `from`, at most `maxBytes` of it. */
-function readHead(path: string, from: number, maxBytes: number): string {
-  const len = Math.min(statSync(path).size - from, maxBytes);
-  if (len <= 0) return "";
-  const fd = openSync(path, "r");
+/** The size of `path` in bytes; 0 when it is gone. */
+function sizeOrZero(path: string): number {
   try {
-    const buf = Buffer.alloc(len);
-    readSync(fd, buf, 0, len, from);
-    return buf.toString("utf8");
-  } finally {
-    closeSync(fd);
+    return statSync(path).size;
+  } catch {
+    return 0;
   }
+}
+
+/** The tail of `path` from byte `from`, at most `maxBytes` of it; "" when the file cannot be read. */
+export function readTail(path: string, from: number, maxBytes: number): string {
+  return readOrEmpty(() => {
+    const size = statSync(path).size;
+    const start = Math.max(from, size - maxBytes);
+    const len = size - start;
+    if (len <= 0) return "";
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, start);
+      return buf.toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+  });
+}
+
+/** The head of `path` from byte `from`, at most `maxBytes` of it; "" when the file cannot be read. */
+export function readHead(path: string, from: number, maxBytes: number): string {
+  return readOrEmpty(() => {
+    const len = Math.min(statSync(path).size - from, maxBytes);
+    if (len <= 0) return "";
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, from);
+      return buf.toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+  });
 }
 
 export interface ClaudeRuntimeOptions {
@@ -251,10 +276,10 @@ export class ClaudeSession {
         `${tag}claude turn (continue=${resume}, attempt=${attempt + 1}, budget=${Math.floor(budget)}s, session=${uuid})`,
       );
       // A killed attempt can leave a line without its newline; the next attempt must not extend it.
-      if (existsSync(transcript) && fileSize(transcript) > 0 && readTail(transcript, 0, 1) !== "\n") {
+      if (sizeOrZero(transcript) > 0 && readTail(transcript, 0, 1) !== "\n") {
         appendFileSync(transcript, "\n");
       }
-      const from = existsSync(transcript) ? fileSize(transcript) : 0;
+      const from = sizeOrZero(transcript);
 
       const run = await runWithBudget(
         [
