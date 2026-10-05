@@ -211,8 +211,9 @@ export async function gradeBatch(
   _workers = 8,
   opts: Sb2Options = {},
 ): Promise<Record<string, GradeResult>> {
-  const out: Record<string, GradeResult> = {};
-  const staged: Record<string, [Record<string, unknown>, string]> = {};
+  // No prototype: a task key such as `__proto__` must be an own entry, not the prototype setter.
+  const out: Record<string, GradeResult> = Object.create(null);
+  const staged: Record<string, [Record<string, unknown>, string]> = Object.create(null);
   const td = mkdtempSync(join(TMP_DIR, "vh_sb2b_"));
   try {
     const stage = join(td, "outputs");

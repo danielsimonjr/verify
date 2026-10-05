@@ -65,6 +65,15 @@ describe("sb2 grade lookups", () => {
   });
 });
 
+describe("sb2 gradeBatch keys", () => {
+  test("a task key named __proto__ is an own entry of the result, not lost to the prototype setter", async () => {
+    const r = await sb2.gradeBatch([["__proto__", empty, null]]);
+    const own = Object.getOwnPropertyDescriptor(r, "__proto__");
+    expect(own?.value).toMatchObject({ score: null, error: expect.stringContaining("not wrapped") });
+    expect(Object.entries(r).map(([k]) => k)).toEqual(["__proto__"]);
+  });
+});
+
 describe("sb2 grade refuses a symlinked deliverable", () => {
   // The grader copied <tid>_output.xlsx with copyFileSync, which follows a file symlink: the
   // workbook the grader read was then whatever host file the link named.

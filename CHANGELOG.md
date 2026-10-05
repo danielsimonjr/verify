@@ -31,6 +31,7 @@ All notable changes to this project are recorded here. The format follows
 - Skills: OOXML parts are read by namespace, so a DOCX or PPTX that binds the standard namespace to another prefix, or to the default namespace, reads as before (#13).
 - Skills: the LibreOffice converter removes a stale PDF before it runs and reports its exit status or signal when it prints nothing (#13).
 - Jail: a Node or Python install under `$HOME` (nvm, pyenv) stays visible and read-only (#13).
+- Grade: the SB2 batch grader keeps a task key such as `__proto__` in its result instead of dropping it (#13).
 - Grade: APEX rejects a runner that wrote `grades.json` and then exited nonzero or was signalled; the judge-key counter is no longer wrapped at 1,000,000 (#13).
 - Windows: an atomic write retries while an antivirus scan or the search indexer holds the target open; a relative output path in the current directory works under Bun (#8).
 - Grade: a timed-out SB2 recalc waits for its `docker kill` (up to 40 s) before it returns. It waited 10 s, and the grade CLI then exited and ended a slower kill, which left the container running (#10).
