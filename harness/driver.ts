@@ -23,6 +23,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
@@ -47,19 +48,32 @@ export { readJsonFs as readJson, writeJsonFs as writeJson };
 
 const JAIL = join(config.SCRIPTS_DIR, "jail_run.sh");
 
+/**
+ * The command chain of scripts/jail_run.sh as `unshare` arguments: the namespace flags, then `setpriv`
+ * with the flags that drop every capability, then a no-op. The availability probe runs exactly this, so
+ * a host whose util-linux lacks `--kill-child` or `setpriv` is refused up front instead of failing
+ * every turn. A test keeps it equal to the flags in the script.
+ */
+export const JAIL_PROBE: readonly string[] = [
+  "-r", "-m", "-p", "-f", "--mount-proc", "--kill-child",
+  "setpriv", "--bounding-set=-all", "--inh-caps=-all", "--no-new-privs", "--",
+  "true",
+];
+
+/** Why the mount-namespace jail cannot run on this host, or "" when it can. */
 export function jailUnavailable(): string {
   if (!isFile(JAIL)) {
     return `${JAIL} missing`;
   }
   try {
-    const p = spawnSync("unshare", ["-r", "-m", "-p", "-f", "--mount-proc", "true"], {
+    const p = spawnSync("unshare", [...JAIL_PROBE], {
       encoding: "utf8",
       timeout: 20_000,
     });
     if (p.error) {
       return `unshare: ${p.error.name}`;
     }
-    return p.status === 0 ? "" : `unshare -r -m -p failed: ${(p.stderr || "").trim().slice(0, 120)}`;
+    return p.status === 0 ? "" : `unshare/setpriv failed: ${(p.stderr || "").trim().slice(0, 120)}`;
   } catch (e) {
     return `unshare: ${e instanceof Error ? e.name : "Error"}`;
   }
@@ -146,9 +160,23 @@ export function isTransient(stderr: string): boolean {
  */
 const GRADER_ONLY_ENV = /^(JB_JUDGE_|APEX_|JUDGE_|WB_LITELLM_|VERIHARNESS_(BENCH_ROOT|WB_INDEX|IMAGE_))/;
 
-/** The environment for a verifier session: the host's, minus what only a grader may see. */
-export function agentEnv(host: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(host).filter(([name]) => !GRADER_ONLY_ENV.test(name)));
+/**
+ * The environment for a verifier session: the host's, minus what only a grader may see, plus
+ * `VERIHARNESS_JAIL_HIDE`. The jail hides the repo, the data root and `$HOME` by itself; this lists
+ * the other places a session must not read, one absolute path per line: the directories the caller
+ * already named, the run outputs (sibling runs, archived grades) and the benchmark checkout (answer
+ * keys). The checkout's path is read from `host` here because the filter above drops it from the result.
+ */
+export function agentEnv(host: NodeJS.ProcessEnv, runs: string = config.RUNS): NodeJS.ProcessEnv {
+  const env = Object.fromEntries(Object.entries(host).filter(([name]) => !GRADER_ONLY_ENV.test(name)));
+  const bench = host.VERIHARNESS_BENCH_ROOT;
+  const hide = [
+    ...(host.VERIHARNESS_JAIL_HIDE ?? "").split("\n"),
+    runs,
+    ...(bench ? [resolve(bench.startsWith("~") ? join(homedir(), bench.slice(1)) : bench)] : []),
+  ].filter((p) => p !== "");
+  env.VERIHARNESS_JAIL_HIDE = [...new Set(hide)].join("\n");
+  return env;
 }
 
 /** True when pi has left a session file in `dir`; false when it left none or the dir does not exist. */

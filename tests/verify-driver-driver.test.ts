@@ -1,9 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
+  JAIL_PROBE,
   agentEnv,
   changedFiles,
   completeBundle,
@@ -228,6 +230,52 @@ describe("agentEnv: what the verifier session inherits", () => {
       VERIHARNESS_OLLAMA_BASE_URL: "http://127.0.0.1:11434",
     });
     expect(host).toEqual(before);
+  });
+
+  // The jail hides the data root and the repo, but a run-output directory or benchmark checkout that
+  // lives elsewhere stays readable unless the jail is told about it. The checkout's path is read here,
+  // from the host environment, because the line above removes it from the session's.
+  describe("the directories the jail is told to hide", () => {
+    const hidden = (env: NodeJS.ProcessEnv): string[] => (env.VERIHARNESS_JAIL_HIDE ?? "").split("\n").filter(Boolean);
+
+    test("lists the run outputs and the benchmark checkout, as absolute paths", () => {
+      const env = agentEnv(host, resolve("/work/runs"));
+      expect(hidden(env)).toEqual([resolve("/work/runs"), resolve("/bench")]);
+      expect(hidden(env).every((p) => isAbsolute(p))).toBe(true);
+    });
+
+    test("without a benchmark checkout it lists only the run outputs", () => {
+      const { VERIHARNESS_BENCH_ROOT: _unused, ...noBench } = host;
+      expect(hidden(agentEnv(noBench, resolve("/work/runs")))).toEqual([resolve("/work/runs")]);
+    });
+
+    test("a relative or ~ checkout path is resolved the way the config resolves it", () => {
+      const rel = agentEnv({ ...host, VERIHARNESS_BENCH_ROOT: "bench/here" }, resolve("/r"));
+      expect(hidden(rel)).toContain(resolve("bench/here"));
+      const tilde = agentEnv({ ...host, VERIHARNESS_BENCH_ROOT: "~/bench" }, resolve("/r"));
+      expect(hidden(tilde)).toContain(join(homedir(), "bench"));
+    });
+
+    test("directories the caller already listed are kept, once", () => {
+      const env = agentEnv({ ...host, VERIHARNESS_JAIL_HIDE: `${resolve("/extra")}\n${resolve("/bench")}` }, resolve("/work/runs"));
+      expect(hidden(env)).toEqual([resolve("/extra"), resolve("/bench"), resolve("/work/runs")]);
+    });
+  });
+});
+
+describe("JAIL_PROBE: the availability check runs the jail's own command chain", () => {
+  // Parsed from the script, not copied from the constant, so the two cannot drift apart unnoticed.
+  const text = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "harness", "scripts", "jail_run.sh"), "utf8").replaceAll("\r\n", "\n");
+  const unshareFlags = text.match(/^exec unshare (.+?) \/bin\/bash -s /m)?.[1]?.split(" ");
+  const setprivFlags = text.match(/^exec setpriv (.+?) -- "\$@"$/m)?.[1]?.split(" ");
+
+  test("the script has the two lines this test reads", () => {
+    expect(unshareFlags).toBeDefined();
+    expect(setprivFlags).toBeDefined();
+  });
+
+  test("probes unshare with the script's flags, then setpriv with the script's flags, then a no-op", () => {
+    expect([...JAIL_PROBE]).toEqual([...unshareFlags!, "setpriv", ...setprivFlags!, "--", "true"]);
   });
 });
 
