@@ -35,8 +35,8 @@ function within(dir: string, target: string): boolean {
  *
  * A backslash is refused (403) wherever it appears. It is a separator on Windows and a name
  * character on POSIX, and Bun's `realpathSync` reads it as a separator on Linux as well, where
- * Node's does not. Without this rule, one URL would name different files on different platforms
- * and runtimes.
+ * Node's does not (oven-sh/bun#33403). Without this rule, one URL would name different files on
+ * different platforms and runtimes.
  */
 export function resolveServedPath(root: string, requestUrl: string | undefined): ServedPath {
   const rawPath = (requestUrl ?? "/").split(/[?#]/, 1)[0] ?? "/";

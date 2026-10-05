@@ -92,8 +92,8 @@ describe("static server refuses a path that leaves the root", () => {
   }
 
   // A backslash is a separator on Windows and a name character on POSIX, and Bun 1.4's
-  // realpathSync reads it as a separator on Linux too, where Node does not. Refusing it everywhere
-  // gives one answer on every platform and runtime.
+  // realpathSync reads it as a separator on Linux too, where Node does not (oven-sh/bun#33403).
+  // Refusing it everywhere gives one answer on every platform and runtime.
   test("a backslash is refused even when the path it names stays inside the root", async () => {
     const r = await get("/sub%5cpage.html");
     expect(r.body).not.toContain("<p>page</p>");
