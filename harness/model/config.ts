@@ -156,8 +156,10 @@ function positiveTimeout(ms: number): number {
  */
 export function secondsToMs(seconds: number, name: string): number {
   if (!(seconds > 0)) throw new Error(`${name} must be positive`);
+  // Before rounding: 0.0005 s would round up to 1 ms and pass.
+  if (seconds < 0.001) throw new Error(`${name} must be at least 0.001 seconds`);
   const ms = Math.round(seconds * 1000);
-  if (!Number.isFinite(ms) || ms < 1) throw new Error(`${name} must be at least 0.001 seconds`);
+  if (!Number.isFinite(ms)) throw new Error(`${name} must be at least 0.001 seconds`);
   return ms;
 }
 

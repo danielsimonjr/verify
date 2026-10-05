@@ -68,6 +68,10 @@ describe("config boundary rejects unusable numbers [4178394554]", () => {
     expect(secondsToMs(0.5, "request timeout")).toBe(500);
     expect(secondsToMs(1.001, "request timeout")).toBe(1001);
     expect(() => secondsToMs(0.0001, "request timeout")).toThrow(/at least 0.001/);
+    for (const tiny of [0.0005, 0.0009, 0.00099]) {
+      expect(() => secondsToMs(tiny, "request timeout")).toThrow(/at least 0.001/);
+    }
+    expect(secondsToMs(0.001, "request timeout")).toBe(1);
   });
 
   test("the CLI turns each of them into an input error before any request", async () => {
