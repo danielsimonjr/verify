@@ -25,6 +25,16 @@ export function pyStrip(s: string): string {
   return s.replace(PY_SPACE, "");
 }
 
+/**
+ * Python's `text.split(sep, 1)` for a text that holds `sep`: [before the first `sep`, after it].
+ * JavaScript's `split(sep, 2)` is not this: the limit truncates, so "a=b=c".split("=", 2) is
+ * ["a", "b"] and loses "=c". Returns [text, ""] when `sep` is absent.
+ */
+export function splitFirst(text: string, sep: string): [string, string] {
+  const i = text.indexOf(sep);
+  return i < 0 ? [text, ""] : [text.slice(0, i), text.slice(i + sep.length)];
+}
+
 /** Python's str.splitlines: it also splits at a vertical tab, a form feed and the Unicode separators. */
 export function splitLines(text: string): string[] {
   return text === "" ? [] : text.split(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/);

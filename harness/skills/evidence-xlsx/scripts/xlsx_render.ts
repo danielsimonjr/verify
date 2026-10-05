@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { basename, extname, join, resolve } from "node:path";
+import { ensureDir } from "../../_shared/dirs.js";
 import { sofficeToPdf } from "../../_shared/office.js";
 import { rasterizePages, renderRoot } from "../../_shared/raster.js";
 
@@ -31,7 +32,7 @@ if (!file || !(dpi > 0)) {
 
 const src = resolve(file);
 const out = join(renderRoot(), "xlsx_render", basename(src, extname(src)));
-mkdirSync(out, { recursive: true });
+ensureDir(out);
 const copy = join(out, basename(src));
 copyFileSync(src, copy);
 

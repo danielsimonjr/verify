@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { createServer } from "node:http";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { chromium } from "playwright";
+import { ensureDir } from "../../_shared/dirs.js";
+import { serve } from "../../_shared/static_server.js";
 
 const COUNTS = `() => ({
   text: document.body ? document.body.innerText.length : 0,
@@ -44,26 +45,6 @@ const LAYOUT = `() => {
   return {clipped: clipped.slice(0, 20), overflow};
 }`;
 
-function serve(root: string): { server: ReturnType<typeof createServer>; port: number } {
-  const server = createServer((req, res) => {
-    const url = req.url?.split("?")[0] ?? "/";
-    const rel = url === "/" ? "/index.html" : url;
-    const path = join(root, rel.replace(/^\//, ""));
-    try {
-      const data = readFileSync(path);
-      res.writeHead(200);
-      res.end(data);
-    } catch {
-      res.writeHead(404);
-      res.end("not found");
-    }
-  });
-  server.listen(0, "127.0.0.1");
-  const addr = server.address();
-  const port = typeof addr === "object" && addr ? addr.port : 0;
-  return { server, port };
-}
-
 const { positionals, values } = parseArgs({
   allowPositionals: true,
   options: {
@@ -75,7 +56,7 @@ const { positionals, values } = parseArgs({
 });
 const rootArg = positionals[0];
 if (!rootArg) {
-  console.error("usage: pageprobe.py SERVED_DIR [--page index.html] [--mobile] [--click 12] [--out DIR]");
+  console.error("usage: pageprobe.js SERVED_DIR [--page index.html] [--mobile] [--click 12] [--out DIR]");
   process.exit(2);
 }
 
@@ -199,10 +180,10 @@ try {
   }
 
   const outDir = values.out ?? "/tmp";
-  mkdirSync(outDir, { recursive: true });
+  ensureDir(outDir);
   const shot = join(
     outDir,
-    `pageprobe_${resolve(root).split("/").pop()}_${mobile ? "m" : "d"}.png`,
+    `pageprobe_${basename(resolve(root))}_${mobile ? "m" : "d"}.png`,
   );
   try {
     await page.screenshot({ path: shot, fullPage: true, timeout: 5000 });

@@ -23,7 +23,7 @@ import {
   parseOllamaRunningContext,
   parseOllamaToolCapability,
 } from "../harness/model/ollama.ts";
-import { ModelError } from "../harness/model/types.ts";
+import { ModelError, type StreamEvent } from "../harness/model/types.ts";
 import { normalizeBaseUrl } from "../harness/model/url.ts";
 
 interface Hit {
@@ -253,7 +253,7 @@ describe("ollama backend", () => {
       resolveLocalConfig({ provider: "ollama", model: "qwen", retries: 0, timeoutMs: 1000, env: {} }),
       { fetch: crashed.fetch },
     );
-    const crashedEvents = [];
+    const crashedEvents: StreamEvent[] = [];
     await expect(
       (async () => {
         for await (const event of crashedBackend.stream({ messages: [{ role: "user", content: "hi" }] })) {
@@ -310,7 +310,10 @@ describe("ollama backend", () => {
       resolveLocalConfig({ provider: "ollama", model: "qwen", retries: 0, timeoutMs: 1000, env: {} }),
       { fetch: noTools.fetch },
     );
-    (bare as { remember: (caps: { tools: false; json: true }) => void }).remember({ tools: false, json: true });
+    (bare as unknown as { remember: (caps: { tools: false; json: true }) => void }).remember({
+      tools: false,
+      json: true,
+    });
     await expect(
       bare.complete({
         messages: [{ role: "user", content: "hi" }],
@@ -465,7 +468,7 @@ describe("llama.cpp backend", () => {
     const crashed = llamaBackend((hit) =>
       route(hit, () => textStream(['data: {"error":{"message":"context exceeded"}}\n'])),
     );
-    const crashedEvents = [];
+    const crashedEvents: StreamEvent[] = [];
     await expect(
       (async () => {
         for await (const event of crashed.backend.stream({ messages: [{ role: "user", content: "hi" }] })) {

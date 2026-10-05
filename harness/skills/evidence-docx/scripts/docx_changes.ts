@@ -68,6 +68,7 @@ if (commentsFile) {
       for (const id of open) anchors.get(id)!.push(text);
       return false;
     }
+    return true;
   });
 
   let m = 0;

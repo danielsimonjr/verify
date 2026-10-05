@@ -16,6 +16,9 @@
     "resolveJsonModule": true,
     "verbatimModuleSyntax": true,
     "noUncheckedIndexedAccess": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
     "types": ["node"]
   },
   "include": ["harness/**/*.ts"],

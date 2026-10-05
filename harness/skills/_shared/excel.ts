@@ -144,9 +144,6 @@ export function* iterSheetCells(
   if (!range) {
     for (let r = 1; r <= ws.rowCount; r++) {
       const row = ws.getRow(r);
-      row.eachCell({ includeEmpty: false }, (cell) => {
-        /* collected below */
-      });
       for (let c = 1; c <= row.cellCount; c++) {
         const cell = row.getCell(c);
         if (cell.value != null) yield cell;

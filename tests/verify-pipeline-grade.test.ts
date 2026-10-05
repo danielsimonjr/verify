@@ -10,9 +10,10 @@ const RT = process.execPath; // bun under `bun test`
 const SCENARIO = join(import.meta.dir, "fixtures", "verify-pipeline", "grade-scenario.ts");
 
 // Every case starts the grader in a fresh Bun process. Measured on an idle Windows host: about 2 s
-// for a plain case, and 3.8-4.5 s for the three that wait out a deliberate timeout. Bun's 5 s
-// default fails those on a loaded machine, and when it fires it also kills the grader process, so
-// the case reports a missing result instead of a timeout. The bound is per file in Bun.
+// for a plain case, 3.8-4.5 s for the three that wait out a deliberate timeout, and 13.7-14.8 s
+// for the slow docker kill (its fake kill alone takes 11 s). Bun's 5 s default fails those on a
+// loaded machine, and when it fires it also kills the grader process, so the case reports a
+// missing result instead of a timeout. The bound is per file in Bun.
 setDefaultTimeout(30_000);
 
 let root: string;
@@ -161,7 +162,7 @@ describe("apex grade", () => {
     expect(used).toHaveLength(2);
     const keys = ["k0", "k1", "k2", "k3", "k4", "k5", "k6"];
     const first = keys.indexOf(used[0]!);
-    expect(keys[(first + 1) % 7]).toBe(used[1]);
+    expect(keys[(first + 1) % 7]).toBe(used[1]!);
   });
 
   test("a one-shot process starts at keys[pid % n], not always at the first key", () => {
@@ -251,6 +252,15 @@ describe("sb2 grade (docker and the cell comparison replaced by stand-ins)", () 
     const kill = log.find((c) => c.sub === "kill");
     expect(kill).toBeDefined();
     expect(kill!.name).toBe(run.name);
+  });
+
+  // The grade CLI exits on the result. A result that came back before a slow `docker kill`
+  // finished would end the kill and leave the container running. 11 s is longer than run()'s
+  // default stop wait (10 s), so this needs sb2's own wait for the kill.
+  test("a recalc timeout waits for a slow docker kill to finish", () => {
+    const r = one({ FAKE_DOCKER_MODE: "hang", SB2_RECALC_TIMEOUT: "700", FAKE_KILL_MS: "11000" });
+    expect(r.stderr).toMatch(/recalc failed \(timed out after 700 ms/);
+    expect(dockerLog().some((c) => c.sub === "kill-done")).toBe(true);
   });
 
   test("a recalc that reports an error names the marker and the output", () => {

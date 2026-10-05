@@ -53,7 +53,6 @@ for (const p of paths) {
   books.set(p, wb);
 }
 
-type Key = string;
 const cells = new Map<string, Map<string, unknown>>();
 
 for (const [p, wb] of books) {

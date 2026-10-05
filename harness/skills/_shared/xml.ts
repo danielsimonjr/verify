@@ -37,9 +37,10 @@ const parser = new XMLParser({
   trimValues: false,
   parseTagValue: false,
   parseAttributeValue: false,
-  // The default caps all `&quot;`, `&lt;`, `&gt;` and `&apos;` references in a part at 1000, so a
-  // long document fails to parse at all. The caps that guard DTD entity bombs (expanded length,
-  // nesting) stay at their defaults; Office parts carry no DTD.
+  // fast-xml-parser 4.x capped all `&quot;`, `&lt;`, `&gt;` and `&apos;` references in a part at 1000
+  // by default, so a long document failed to parse at all; 5.x leaves the count unbounded. The option
+  // stays explicit so a default that returns cannot break a long document. The caps that guard DTD
+  // entity bombs (expanded length, nesting) stay at their defaults; Office parts carry no DTD.
   processEntities: { enabled: true, maxTotalExpansions: Infinity },
 });
 

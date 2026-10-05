@@ -24,7 +24,6 @@ import {
   isFile,
   partition,
   readJson,
-  readText,
   rmrf,
   SymlinkError,
 } from "../fsutil.js";

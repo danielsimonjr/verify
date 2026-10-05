@@ -98,16 +98,25 @@ describe("run", () => {
   // A one-shot grader exits on the result. If the result came back before onTimeout finished,
   // the `docker kill` it starts would die with the grader and the container would keep running.
   test("returns only after onTimeout has finished", async () => {
+    // onTimeout finishes 300 ms after the child is gone. A run() that returned on the child's exit
+    // would return first on every platform. A fixed delay does not show that on Windows, where
+    // the tree kill alone takes longer than the delay.
+    const pidFile = join(dir, "pid");
+    let pid = 0;
     let stopped = false;
-    await sh("setTimeout(() => {}, 60000)", {
-      timeoutMs: 300,
+    await sh("require('fs').writeFileSync(process.env.PID_FILE, String(process.pid)); setTimeout(() => {}, 60000)", {
+      timeoutMs: 1_000,
+      env: { ...process.env, PID_FILE: pidFile },
       onTimeout: async () => {
-        await new Promise((r) => setTimeout(r, 800));
+        pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : 0;
+        for (let i = 0; i < 100 && pid && alive(pid); i++) await new Promise((r) => setTimeout(r, 50));
+        await new Promise((r) => setTimeout(r, 300));
         stopped = true;
       },
     });
+    expect(pid).toBeGreaterThan(0); // without the pid, the wait above is a fixed delay again
     expect(stopped).toBe(true);
-  });
+  }, 15_000); // timer 1 s + taskkill about 1 s + up to 5 s of polling + 300 ms
 
   test("an onTimeout that never settles does not hold the caller past the stop wait", async () => {
     const t0 = Date.now();
