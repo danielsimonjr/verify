@@ -72,7 +72,7 @@ Claude Code loads its own built-in plugins whatever the setting sources are. The
 
 ## Sessions and files
 
-Claude Code keeps a copy of each session in its configuration directory, and `--resume` reads that copy. The configuration directory is `CLAUDE_CONFIG_DIR` when it is set, and `~/.claude` otherwise.
+Claude Code keeps a copy of each session in its configuration directory, and `--resume` reads that copy. The configuration directory is `CLAUDE_CONFIG_DIR` when it is set, and `~/.claude` otherwise. The driver resolves a relative or `~` value against its own working directory, and passes the absolute path to `claude`. The driver and `claude` then use the same directory, although `claude` runs in the task directory.
 
 - A new session gets a UUID from the driver and starts with `--session-id`.
 - The adjudication turn and the delivery turn share one session. The delivery turn starts with `--resume`.

@@ -22,6 +22,8 @@
  * whether the transcript is saved. The harness needs the saved transcript: `--resume` reads it.
  */
 
+import { claudeConfigDir } from "./persisted.js";
+
 /**
  * The variables that name or reach one running Claude Code session. Claude Code puts `CLAUDECODE`,
  * `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_SESSION_ATTENDED` and `CLAUDE_PID`
@@ -113,7 +115,8 @@ export const VERIFIER_SETTINGS = JSON.stringify({
 });
 
 /**
- * The environment of a verifier or check session: no session markers, and auto-memory off. The name is
+ * The environment of a verifier or check session: no session markers, auto-memory off, and an absolute
+ * `CLAUDE_CONFIG_DIR` when one is set. The name is
  * set last and with the exact spelling the CLI reads, so a lower-case copy in the host's environment
  * cannot win on Windows.
  */
@@ -122,5 +125,13 @@ export function claudeSessionEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     Object.entries(withoutSessionMarkers(env)).filter(([n]) => n.toUpperCase() !== "CLAUDE_CODE_DISABLE_AUTO_MEMORY"),
   );
   out.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
+  // The harness resolves a relative or `~` value against its own cwd and finds the saved sessions there.
+  // The child runs in the task folder, so give it the resolved path: both then name one directory.
+  const configKey = Object.keys(out).find((n) => n.toUpperCase() === "CLAUDE_CONFIG_DIR");
+  if (configKey !== undefined && out[configKey] !== "") {
+    const raw = out[configKey];
+    delete out[configKey];
+    out.CLAUDE_CONFIG_DIR = claudeConfigDir({ CLAUDE_CONFIG_DIR: raw });
+  }
   return out;
 }
