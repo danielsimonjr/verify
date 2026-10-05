@@ -14,7 +14,7 @@
 
 export { classifyFailure } from "./errors.js";
 export type { FailureKind } from "./errors.js";
-export { KEPT_VARIABLES, SESSION_MARKERS, withoutSessionMarkers, claudeSessionEnv } from "./env.js";
+export { KEPT_VARIABLES, SESSION_MARKERS, SESSION_MARKER_PREFIXES, withoutSessionMarkers, claudeSessionEnv } from "./env.js";
 export { claudeConfigDir, findPersisted, movePersisted } from "./persisted.js";
 export { ClaudeCheckError, claudeCommand, modelCheck, startCheck } from "./preflight.js";
 export type { ModelCheckOptions, ModelCheckReport } from "./preflight.js";

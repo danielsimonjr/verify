@@ -7,6 +7,7 @@ import {
   KEPT_VARIABLES,
   PI_TO_CLAUDE_TOOL,
   SESSION_MARKERS,
+  SESSION_MARKER_PREFIXES,
   USAGE_LIMIT_EXIT,
   claudeArgs,
   claudeTools,
@@ -87,6 +88,7 @@ describe("README", () => {
 describe("docs/claude-code.md says what the code does", () => {
   test("it lists every session marker the driver removes, and every variable it keeps", () => {
     for (const name of [...SESSION_MARKERS, ...KEPT_VARIABLES]) expect(CLAUDE_DOC).toContain(`\`${name}\``);
+    for (const prefix of SESSION_MARKER_PREFIXES) expect(CLAUDE_DOC).toContain(`\`${prefix}*\``);
   });
 
   test("the command line it shows has each isolation flag the driver passes", () => {

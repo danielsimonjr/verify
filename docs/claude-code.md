@@ -109,7 +109,7 @@ The runner also counts the drivers that other runners started on the same host. 
 
 ## The environment of the verifier
 
-The driver can start inside a Claude Code session, for example from a tool that session runs. A verifier that inherits the variables of that session behaves as a child of it. The driver therefore removes the variables that name or reach one running session. It removes them case-insensitively, because Windows ignores case in names.
+The driver can start inside a Claude Code session, for example from a tool that session runs. A verifier that inherits the variables of that session behaves as a child of it. The driver therefore removes the variables that name or reach one running session. It removes them case-insensitively, because Windows ignores case in names. A name that ends in `*` stands for every variable that starts with that text.
 
 | Variable | Reason for removal |
 | --- | --- |
@@ -118,6 +118,12 @@ The driver can start inside a Claude Code session, for example from a tool that 
 | `CLAUDE_CODE_SSE_PORT` | Points at the IDE connection of the parent. |
 | `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN` | Reach the message channel of the parent. The token is not an Anthropic credential. It opens that channel, and the verifier's `Bash` tool could read it. |
 | `AI_AGENT`, `CLAUDE_EFFORT`, `TRACEPARENT` | Carry the parent's agent identity, effort level and trace. |
+| `CLAUDE_CODE_BRIDGE_SESSION_ID`, `CLAUDE_CODE_BRIDGE_*` | Name the remote bridge of the parent session. |
+| `CLAUDE_CODE_HOST_WORKTREE`, `CLAUDE_CODE_HOST_WORKTREE_FENCE`, `CLAUDE_CODE_HOST_*` | Name the worktree that the parent session runs in. |
+| `CLAUDE_BG_*` (for example `CLAUDE_BG_RV_AUTH`, `CLAUDE_BG_PTY_AUTH`, `CLAUDE_BG_SOCKET_TOKENS_PATH`) | Carry the credentials and sockets of a background session. |
+| `CLAUDE_CODE_EVAL_*` | Mark a run of the evaluation harness of the parent. |
+| `CLAUDE_CODE_PLUGIN_DIRS`, `CLAUDE_CODE_CHROME_MCP_ORG_DENIED` | Add the plugin directories and the browser-tool policy of the parent. |
+| `CLAUDE_CODE_SIMPLE`, `CLAUDE_CODE_SAFE_MODE`, `CLAUDE_CODE_RESTRICTED` | Change the mode of the session. Claude Code removes them from a fresh session. |
 
 The driver never removes the login or the choice of provider: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`. It also keeps `CLAUDE_CONFIG_DIR` and the user's settings, for example `CLAUDE_CODE_GIT_BASH_PATH` and `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. A test checks that no name appears in both lists. The driver also removes the grader-only variables, as for every provider.
 

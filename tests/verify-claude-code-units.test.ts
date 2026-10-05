@@ -7,6 +7,7 @@ import {
   KEPT_VARIABLES,
   PI_TO_CLAUDE_TOOL,
   SESSION_MARKERS,
+  SESSION_MARKER_PREFIXES,
   UNSUPPORTED_WITH_CLAUDE_CODE,
   claudeArgs,
   claudeConfigDir,
@@ -121,6 +122,38 @@ describe("the variables of a session", () => {
     }
     expect(SESSION_MARKERS.some((n) => n.startsWith("ANTHROPIC_"))).toBe(false);
     expect(SESSION_MARKERS.some((n) => /(_USE_|OAUTH|CONFIG_DIR)/.test(n))).toBe(false);
+  });
+
+  test("no kept variable, and no login or provider variable, starts with a stripped prefix", () => {
+    const login = [...new Set([...KEPT_VARIABLES, "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR"])];
+    for (const prefix of SESSION_MARKER_PREFIXES) {
+      for (const name of login) expect(name.toUpperCase().startsWith(prefix)).toBe(false);
+    }
+    const out = withoutSessionMarkers(Object.fromEntries(login.map((n) => [n, "v"])));
+    expect(Object.keys(out).sort()).toEqual([...login].sort());
+  });
+
+  test("the fresh-session clean-up names of Claude Code are stripped, by name and by prefix, in any case", () => {
+    const stripped = [
+      "CLAUDE_CODE_BRIDGE_SESSION_ID",
+      "CLAUDE_CODE_BRIDGE_ANYTHING",
+      "CLAUDE_CODE_HOST_WORKTREE",
+      "CLAUDE_CODE_HOST_WORKTREE_FENCE",
+      "CLAUDE_CODE_PLUGIN_DIRS",
+      "CLAUDE_CODE_CHROME_MCP_ORG_DENIED",
+      "CLAUDE_CODE_EVAL_RUN",
+      "claude_code_eval_lower",
+      "CLAUDE_BG_RV_AUTH",
+      "CLAUDE_BG_PTY_AUTH",
+      "CLAUDE_BG_SOCKET_TOKENS_PATH",
+      "Claude_Bg_Other",
+      "CLAUDE_CODE_SIMPLE",
+      "CLAUDE_CODE_SAFE_MODE",
+      "CLAUDE_CODE_RESTRICTED",
+    ];
+    const kept = ["CLAUDE_BGX", "CLAUDE_CODE_BRIDGE", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "PATH"];
+    const out = withoutSessionMarkers(Object.fromEntries([...stripped, ...kept].map((n) => [n, "v"])));
+    expect(Object.keys(out).sort()).toEqual([...kept].sort());
   });
 
   test("withoutSessionMarkers drops the markers, in any case, and nothing else", () => {

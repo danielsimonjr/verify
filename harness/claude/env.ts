@@ -47,11 +47,33 @@ export const SESSION_MARKERS: readonly string[] = [
   "AI_AGENT",
   "CLAUDE_EFFORT",
   "TRACEPARENT",
+  "CLAUDE_CODE_BRIDGE_SESSION_ID",
+  "CLAUDE_CODE_HOST_WORKTREE",
+  "CLAUDE_CODE_HOST_WORKTREE_FENCE",
+  "CLAUDE_CODE_PLUGIN_DIRS",
+  "CLAUDE_CODE_CHROME_MCP_ORG_DENIED",
+  "CLAUDE_CODE_SIMPLE",
+  "CLAUDE_CODE_SAFE_MODE",
+  "CLAUDE_CODE_RESTRICTED",
+];
+
+/**
+ * Families of session variables that Claude Code's own fresh-session clean-up removes by prefix: the
+ * background-session credentials (`CLAUDE_BG_RV_AUTH`, `CLAUDE_BG_PTY_AUTH`,
+ * `CLAUDE_BG_SOCKET_TOKENS_PATH`), the remote bridge, the host worktree and the evaluation harness. No
+ * login or provider variable starts with one of these, and a test asserts it.
+ */
+export const SESSION_MARKER_PREFIXES: readonly string[] = [
+  "CLAUDE_BG_",
+  "CLAUDE_CODE_BRIDGE_",
+  "CLAUDE_CODE_HOST_",
+  "CLAUDE_CODE_EVAL_",
 ];
 
 /**
  * What is never stripped, however the list above changes: the login and the choice of provider. A test
- * asserts that no entry of `SESSION_MARKERS` is in this list or starts with one of its prefixes.
+ * asserts that no entry of `SESSION_MARKERS` is in this list and that no entry of this list starts with one of
+ * `SESSION_MARKER_PREFIXES`.
  */
 export const KEPT_VARIABLES: readonly string[] = [
   "ANTHROPIC_API_KEY",
@@ -67,9 +89,14 @@ export const KEPT_VARIABLES: readonly string[] = [
 
 const MARKER_SET = new Set(SESSION_MARKERS.map((n) => n.toUpperCase()));
 
+function isSessionMarker(name: string): boolean {
+  const upper = name.toUpperCase();
+  return MARKER_SET.has(upper) || SESSION_MARKER_PREFIXES.some((p) => upper.startsWith(p));
+}
+
 /** A copy of `env` without the session markers. Names are compared upper-cased: Windows ignores case. */
 export function withoutSessionMarkers(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(env).filter(([name]) => !MARKER_SET.has(name.toUpperCase())));
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !isSessionMarker(name)));
 }
 
 /**
