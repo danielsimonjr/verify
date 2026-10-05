@@ -9,7 +9,12 @@ mkdirSync(capture, { recursive: true });
 const name = sub === "kill" ? rest[0] : rest[rest.indexOf("--name") + 1];
 appendFileSync(join(capture, "docker.jsonl"), JSON.stringify({ sub, name, args: rest, start: Date.now() }) + "\n");
 
-if (sub === "kill") process.exit(0);
+if (sub === "kill") {
+  // FAKE_KILL_MS: a daemon that is slow to stop the container. "kill-done" records that it finished.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_KILL_MS ?? 0));
+  appendFileSync(join(capture, "docker.jsonl"), JSON.stringify({ sub: "kill-done", name, end: Date.now() }) + "\n");
+  process.exit(0);
+}
 
 const mode = process.env.FAKE_DOCKER_MODE ?? "ok";
 const sleep = Number(process.env.DOCKER_SLEEP_MS ?? 0);

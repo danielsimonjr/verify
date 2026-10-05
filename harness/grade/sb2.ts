@@ -34,6 +34,7 @@ const COMPARE_PY = join(HARNESS_DIR, "grade", "sb2_compare.py");
 const uid = (): number => process.getuid?.() ?? 0;
 const gid = (): number => process.getgid?.() ?? 0;
 
+/** Options for grade and gradeBatch. Each field has a default, so an empty object is valid. */
 export type Sb2Options = {
   /** The docker command (default `["docker"]`). For tests. */
   dockerCmd?: string[];
@@ -102,10 +103,14 @@ async function recalc(stage: string, o: Sb2Options): Promise<void> {
     "--dir_path",
     "/stage",
   ];
+  const kill = { timeoutMs: 30_000, stopWaitMs: 5_000 };
   const r = await run(docker!, args, {
     timeoutMs: o.recalcTimeoutMs ?? 900_000,
     // Killing the docker CLI does not stop the container: the daemon owns it. Stop it by name.
-    onTimeout: () => run(docker!, [...dockerArgs, "kill", name], { timeoutMs: 30_000 }),
+    onTimeout: () => run(docker!, [...dockerArgs, "kill", name], kill),
+    // Wait as long as the kill may take, its own stop included: the grade CLI exits on the result,
+    // which ends a kill that is still running and leaves the container up.
+    stopWaitMs: kill.timeoutMs + kill.stopWaitMs + 5_000,
   });
   const out = r.stdout + r.stderr;
   const bad = [
@@ -150,6 +155,13 @@ async function gradeDet(
   return res as GradeResult;
 }
 
+/**
+ * Grade one SB2 task. `key` is `<category>__<task id>`, and `deliverables` must hold
+ * `<task id>_output.xlsx`. The workbook is recalculated in its own container, then compared with
+ * the official answer. A missing workbook scores 0. A bad key, an unwrapped category, an unknown
+ * task id or a failed comparison gives a null score with the reason in `error`. A failed
+ * recalculation or a missing `dataset.json` throws.
+ */
 export async function grade(key: string, deliverables: string, opts: Sb2Options = {}): Promise<GradeResult> {
   const parts = splitKey(key);
   if (!parts) {
