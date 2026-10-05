@@ -99,10 +99,11 @@ const proxy: { url: string | null; proc: ReturnType<typeof spawn> | null; dir: s
   dir: null,
 };
 
-function freePort(): Promise<number> {
+/** A free TCP port, found by listening on the loopback address only. Exported for its test. */
+export function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const s = createServer();
-    s.listen(0, () => {
+    s.listen(0, "127.0.0.1", () => {
       const addr = s.address();
       s.close(() => resolve(typeof addr === "object" && addr ? addr.port : 0));
     });

@@ -130,8 +130,9 @@ _proxy_lock = threading.Lock()
 
 
 def _free_port() -> int:
+  # Loopback only: the probe needs a port number, not a listener other hosts can reach.
   with socket.socket() as s:
-    s.bind(("", 0))
+    s.bind(("127.0.0.1", 0))
     return s.getsockname()[1]
 
 
