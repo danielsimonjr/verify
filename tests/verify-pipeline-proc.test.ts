@@ -109,7 +109,8 @@ describe("run", () => {
     let pid = 0;
     let stopped = false;
     await sh("require('fs').writeFileSync(process.env.PID_FILE, String(process.pid)); setTimeout(() => {}, 60000)", {
-      timeoutMs: 1_000,
+      // The child must have written its pid before the timer fires; starting Node took over 1 s on a loaded host.
+      timeoutMs: 4_000,
       env: { ...process.env, PID_FILE: pidFile },
       onTimeout: async () => {
         pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : 0;
@@ -120,7 +121,7 @@ describe("run", () => {
     });
     expect(pid).toBeGreaterThan(0); // without the pid, the wait above is a fixed delay again
     expect(stopped).toBe(true);
-  }, 15_000); // timer 1 s + taskkill about 1 s + up to 5 s of polling + 300 ms
+  }, 20_000); // timer 4 s + taskkill about 1 s + up to 5 s of polling + 300 ms
 
   test("an onTimeout that never settles does not hold the caller past the stop wait", async () => {
     const t0 = Date.now();
