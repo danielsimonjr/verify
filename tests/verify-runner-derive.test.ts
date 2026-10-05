@@ -104,12 +104,14 @@ describe("env-derive builds", () => {
   }, 20_000);
 
   test("a build past its timeout is reported FAILED and the docker process is killed", async () => {
-    const lines = await deriveImages(bases(1), 1, stubDocker({ sleepMs: 8000 }), 300);
+    // The stub must start and record its pid before the kill. 300 ms was shorter than a Bun start on
+    // a loaded Windows host, and then no event was recorded at all.
+    const lines = await deriveImages(bases(1), 1, stubDocker({ sleepMs: 60_000 }), 2_000);
     expect(lines[0]).toMatch(/^vh\/task0: FAILED .*timed out/);
 
-    const [start] = events();
-    expect(start!.ev).toBe("start");
-    expect(() => process.kill(start!.pid, 0)).toThrow(); // no such process
+    const evs = events();
+    expect(evs.map((e) => e.ev)).toEqual(["start"]); // it started, and was killed before it ended
+    expect(() => process.kill(evs[0]!.pid, 0)).toThrow(); // no such process
   }, 20_000);
 
   test("a missing docker binary is a per-image failure, not a crash", async () => {

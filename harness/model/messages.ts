@@ -76,7 +76,8 @@ export function contextUnknownError(provider: LocalProviderId, model: string, wa
       `Ollama model '${model}' does not advertise num_ctx.${asked} ` +
         `A loaded model reports its effective window as context_length on GET /api/ps; otherwise the harness reads the num_ctx parameter from ollama show. ` +
         `The architecture context_length in model_info is not that window, and the harness will not invent one. ` +
-        `Set it with \`printf 'FROM ${model}\\nPARAMETER num_ctx 32768\\n' | ollama create ${model}\`, which ollama show reports at once, or ` +
+        `Set it in a variant: put \`FROM ${model}\` and \`PARAMETER num_ctx 32768\` on two lines of a file named Modelfile, run \`ollama create ${model}-32k -f Modelfile\` ` +
+        `(it reads no Modelfile from standard input) and pass --model ${model}-32k; ollama show reports it at once. Or ` +
         `restart the server with \`OLLAMA_CONTEXT_LENGTH=32768 ollama serve\` and then load the model ` +
         `(\`ollama run ${model} ""\`) so GET /api/ps reports the window it uses. Then retry.`,
     );
@@ -97,7 +98,7 @@ export const PI_CONTEXT_RESERVE = 4096;
 export function contextUnusableError(provider: LocalProviderId, model: string, window: number): ModelError {
   const how =
     provider === "ollama"
-      ? "Raise it with `OLLAMA_CONTEXT_LENGTH=32768 ollama serve` or a Modelfile PARAMETER num_ctx."
+      ? "Raise it with `OLLAMA_CONTEXT_LENGTH=32768 ollama serve` and then load the model (`ollama run <model> \"\"`), or with a Modelfile PARAMETER num_ctx (`ollama create <name> -f Modelfile`)."
       : "Restart llama-server with `-c 32768`.";
   return new ModelError(
     provider,
@@ -117,8 +118,8 @@ export function contextTooSmallError(
     provider === "ollama"
       ? `Ollama model '${model}' is configured with num_ctx ${have}, below the requested ${want}. ` +
         `The agent talks to Ollama's OpenAI-compatible endpoint, which uses the model's configured context. ` +
-        `Set it with \`OLLAMA_CONTEXT_LENGTH=${want} ollama serve\`, or ` +
-        `\`printf 'FROM ${model}\\nPARAMETER num_ctx ${want}\\n' | ollama create ${model}\`.`
+        `Set it with \`OLLAMA_CONTEXT_LENGTH=${want} ollama serve\` and then load the model (\`ollama run ${model} ""\`), or with ` +
+        `a variant made from a Modelfile with \`PARAMETER num_ctx ${want}\` (\`ollama create <name> -f Modelfile\`, then --model <name>).`
       : `llama-server is running with context ${have}, below the requested ${want}. ` +
         `Restart it with \`-c ${want}\` (context is a server flag, not a per-request field).`;
   return new ModelError(provider, "unsupported", hint);

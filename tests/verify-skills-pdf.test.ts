@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +9,10 @@ import { GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import { extractWords, loadPdf } from "../harness/skills/_shared/pdf.ts";
 import { findPython, importProbe, pythonCandidates, sibling } from "../harness/skills/_shared/python.ts";
+
+// Tests here start child processes. On a loaded Windows host one measured 3.9 s, against
+// Bun's 5 s default; the bound is per file in Bun.
+setDefaultTimeout(30_000);
 
 const FIXTURES = join(import.meta.dir, "fixtures", "verify-skills");
 const SCRIPTS = join(import.meta.dir, "..", "harness", "skills", "evidence-pdf", "scripts");

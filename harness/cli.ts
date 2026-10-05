@@ -29,7 +29,7 @@ commands:
   materialize   build task workspaces from an archive
   grade         grade one deliverables directory
   env-derive    derive WorkBuddy images with the tool stack
-  model-check   probe a local Ollama or llama.cpp server
+  model-check   probe a local Ollama or llama.cpp server, or the Claude Code CLI
 `;
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {

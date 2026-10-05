@@ -197,6 +197,15 @@ describe("agentEnv: what the verifier session inherits", () => {
     VERIHARNESS_IMAGE_SB2_GRADER: "img",
   };
 
+  test("grader names are matched in any case, as Windows ignores case in variable names", () => {
+    const env = agentEnv({ judge_api_key: "s", Apex_Token: "s", jb_judge_model: "s", wb_litellm_api_key: "s", PATH: "/bin" });
+    expect(env.judge_api_key).toBeUndefined();
+    expect(env.Apex_Token).toBeUndefined();
+    expect(env.jb_judge_model).toBeUndefined();
+    expect(env.wb_litellm_api_key).toBeUndefined();
+    expect(env.PATH).toBe("/bin");
+  });
+
   test("grader credentials and answer-key locations do not reach the session", () => {
     const env = agentEnv(host);
     for (const name of [

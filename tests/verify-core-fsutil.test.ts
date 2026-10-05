@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -14,6 +14,10 @@ import { join } from "node:path";
 
 import { assertNoSymlinks, copyTree, SymlinkError } from "../harness/fsutil.ts";
 import { guardedEnv, runGrader as runGraderIn } from "./fixtures/verify-core/grader-process.ts";
+
+// Tests here start child processes. On a loaded Windows host one measured 3.2 s, against
+// Bun's 5 s default; the bound is per file in Bun.
+setDefaultTimeout(30_000);
 
 /** Run a grader in a guarded subprocess (see grader-process.ts). */
 const runGrader = (bench: string, fn: string, args: unknown[]) => runGraderIn(tmp, bench, fn, args);

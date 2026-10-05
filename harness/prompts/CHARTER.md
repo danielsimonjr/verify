@@ -4,7 +4,7 @@ acquiring evidence from the environment, not by impression.
 
 # The workspace
 
-    MISSION.md            — your mission: N, output contract, delivery format
+    MISSION.md            — your mission: N and the output contract
     spec/                 — the original task specification
     workspace/            — the task's original input files (read-only)
     rollouts/<name>/
@@ -22,7 +22,10 @@ Each phase's instructions say which of these it reads and which it writes.
 Most spreadsheets have a sibling `<name>.cells.tsv` (one line per non-empty cell:
 `Sheet!A1 <tab> value <tab> formula`, then `# note` where the cell carries a comment), and most Word, PowerPoint and PDF files a sibling
 `<name>.text.txt` (their text, tables row by row), so one grep compares a cell or a passage
-across every rollout and the input; where one is missing, read the file itself. Those
+across every rollout and the input; where one is missing, read the file itself. A `.cells.tsv`
+opens with a `# sheets:` header line and ends with `# cut at N cells` when the workbook was larger
+than its limit; a `.text.txt` stops at 400,000 characters without saying so. Past a cut, read the
+file itself. Those
 `.cells.tsv` and `.text.txt` files are ours, not the rollouts': never count one as a file a
 rollout delivered, and never charge anyone for its presence. Any skills listed below are evidence instruments; reach for one
 when a claim turns on what a spreadsheet, a PDF or a Word document actually contains.

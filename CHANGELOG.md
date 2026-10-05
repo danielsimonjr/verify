@@ -10,6 +10,9 @@ All notable changes to this project are recorded here. The format follows
 - The harness is TypeScript: Bun runs it in development and Node runs the built `dist/` in production (#1).
 - Local model backends: Ollama and llama.cpp, with a `model-check` preflight that refuses a server that is down, a missing model, or a model that cannot call tools (#2).
 - `writeFileAtomic` and `renameReplacing` in `harness/fsutil.ts`: one shared temp-file-and-rename write (#8).
+- `--provider claude-code` runs the verifier on Claude Haiku and Claude Sonnet through the Claude Code CLI, with the login that Claude Code already holds (`docs/claude-code.md`). These lanes run without the jail: the verifier can read other tasks' results and answer keys, and the driver says so once per task (#11).
+- Runner lanes `haiku` and `sonnet`, `--lane-max lane=N`, and `--env` passed to every driver. A usage limit (exit 75) stops the lane, because every session of an account shares it (#11).
+- `model-check --provider claude-code` prints the CLI version, the model and the key source (#11).
 - CI builds and smoke-runs the built CLI on Linux and Windows, and checks the jail on a real Linux kernel. A control run with capabilities must report every escape and every write, so a "no" in the jail run means the jail held (#9).
 
 ### Fixed
@@ -31,6 +34,12 @@ All notable changes to this project are recorded here. The format follows
 - An atomic write that fails removes a partly written temp file, and reports the write or rename error even when that cleanup fails (#10).
 - Skill scripts: `pageprobe` and `xlsx_recalc` run on Windows; output directories go through one helper, so `--out .` works under Bun on Windows; a patchlab candidate splits at the first `=` only (#9).
 - `bun run typecheck` checks `tests/` too, with the strict unused-code and implicit-return flags, and the dead code that they reported is removed (#9).
+- A pi turn whose message or charter is over the Windows command-line limit sends them on stdin or in a file, and pi starts on Windows through its entry script (#11).
+- `runWithBudget` marks a cut stderr as cut, and no longer splits a multi-byte character at a chunk boundary (#11).
+- CHARTER.md matches MISSION.md, and states the `# cut at N cells` and 400,000-character limits of the rendered views (#11).
+- `docs/local-models.md` and the context-length messages: load the model after setting `OLLAMA_CONTEXT_LENGTH`, and create a variant with `ollama create -f Modelfile` (#11).
+- `VERIHARNESS_TMP` defaults to the OS temp directory when `/var/tmp` does not exist (#11).
+- Tests: the env-derive timeout test gives its stub 2 s to start instead of 300 ms, and the Windows command-line test makes about 280 folders instead of 1,500, whose delete outlasted the 5 s cleanup hook. Nine test files that start child processes set a 30 s default: their slowest tests measured 3.2-5.3 s on a loaded Windows host, and Bun's 5 s default failed a different one on each run. Bun 1.4.2 reads no test timeout from `bunfig.toml`, and a preloaded `setDefaultTimeout` reaches only the first file (#11).
 
 ### Security
 - Staging deliverables for grading refuses symlinks instead of copying the files that they point at (#5).
@@ -39,6 +48,7 @@ All notable changes to this project are recorded here. The format follows
 - pageprobe's static server serves only files under its root. It decodes the path once and refuses `..`, a backslash, a NUL byte, and a link that leads out of the root (CodeQL js/path-injection) (#9).
 - The WorkBuddy grader probes for a free port on 127.0.0.1 instead of on every interface (CodeQL py/bind-socket-all-network-interfaces) (#9).
 - fast-xml-parser 5.x, and uuid 11.1.1 for exceljs through an override (Dependabot alerts #1 and #2) (#9).
+- Claude Code verifier sessions run with auto-memory off and no hooks, fail a turn at a usage limit instead of waiting, and inherit none of the parent session's variables, the `CLAUDE_BG_*` credentials included. The login and the provider choice are kept (#11).
 
 ### Removed
 - The `test:node` script, which ran no tests (#5).

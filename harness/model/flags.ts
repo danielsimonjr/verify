@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { isClaudeCodeProvider } from "../claude/provider.js";
 import { canonicalLocalProvider } from "./config.js";
 
 /** Split `--key=value` into `--key` `value`. Repeated calls leave an already-split argv unchanged. */
@@ -46,9 +47,9 @@ export function flagValue(argv: string[], flag: string): string | undefined {
 /**
  * Append `extra` flags, dropping any earlier copy of the same flag (and its value).
  * `--key=value` is normalized first, so an override written that way still replaces the lane flag.
- * Switching a lane onto a local provider also drops the lane's `--thinking` value:
- * most local models reject a thinking level, and carrying it would fail the turn
- * for a reason that does not mention the model.
+ * Switching a lane onto a local provider, or onto Claude Code, also drops the lane's `--thinking`
+ * value: most local models reject a thinking level and Claude Code has no such flag, so carrying it
+ * would fail the turn for a reason that does not mention the model.
  */
 export function withModelOverride(base: string[], extra: string[]): string[] {
   const extraNorm = normalizeArgv(extra);
@@ -57,7 +58,8 @@ export function withModelOverride(base: string[], extra: string[]): string[] {
   const dropThinking =
     extraFlags.has("--provider") &&
     !extraFlags.has("--thinking") &&
-    canonicalLocalProvider(flagValue(extraNorm, "--provider")) !== undefined;
+    (canonicalLocalProvider(flagValue(extraNorm, "--provider")) !== undefined ||
+      isClaudeCodeProvider(flagValue(extraNorm, "--provider")));
   const out: string[] = [];
   for (let i = 0; i < baseNorm.length; i++) {
     const arg = baseNorm[i]!;

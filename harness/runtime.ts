@@ -21,8 +21,9 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { closeSync, existsSync, openSync, realpathSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 
 export const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
@@ -141,6 +142,8 @@ export interface BudgetedRun {
   timedOut: boolean;
   /** The last `stderrTailChars` characters of stderr. */
   stderr: string;
+  /** True when stderr was longer than `stderrTailChars` and its start was dropped. */
+  stderrCut: boolean;
   /** Set when the process could not be started (missing binary, permission). */
   spawnError?: string;
 }
@@ -150,6 +153,10 @@ export interface BudgetedRunOptions {
   env: NodeJS.ProcessEnv;
   budgetMs: number;
   stderrTailChars?: number;
+  /** Text written to the child's stdin, which is then closed. Absent: stdin is closed at once. */
+  input?: string;
+  /** Append the child's stdout to this file, with no copy in memory. Absent: stdout is discarded. */
+  stdoutFile?: string;
   /** Runs after the tree is killed, on every kill path (e.g. `docker rm -f` of a named container). */
   onKill?: () => void;
 }
@@ -211,6 +218,21 @@ export function runWithBudget(cmd: string[], opts: BudgetedRunOptions): Promise<
   }
   const tailChars = opts.stderrTailChars ?? 262_144;
   return new Promise((resolveRun) => {
+    let outFd: number | undefined;
+    if (opts.stdoutFile !== undefined) {
+      try {
+        outFd = openSync(opts.stdoutFile, "a");
+      } catch (e) {
+        resolveRun({
+          code: null,
+          timedOut: false,
+          stderr: "",
+          stderrCut: false,
+          spawnError: `cannot open ${opts.stdoutFile}: ${describeSpawnError(e)}`,
+        });
+        return;
+      }
+    }
     let child: ChildProcess;
     try {
       child = spawn(cmd[0]!, cmd.slice(1), {
@@ -220,11 +242,19 @@ export function runWithBudget(cmd: string[], opts: BudgetedRunOptions): Promise<
         // turn stays in the parent's job object and dies with it.
         detached: process.platform !== "win32",
         windowsHide: true,
-        stdio: ["ignore", "ignore", "pipe"],
+        stdio: [opts.input === undefined ? "ignore" : "pipe", outFd ?? "ignore", "pipe"],
       });
     } catch (e) {
-      resolveRun({ code: null, timedOut: false, stderr: "", spawnError: describeSpawnError(e) });
+      resolveRun({ code: null, timedOut: false, stderr: "", stderrCut: false, spawnError: describeSpawnError(e) });
       return;
+    } finally {
+      // The child holds its own copy of the descriptor; keeping ours open would leak one per turn.
+      if (outFd !== undefined) closeSync(outFd);
+    }
+    if (opts.input !== undefined) {
+      // A child that exits without reading its stdin closes the pipe: that is its answer, not an error here.
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(opts.input);
     }
     const pid = child.pid;
     if (pid !== undefined) {
@@ -233,6 +263,8 @@ export function runWithBudget(cmd: string[], opts: BudgetedRunOptions): Promise<
     }
 
     let stderr = "";
+    let stderrCut = false;
+    const decoder = new StringDecoder("utf8");
     let timedOut = false;
     let spawnError: string | undefined;
     let closeGrace: ReturnType<typeof setTimeout> | undefined;
@@ -244,11 +276,18 @@ export function runWithBudget(cmd: string[], opts: BudgetedRunOptions): Promise<
       clearTimeout(closeGrace);
       if (pid !== undefined) live.delete(pid);
       unhookLive();
-      resolveRun({ code, timedOut, stderr, ...(spawnError === undefined ? {} : { spawnError }) });
+      resolveRun({ code, timedOut, stderr, stderrCut, ...(spawnError === undefined ? {} : { spawnError }) });
     };
 
+    // A StringDecoder keeps a multi-byte character that a chunk boundary splits; toString() per chunk
+    // turned each half into U+FFFD. The buffer is trimmed only when it is over the cap, so a long-running
+    // child cannot grow it, and `stderrCut` tells the caller the start is gone.
     child.stderr?.on("data", (chunk: Buffer) => {
-      stderr = (stderr + chunk.toString("utf8")).slice(-tailChars);
+      stderr += decoder.write(chunk);
+      if (stderr.length > tailChars) {
+        stderr = stderr.slice(-tailChars);
+        stderrCut = true;
+      }
     });
     const timer = setTimeout(() => {
       timedOut = true;
