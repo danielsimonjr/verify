@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -20,7 +20,7 @@ import JSZip from "jszip";
 
 import * as config from "../config.js";
 import { benchRoot, DATA, TMP_DIR } from "../config.js";
-import { exists, isFile, posixRel, readJson, readText, rmrf, walkFiles, writeText } from "../fsutil.js";
+import { exists, isFile, posixRel, readJson, readText, rmrf, walkFiles, writeFileAtomic, writeText } from "../fsutil.js";
 import { defaultTasks, domainCode, type ApexTask } from "../materialize/apex.js";
 import { readJsonStrict } from "../materialize/base.js";
 import { isView } from "../views.js";
@@ -68,9 +68,7 @@ export function gradingSettings(defaultPath = join(CONFIGS, "grading_settings.js
   const settings = { ...readJsonStrict<Record<string, unknown>>(defaultPath), llm_judge_model: model };
   const uid = process.getuid?.() ?? 0;
   const out = join(tmpdir(), `vh_apex_grading_settings_${uid}.json`);
-  const tmp = `${out}.${process.pid}`;
-  writeText(tmp, JSON.stringify(settings, null, 2));
-  renameSync(tmp, out);
+  writeFileAtomic(out, JSON.stringify(settings, null, 2));
   return out;
 }
 

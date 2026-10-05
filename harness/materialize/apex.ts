@@ -16,8 +16,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { DATA } from "../config.js";
-import { exists, isDir, readJson } from "../fsutil.js";
-import { Rollout, Task, assertSegment, readJsonStrict, srcRoot, writeFileAtomic } from "./base.js";
+import { exists, isDir, readJson, writeFileAtomic } from "../fsutil.js";
+import { Rollout, Task, assertSegment, readJsonStrict, srcRoot } from "./base.js";
 import { renderOpenaiMessages, truthy } from "./renderers.js";
 
 export const POOLS: Record<string, [string, string]> = {

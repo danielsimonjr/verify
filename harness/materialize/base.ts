@@ -14,7 +14,7 @@
 
 /** Shared materialization machinery for all benchmarks. */
 
-import { copyFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { DATA, benchRoot } from "../config.js";
@@ -26,6 +26,7 @@ import {
   rmrf,
   symlinkDir,
   walkFiles,
+  writeFileAtomic,
   writeText,
 } from "../fsutil.js";
 import { renderViews } from "../views.js";
@@ -56,14 +57,6 @@ export function assertSegment(label: string, value: string): void {
   if (!value || value === "." || value === ".." || /[\\/\0]/.test(value)) {
     throw new Error(`${label} must be a single path segment, got ${JSON.stringify(value)}`);
   }
-}
-
-/** Write a file through a temp file and a rename, so a crash never leaves a half-written file. */
-export function writeFileAtomic(path: string, data: string | Uint8Array): void {
-  ensureDir(dirname(path));
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, data);
-  renameSync(tmp, path);
 }
 
 function writeJsonAtomic(path: string, obj: unknown): void {
