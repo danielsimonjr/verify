@@ -27,7 +27,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 /**
  * Split at the first `sep`, like Python's `str.partition` without the separator.
@@ -227,6 +227,16 @@ export function assertNoSymlinks(root: string): void {
     }
   };
   walk(root, "");
+}
+
+/**
+ * Copy one deliverable file for staging. Throw SymlinkError when `src` is a symlink: copyFileSync
+ * follows a link, so the staged file would be the host file that the link names. `rel` names the file
+ * in the error.
+ */
+export function copyDeliverable(src: string, dst: string, rel: string = basename(src)): void {
+  if (isSymlink(src)) throw new SymlinkError(rel);
+  copyFileSync(src, dst);
 }
 
 /** Copy a bundle for staging. Symlinks are refused (SymlinkError), never dereferenced. */

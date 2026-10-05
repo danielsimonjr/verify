@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { chmodSync, copyFileSync, mkdtempSync, mkdirSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { HARNESS_DIR, benchRoot, TMP_DIR } from "../config.js";
-import { exists, rmrf } from "../fsutil.js";
+import { copyDeliverable, exists, rmrf, SymlinkError } from "../fsutil.js";
 import { readJsonStrict } from "../materialize/base.js";
 import { python3 } from "../runtime.js";
 import type { GradeResult } from "./index.js";
@@ -185,7 +185,12 @@ export async function grade(key: string, deliverables: string, opts: Sb2Options 
   try {
     const stage = join(td, "outputs");
     mkdirSync(stage);
-    copyFileSync(src, join(stage, `${tid}_output.xlsx`));
+    try {
+      copyDeliverable(src, join(stage, `${tid}_output.xlsx`), `${tid}_output.xlsx`);
+    } catch (e) {
+      if (e instanceof SymlinkError) return { score: null, error: e.message, grader: GRADER };
+      throw e;
+    }
     chmodSync(stage, 0o777);
     chmodSync(join(stage, `${tid}_output.xlsx`), 0o666);
     await recalc(stage, opts);
@@ -242,7 +247,15 @@ export async function gradeBatch(
         };
         continue;
       }
-      copyFileSync(src, join(stage, `${tid}_output.xlsx`));
+      try {
+        copyDeliverable(src, join(stage, `${tid}_output.xlsx`), `${tid}_output.xlsx`);
+      } catch (e) {
+        if (e instanceof SymlinkError) {
+          out[key] = { score: null, error: e.message, grader: GRADER };
+          continue;
+        }
+        throw e;
+      }
       chmodSync(join(stage, `${tid}_output.xlsx`), 0o666);
       staged[key] = [data, cat];
     }

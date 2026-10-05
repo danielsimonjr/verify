@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { assertNoSymlinks, copyTree, SymlinkError } from "../harness/fsutil.ts";
+import { assertNoSymlinks, copyDeliverable, copyTree, SymlinkError } from "../harness/fsutil.ts";
 import { guardedEnv, runGrader as runGraderIn } from "./fixtures/verify-core/grader-process.ts";
 
 // Tests here start child processes. On a loaded Windows host one measured 3.2 s, against
@@ -93,6 +93,21 @@ describe("copyTree", () => {
     const dst = join(tmp, "staged");
     expect(() => copyTree(src, dst)).toThrow(SymlinkError);
     expect(existsSync(join(dst, "report.txt"))).toBe(false);
+  });
+});
+
+describe("copyDeliverable", () => {
+  test("copies a regular file", () => {
+    const dst = join(tmp, "out.md");
+    copyDeliverable(join(src, "answer.md"), dst);
+    expect(readFileSync(dst, "utf8")).toBe("ok");
+  });
+
+  test.skipIf(!canLinkFilesSync())("refuses a file symlink, names it, and copies nothing", () => {
+    symlinkSync(join(host, "secret.txt"), join(src, "report.txt"), "file");
+    const dst = join(tmp, "out.txt");
+    expect(() => copyDeliverable(join(src, "report.txt"), dst)).toThrow(/symlink: report\.txt/);
+    expect(existsSync(dst)).toBe(false);
   });
 });
 

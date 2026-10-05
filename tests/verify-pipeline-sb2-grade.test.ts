@@ -1,7 +1,7 @@
 // The sb2 grader's lookups, run in-process against one fixed bench root. Every case returns before
 // any container or comparison would start, so nothing here needs docker or Python.
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -62,5 +62,32 @@ describe("sb2 grade lookups", () => {
 
   test("a corrupt dataset.json is an error that names the file", async () => {
     await expect(sb2.grade("Financial_Model__x", empty)).rejects.toThrow(/invalid JSON in .*dataset\.json/);
+  });
+});
+
+describe("sb2 grade refuses a symlinked deliverable", () => {
+  // The grader copied <tid>_output.xlsx with copyFileSync, which follows a file symlink: the
+  // workbook the grader read was then whatever host file the link named.
+  const linked = mkdtempSync(join(tmpdir(), "vp-sb2g-link-"));
+  const secret = join(linked, "host-secret.xlsx");
+  writeFileSync(secret, "HOST-SECRET");
+  let canLink = true;
+  try {
+    symlinkSync(secret, join(linked, "t__1_output.xlsx"), "file");
+  } catch {
+    canLink = false;
+  }
+  afterAll(() => rmSync(linked, { recursive: true, force: true }));
+
+  test.skipIf(!canLink)("grade reports the link before it stages or recalculates anything", async () => {
+    const r = await sb2.grade("Debugging__t__1", linked);
+    expect(r.score).toBeNull();
+    expect(r.error).toMatch(/symlink: t__1_output\.xlsx/);
+  });
+
+  test.skipIf(!canLink)("gradeBatch reports the link for that key", async () => {
+    const r = await sb2.gradeBatch([["Debugging__t__1", linked, null]]);
+    expect(r["Debugging__t__1"]!.score).toBeNull();
+    expect(r["Debugging__t__1"]!.error).toMatch(/symlink: t__1_output\.xlsx/);
   });
 });
