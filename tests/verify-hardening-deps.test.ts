@@ -1,6 +1,6 @@
-// Dependabot alert #1 (fast-xml-parser, GHSA-gh4j-gqv2-49f6), and the rule that keeps the two lockfiles
-// honest: package-lock.json (npm) and bun.lock (bun) must resolve the same version of every direct
-// dependency, and neither may hold a copy in an advisory range.
+// Dependabot alerts #1 (fast-xml-parser, GHSA-gh4j-gqv2-49f6) and #2 (uuid, GHSA-w5hq-g745-h8pq), and the
+// rule that keeps the two lockfiles honest: package-lock.json (npm) and bun.lock (bun) must resolve
+// the same version of every direct dependency, and neither may hold a copy in an advisory range.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -10,6 +10,7 @@ const ROOT = resolve(import.meta.dir, "..");
 /** Versions that an advisory marks vulnerable, as semver ranges (the GitHub advisory data). */
 const VULNERABLE: Record<string, string> = {
   "fast-xml-parser": "<5.7.0",
+  uuid: "<11.1.1 || >=12.0.0 <12.0.1 || >=13.0.0 <13.0.1",
 };
 
 type Resolved = { path: string; name: string; version: string };
@@ -17,6 +18,7 @@ type Resolved = { path: string; name: string; version: string };
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as {
   dependencies: Record<string, string>;
   devDependencies: Record<string, string>;
+  overrides?: Record<string, string>;
 };
 const direct = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies });
 
@@ -57,7 +59,7 @@ describe("advisory ranges", () => {
     ["package-lock.json", npmLock],
     ["bun.lock", bunLock],
   ] as const) {
-    test(`${label} holds no copy in an advisory range`, () => {
+    test(`${label} holds no fast-xml-parser or uuid copy in an advisory range`, () => {
       const bad = copies()
         .filter((c) => VULNERABLE[c.name] && Bun.semver.satisfies(c.version, VULNERABLE[c.name]!))
         .map((c) => `${c.path}@${c.version}`);
@@ -65,10 +67,16 @@ describe("advisory ranges", () => {
     });
   }
 
-  test("node_modules holds no copy in an advisory range", () => {
+  test("node_modules holds no fast-xml-parser or uuid copy in an advisory range", () => {
     for (const name of Object.keys(VULNERABLE)) {
       expect(Bun.semver.satisfies(installed(name), VULNERABLE[name]!)).toBe(false);
     }
+  });
+
+  test("package.json forces the transitive uuid of exceljs to a patched release", () => {
+    expect(pkg.overrides?.uuid).toBeDefined();
+    expect(Bun.semver.satisfies("11.1.1", pkg.overrides!.uuid!)).toBe(true);
+    expect(Bun.semver.satisfies("8.3.2", pkg.overrides!.uuid!)).toBe(false);
   });
 });
 
@@ -86,5 +94,10 @@ describe("the two lockfiles agree", () => {
     const npm = new Map(npmLock().filter((c) => c.path === `node_modules/${c.name}`).map((c) => [c.name, c.version]));
     const ranges = { ...pkg.dependencies, ...pkg.devDependencies };
     for (const d of direct) expect(Bun.semver.satisfies(npm.get(d)!, ranges[d]!)).toBe(true);
+  });
+
+  test("the transitive uuid is the same version in both", () => {
+    const pick = (l: Resolved[]) => l.filter((c) => c.name === "uuid").map((c) => c.version).sort();
+    expect(pick(npmLock())).toEqual(pick(bunLock()));
   });
 });
