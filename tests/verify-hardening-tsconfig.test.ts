@@ -38,12 +38,17 @@ describe("tsconfig.test.json", () => {
   });
 
   test("lists every test file when the compiler is asked which files it checks", () => {
-    const r = spawnSync(process.execPath, [join(REPO, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.test.json", "--listFilesOnly"], {
+    // Node runs the compiler, as `bun run typecheck` does through the script's shebang.
+    const r = spawnSync("node", [join(REPO, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.test.json", "--listFilesOnly"], {
       cwd: REPO,
       encoding: "utf8",
     });
+    expect(r.stderr).toBe("");
     expect(r.status).toBe(0);
-    const listed = new Set(r.stdout.split(/\r?\n/).map((l) => resolve(l.trim()).toLowerCase()));
+    const lines = r.stdout.split(/\r?\n/).filter((l) => l.trim() !== "");
+    // lib and @types files come first; an empty or cut-off list must not read as "no test missing"
+    expect(lines.length).toBeGreaterThan(100);
+    const listed = new Set(lines.map((l) => resolve(l.trim()).toLowerCase()));
     const tests = readdirSync(join(REPO, "tests"), { recursive: true, withFileTypes: true })
       .filter((e) => e.isFile() && e.name.endsWith(".ts"))
       .map((e) => join(e.parentPath, e.name));
