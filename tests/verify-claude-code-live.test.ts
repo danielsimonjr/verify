@@ -45,7 +45,10 @@ describe.skipIf(!live)("Claude Code live", () => {
     expect(report.provider).toBe("claude-code");
     expect(report.requestedModel).toBe(MODEL);
     expect(String(report.cliVersion)).toMatch(/\d+\.\d+/);
-    expect(String(report.model)).toContain("haiku");
+    // The model that was asked for, not a fixed one: VERIHARNESS_LIVE_CLAUDE_MODEL can name any model.
+    const family = /haiku|sonnet|opus/i.exec(MODEL)?.[0].toLowerCase();
+    if (family !== undefined) expect(String(report.model).toLowerCase()).toContain(family);
+    else expect(String(report.model).length).toBeGreaterThan(0);
     expect(typeof report.keySource).toBe("string");
     expect(String(report.reply).length).toBeGreaterThan(0);
   }, 180_000);
