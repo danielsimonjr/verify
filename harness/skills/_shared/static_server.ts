@@ -55,7 +55,11 @@ export function resolveServedPath(root: string, requestUrl: string | undefined):
   } catch {
     return { status: 404 };
   }
-  if (!within(realBase, real)) return { status: 403 };
+  // The root directory is not a file. The containment test follows inline, on the value that is
+  // returned: CodeQL (js/path-injection) sees a guard only when it stands on that very value.
+  if (real === realBase) return { status: 404 };
+  const prefix = realBase.endsWith(sep) ? realBase : realBase + sep;
+  if (!real.startsWith(prefix)) return { status: 403 };
   return { path: real };
 }
 
