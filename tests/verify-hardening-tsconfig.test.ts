@@ -42,6 +42,8 @@ describe("tsconfig.test.json", () => {
     const r = spawnSync("node", [join(REPO, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.test.json", "--listFilesOnly"], {
       cwd: REPO,
       encoding: "utf8",
+      // A hung compiler fails here, with its own message, before the test's bound.
+      timeout: 45_000,
     });
     expect(r.stderr).toBe("");
     expect(r.status).toBe(0);
@@ -54,7 +56,7 @@ describe("tsconfig.test.json", () => {
       .map((e) => join(e.parentPath, e.name));
     expect(tests.length).toBeGreaterThan(40);
     expect(tests.filter((f) => !listed.has(resolve(f).toLowerCase()))).toEqual([]);
-  });
+  }, 60_000); // tsc over the whole project measures 5.0-5.3 s on Windows, at Bun's 5 s default
 });
 
 describe("package.json typecheck script", () => {

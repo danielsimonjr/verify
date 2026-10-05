@@ -128,5 +128,5 @@ describe("a script given a relative output directory", () => {
       expect(r.status).toBe(0);
       expect(existsSync(join(abs, "build.json"))).toBe(true);
     }
-  });
+  }, 60_000); // two Bun starts plus two builds measure 5.0 s on Windows, at Bun's 5 s default
 });
