@@ -202,7 +202,9 @@ driver to use other models, for example
   needed. See [Claude Code as the verifier](#claude-code-as-the-verifier).
 
 The source repository is [danielsimonjr/verify](https://github.com/danielsimonjr/verify)
-(renamed from `veriharness`). Package, CLI and import names are unchanged.
+(renamed from `veriharness`). The package is named `verify`. The command is still `veriharness`,
+because cmd.exe runs its built-in VERIFY command before it searches PATH. The environment variables
+keep the `VERIHARNESS_` prefix.
 
 Host-specific locations are environment variables (see `harness/config.ts`):
 

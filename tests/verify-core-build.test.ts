@@ -107,3 +107,28 @@ describe("package.json scripts and bin point at real files", () => {
     }
   });
 });
+
+// The package is named for the repository. The command keeps the old name: cmd.exe runs its built-in VERIFY
+// command before it searches PATH, so a `verify` command would never run there.
+describe("package name and command", () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as {
+    name: string;
+    bin: Record<string, string>;
+  };
+
+  test("the package is verify, and its only command is veriharness", () => {
+    expect(pkg.name).toBe("verify");
+    expect(Object.keys(pkg.bin)).toEqual(["veriharness"]);
+  });
+
+  test("both lockfiles name the same package", () => {
+    const npmLock = JSON.parse(readFileSync(join(ROOT, "package-lock.json"), "utf8")) as {
+      name: string;
+      packages: Record<string, { name?: string }>;
+    };
+    expect([npmLock.name, npmLock.packages[""]?.name]).toEqual([pkg.name, pkg.name]);
+    // bun.lock allows trailing commas, so read the root workspace's name with a pattern, not JSON.parse.
+    const bunLock = readFileSync(join(ROOT, "bun.lock"), "utf8");
+    expect(/"workspaces":\s*\{\s*"":\s*\{\s*"name":\s*"([^"]+)"/.exec(bunLock)?.[1]).toBe(pkg.name);
+  });
+});
