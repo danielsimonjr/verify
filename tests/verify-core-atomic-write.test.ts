@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 
 import { ensureDir, renameReplacing, writeFileAtomic, writeText } from "../harness/fsutil.ts";
 
@@ -85,5 +85,33 @@ describe("writeFileAtomic", () => {
     expect(() => writeFileAtomic(path, "x", { rename, platform: "win32", budgetMs: 50 })).toThrow(/EPERM/);
     expect(readdirSync(dir)).toEqual([]);
     expect(existsSync(path)).toBe(false);
+  });
+
+  test("removes a partly written temp file when the write fails", () => {
+    const write = (path: string) => {
+      writeFileSync(path, "partial");
+      throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    };
+    expect(() => writeFileAtomic(join(dir, "meta.json"), "x", { write })).toThrow(/ENOSPC/);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  test("throws the rename error when the temp file cannot be removed either", () => {
+    // The rename leaves the temp path as a non-empty directory, which rmSync without `recursive`
+    // refuses: the cleanup fails as it does for a temp file that another process holds open.
+    const rename = (from: string) => {
+      rmSync(from);
+      mkdirSync(from);
+      writeFileSync(join(from, "held"), "");
+      throw Object.assign(new Error("EIO: i/o error, rename"), { code: "EIO" });
+    };
+    expect(() => writeFileAtomic(join(dir, "meta.json"), "x", { rename, platform: "linux" })).toThrow(/EIO/);
+  });
+});
+
+describe("ensureDir", () => {
+  // Node and Bun both throw EPERM for a recursive mkdir of a Windows drive root such as "C:\".
+  test("accepts a filesystem root that exists", () => {
+    expect(() => ensureDir(parse(process.cwd()).root)).not.toThrow();
   });
 });
