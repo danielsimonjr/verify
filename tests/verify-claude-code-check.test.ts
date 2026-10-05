@@ -60,7 +60,12 @@ describe("model-check through the stub claude", () => {
     const after = (flag: string) => argv[argv.indexOf(flag) + 1];
     expect(after("--tools")).toBe("");
     expect(after("--setting-sources")).toBe("");
-    expect(after("--settings")).toBe('{"disableAllHooks":true}');
+    expect(JSON.parse(after("--settings")!)).toEqual({
+      disableAllHooks: true,
+      autoMemoryEnabled: false,
+      autoContinueAtUsageLimit: false,
+    });
+    expect(call!.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
     expect(after("--model")).toBe(MODEL);
     expect(after("--permission-mode")).toBe("bypassPermissions");
     expect(argv).toContain("--strict-mcp-config");

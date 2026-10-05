@@ -51,7 +51,7 @@ import {
   claudeTools,
   isClaudeCodeProvider,
   startCheck,
-  withoutSessionMarkers,
+  claudeSessionEnv,
 } from "./claude/index.js";
 import { Native, imageFor } from "./env/index.js";
 import { canonicalLocalProvider, materializePiHome, prepareLocalProvider, resolveLocalConfig } from "./model/index.js";
@@ -1137,7 +1137,7 @@ async function runClaudeCode(
   skills: string[],
 ): Promise<number> {
   // A verifier started from inside a Claude Code session must not inherit that session's identity.
-  const env = withoutSessionMarkers(agentEnv(process.env));
+  const env = claudeSessionEnv(agentEnv(process.env));
   const command = deps.claudeCommand ?? claudeCommand(args.claudeBin, process.env);
   const started = startCheck(command, env);
   if (!started.ok) {

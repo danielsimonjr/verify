@@ -103,12 +103,23 @@ describe("the command line of every turn", () => {
       expect(after(argv, "--model")).toBe(MODEL);
       expect(after(argv, "--setting-sources")).toBe("");
       expect(argv).toContain("--strict-mcp-config");
-      expect(after(argv, "--settings")).toBe('{"disableAllHooks":true}');
+      expect(JSON.parse(after(argv, "--settings")!)).toEqual({
+        disableAllHooks: true,
+        autoMemoryEnabled: false,
+        autoContinueAtUsageLimit: false,
+      });
       expect(after(argv, "--tools")).toBe("Read,Bash,Grep,Glob,Edit,Write");
       expect(after(argv, "--permission-mode")).toBe("bypassPermissions");
       expect(after(argv, "--append-system-prompt-file")).toBe(charter);
     }
     expect(readFileSync(charter, "utf8")).toMatch(/^You are a verifier/);
+  });
+
+  test("auto-memory is off in the environment of every call", async () => {
+    rig.script(happyRules(rig.ws));
+    await rig.run(ARGS, { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0" });
+    expect(rig.calls().length).toBeGreaterThan(0);
+    for (const { env } of rig.calls()) expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
   });
 
   test("the skill library is added with --add-dir, and not when there are no skills", async () => {

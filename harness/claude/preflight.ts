@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runWithBudget } from "../runtime.js";
 import { classifyFailure } from "./errors.js";
-import { withoutSessionMarkers } from "./env.js";
+import { VERIFIER_SETTINGS, claudeSessionEnv } from "./env.js";
 import { parseStream, splitPlugins, type StreamInit } from "./stream.js";
 
 /** The executable: `--claude-bin`, else `VERIHARNESS_CLAUDE_BIN`, else `claude` from `PATH`. */
@@ -43,7 +43,7 @@ export function startCheck(
 ): { ok: true; version: string } | { ok: false; error: string } {
   const hit = spawnSync(command[0]!, [...command.slice(1), "--version"], {
     encoding: "utf8",
-    env: withoutSessionMarkers(env),
+    env: claudeSessionEnv(env),
     timeout: 30_000,
     windowsHide: true,
   });
@@ -92,7 +92,7 @@ export interface ModelCheckOptions {
 
 /** One isolated turn with no tools, prompt `Reply with OK`, nothing saved to the user's session history. */
 export async function modelCheck(opts: ModelCheckOptions): Promise<ModelCheckReport> {
-  const env = withoutSessionMarkers(opts.env);
+  const env = claudeSessionEnv(opts.env);
   const started = startCheck(opts.command, env);
   if (!started.ok) throw new ClaudeCheckError(started.error);
 
@@ -113,7 +113,7 @@ export async function modelCheck(opts: ModelCheckOptions): Promise<ModelCheckRep
         "",
         "--strict-mcp-config",
         "--settings",
-        '{"disableAllHooks":true}',
+        VERIFIER_SETTINGS,
         "--tools",
         "",
         "--permission-mode",

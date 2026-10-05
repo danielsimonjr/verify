@@ -71,3 +71,29 @@ const MARKER_SET = new Set(SESSION_MARKERS.map((n) => n.toUpperCase()));
 export function withoutSessionMarkers(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(env).filter(([name]) => !MARKER_SET.has(name.toUpperCase())));
 }
+
+/**
+ * The settings every turn adds: no hook of the user's or of a plugin runs; auto-memory is off (with
+ * `--setting-sources ""` no setting enables or disables it, and it is on by default, so a verifier
+ * could read and write the user's own memory folder); and a usage limit fails the turn instead of
+ * pausing it until the limit lifts. `CLAUDE_CODE_DISABLE_AUTO_MEMORY` in the environment backs up
+ * `autoMemoryEnabled`.
+ */
+export const VERIFIER_SETTINGS = JSON.stringify({
+  disableAllHooks: true,
+  autoMemoryEnabled: false,
+  autoContinueAtUsageLimit: false,
+});
+
+/**
+ * The environment of a verifier or check session: no session markers, and auto-memory off. The name is
+ * set last and with the exact spelling the CLI reads, so a lower-case copy in the host's environment
+ * cannot win on Windows.
+ */
+export function claudeSessionEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = Object.fromEntries(
+    Object.entries(withoutSessionMarkers(env)).filter(([n]) => n.toUpperCase() !== "CLAUDE_CODE_DISABLE_AUTO_MEMORY"),
+  );
+  out.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
+  return out;
+}

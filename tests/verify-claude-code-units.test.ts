@@ -80,7 +80,7 @@ describe("the command line of a turn", () => {
       for (const part of [
         ["--setting-sources", ""],
         ["--strict-mcp-config"],
-        ["--settings", '{"disableAllHooks":true}'],
+        ["--settings", '{"disableAllHooks":true,"autoMemoryEnabled":false,"autoContinueAtUsageLimit":false}'],
         ["--tools", "Read,Bash"],
         ["--permission-mode", "bypassPermissions"],
         ["--append-system-prompt-file", "/c.md"],

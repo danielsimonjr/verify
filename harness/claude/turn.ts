@@ -28,11 +28,9 @@ import { join } from "node:path";
 import { ensureDir, fileSize } from "../fsutil.js";
 import { runWithBudget } from "../runtime.js";
 import { classifyFailure } from "./errors.js";
+import { VERIFIER_SETTINGS } from "./env.js";
 import { claudeConfigDir, findPersisted, movePersisted } from "./persisted.js";
 import { claudeOwnRecord, parseStream, splitPlugins, type StreamInit, type StreamResult } from "./stream.js";
-
-/** The settings every turn adds: no hook of the user's or of a plugin runs. */
-const SETTINGS = '{"disableAllHooks":true}';
 
 export interface ClaudeArgsInput {
   model: string;
@@ -64,7 +62,7 @@ export function claudeArgs(input: ClaudeArgsInput): string[] {
     "",
     "--strict-mcp-config",
     "--settings",
-    SETTINGS,
+    VERIFIER_SETTINGS,
     "--tools",
     input.tools,
     "--permission-mode",

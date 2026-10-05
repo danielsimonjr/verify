@@ -39,7 +39,7 @@ Each turn is one `claude` process, started in the task directory:
 ```
 claude -p --output-format stream-json --verbose --model <id>
        (--session-id <uuid> | --resume <uuid>)
-       --setting-sources "" --strict-mcp-config --settings {"disableAllHooks":true}
+       --setting-sources "" --strict-mcp-config --settings {"disableAllHooks":true,"autoMemoryEnabled":false,"autoContinueAtUsageLimit":false}
        --tools <list> --permission-mode bypassPermissions
        --append-system-prompt-file <ws>/session/charter.md
        [--add-dir <skills directory>]...
@@ -51,12 +51,14 @@ The message goes to standard input. It never goes on the command line. A mission
 | --- | --- |
 | `--setting-sources ""` | Loads no user, project or local settings file. |
 | `--strict-mcp-config` | Loads no MCP server, because none is named. |
-| `--settings {"disableAllHooks":true}` | Runs no hook, whether it comes from a settings file or a plugin. |
+| `--settings {"disableAllHooks":true,...}` | Runs no hook, whether it comes from a settings file or a plugin. Also turns auto-memory off (`autoMemoryEnabled`) and makes a usage limit fail the turn (`autoContinueAtUsageLimit`) instead of pausing it until the limit lifts. |
 | `--tools` | Names the only tools. Pick-only contracts get `Read,Bash,Grep,Glob`. Artifact contracts add `Edit,Write`. |
 | `--permission-mode bypassPermissions` | Never asks. There is nobody to answer. |
 | `--add-dir` | Lets `Read` open the skill library. The skill text names each skill directory by its absolute path. |
 
 The pi tool names map to Claude Code tool names: `read` to `Read`, `bash` to `Bash`, `grep` to `Grep`, `find` and `ls` to `Glob`, `edit` to `Edit`, `write` to `Write`.
+
+Auto-memory is on by default in Claude Code, and `--setting-sources ""` leaves no setting that turns it off. A verifier could then read the memory folder of the user and write to it, because the permission mode is `bypassPermissions`. The driver therefore turns it off twice: `autoMemoryEnabled` is false in `--settings`, and the verifier environment sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. `model-check` does the same.
 
 The first `system/init` event of a task goes to `driver.log`: the CLI version, the model, the credential source and the tool list. The driver logs a warning when the event lists an MCP server or a plugin that is not built in, because the isolation flags should have removed both.
 
