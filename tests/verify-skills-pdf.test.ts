@@ -13,6 +13,11 @@ import { findPython, importProbe, pythonCandidates, sibling } from "../harness/s
 const FIXTURES = join(import.meta.dir, "fixtures", "verify-skills");
 const SCRIPTS = join(import.meta.dir, "..", "harness", "skills", "evidence-pdf", "scripts");
 
+// A case that starts Python runs it twice per CLI call: once to probe the import and once to
+// do the work. Measured on a Windows host, one such case takes 5-7 s alone, so bun's 5 s
+// default fails it. The bound covers the measured cost with headroom for a loaded machine.
+const PYTHON_CASE_TIMEOUT_MS = 30_000;
+
 // Fixtures come from fixtures/verify-skills/make_pdf_fixtures.py (PyMuPDF). On the
 // 612x792 page FIRSTLINE has its baseline 100 pt from the top and SECONDLINE 200 pt.
 // pdfplumber (the pre-port reference) reports top 90.5 and 190.5 for them.
@@ -103,7 +108,8 @@ function tablesCli(args: string[], env: NodeJS.ProcessEnv = process.env) {
 describe("pdf_tables detects tables, not text", () => {
   // tables.pdf: p1 prose, p2 ruled 3x3, p3 whitespace-aligned columns, p4 ruled with a
   // two-line cell. The expected cells are what pdfplumber 0.11 extracts from the same file.
-  const e2e = test.skipIf(!HAVE_PDFPLUMBER);
+  const e2e = (name: string, fn: () => void) =>
+    test.skipIf(!HAVE_PDFPLUMBER)(name, fn, PYTHON_CASE_TIMEOUT_MS);
 
   e2e("a prose page is not reported as a table", () => {
     const r = tablesCli(["1"]);

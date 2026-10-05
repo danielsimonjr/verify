@@ -23,6 +23,11 @@ const TABLES = join(FIXTURES, "tables.pdf"); // 4 pages, 612x792 pt
 const HAVE_PYMUPDF = findPython(["fitz"]) !== null;
 const HAVE_PDFTOPPM = spawnSync("pdftoppm", ["-v"], { stdio: "ignore" }).status === 0;
 
+// A case that starts Python runs it twice per CLI call: once to probe the import and once to
+// do the work. Measured on a Windows host, one such case takes 5-7 s alone, so bun's 5 s
+// default fails it. The bound covers the measured cost with headroom for a loaded machine.
+const PYTHON_CASE_TIMEOUT_MS = 30_000;
+
 function scratch<T>(fn: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "vs-render-"));
   try {
@@ -91,7 +96,7 @@ for (const [name, available, kind] of [
       kind === "pymupdf"
         ? { pymupdf: () => findPython(["fitz"]), pdftoppm: () => false }
         : { pymupdf: () => null, pdftoppm: () => true };
-    const t = test.skipIf(!available);
+    const t = (name: string, fn: () => void) => test.skipIf(!available)(name, fn, PYTHON_CASE_TIMEOUT_MS);
 
     t("renders every page, numbered by page, at the requested dpi", () => {
       scratch((dir) => {
@@ -207,7 +212,8 @@ function script(skill: string, name: string, args: string[], env: NodeJS.Process
 }
 
 describe("pdf_render", () => {
-  const t = test.skipIf(!HAVE_PYMUPDF && !HAVE_PDFTOPPM);
+  const t = (name: string, fn: () => void) =>
+    test.skipIf(!HAVE_PYMUPDF && !HAVE_PDFTOPPM)(name, fn, PYTHON_CASE_TIMEOUT_MS);
 
   t("writes the page under the render root and prints its path", () => {
     scratch((root) => {
