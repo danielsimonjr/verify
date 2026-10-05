@@ -22,8 +22,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { parseArgs } from "node:util";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import ExcelJS from "exceljs";
 import { cachedValue, isFormulaValue } from "../../_shared/excel.js";
 
@@ -47,10 +48,10 @@ const inplace = values.inplace ?? false;
 const limit = parseInt(values.limit ?? "60", 10);
 
 const td = mkdtempSync(join(tmpdir(), "xlsx_recalc_"));
-const work = join(td, src.split("/").pop()!);
+const work = join(td, basename(src));
 copyFileSync(src, work);
 const env = { ...process.env, HOME: td };
-const profile = `-env:UserInstallation=file://${join(td, "profile")}`;
+const profile = `-env:UserInstallation=${pathToFileURL(join(td, "profile")).href}`;
 const outDir = join(td, "out");
 mkdirSync(outDir, { recursive: true });
 
@@ -69,7 +70,7 @@ const r = spawnSync(
   { encoding: "utf-8", timeout: 300_000, env },
 );
 
-const out = join(outDir, src.split("/").pop()!);
+const out = join(outDir, basename(src));
 if (r.status !== 0 || !existsSync(out)) {
   console.log("recalc FAILED:", (r.stderr || r.stdout || "").slice(-400));
   process.exit(1);
@@ -128,9 +129,9 @@ console.log(`# formulas still without a cached value after recalc: ${uncached}`)
 let sideDir = dirname(src);
 let cur = dirname(src);
 while (cur !== dirname(cur)) {
-  const base = cur.split("/").pop();
+  const base = basename(cur);
   const parent = dirname(cur);
-  if (base === "deliverables" && parent.split("/").pop() === "out") {
+  if (base === "deliverables" && basename(parent) === "out") {
     sideDir = join(parent, "recalc", relative(cur, dirname(src)));
     mkdirSync(sideDir, { recursive: true });
     break;
@@ -144,7 +145,7 @@ if (inplace) {
   copyFileSync(src, keep);
   writeFileSync(src, recalced);
   console.log(
-    `# replaced ${src.split("/").pop()} with the recalculated file (previous version kept as ${keep})`,
+    `# replaced ${basename(src)} with the recalculated file (previous version kept as ${keep})`,
   );
 } else {
   const dst = join(sideDir, `${stem}.recalc.xlsx`);
@@ -153,7 +154,7 @@ if (inplace) {
 }
 
 function basenameNoExt(p: string): string {
-  const base = p.split("/").pop()!;
+  const base = basename(p);
   const dot = base.lastIndexOf(".");
   return dot >= 0 ? base.slice(0, dot) : base;
 }

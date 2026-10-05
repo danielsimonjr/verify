@@ -15,7 +15,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { chromium } from "playwright";
 import { serve } from "../../_shared/static_server.js";
 
@@ -182,7 +182,7 @@ try {
   mkdirSync(outDir, { recursive: true });
   const shot = join(
     outDir,
-    `pageprobe_${resolve(root).split("/").pop()}_${mobile ? "m" : "d"}.png`,
+    `pageprobe_${basename(resolve(root))}_${mobile ? "m" : "d"}.png`,
   );
   try {
     await page.screenshot({ path: shot, fullPage: true, timeout: 5000 });
