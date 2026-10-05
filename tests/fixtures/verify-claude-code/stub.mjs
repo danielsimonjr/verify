@@ -11,6 +11,8 @@
 //
 // An action: { "toolUses": [{ "name", "input" }]       assistant events the verifier "made"
 //              "writes":   [{ "path", "content" }]     files to create under the cwd, as the tools would
+//              "links":    [{ "path", "target" }]      after the writes: replace a path under the cwd with a
+//                                                      directory link (a junction on Windows) to target
 //              "result":   { "is_error", "text", "errors" }   the final result event (default: success, "done")
 //              "stderr":   "text",  "exit": 0,         what to print on stderr, and the exit code
 //              "hang": true,                           print init, then wait 10 minutes (STUB_HANG_MS) and exit 1
@@ -21,7 +23,7 @@
 // copy of that session exists, and a saved copy lives at <CLAUDE_CONFIG_DIR>/projects/<project>/<id>.jsonl.
 
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 const argv = process.argv.slice(2);
@@ -132,6 +134,12 @@ for (const w of action.writes ?? []) {
   const target = resolve(process.cwd(), w.path);
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, w.content);
+}
+for (const l of action.links ?? []) {
+  const at = resolve(process.cwd(), l.path);
+  rmSync(at, { recursive: true, force: true });
+  mkdirSync(dirname(at), { recursive: true });
+  symlinkSync(resolve(l.target), at, "junction");
 }
 for (const [i, tool] of (action.toolUses ?? []).entries()) {
   emit({

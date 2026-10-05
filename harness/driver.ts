@@ -32,6 +32,7 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import * as config from "./config.js";
 import {
+  assertNoLinkBelow,
   copyFile,
   ensureDir,
   fileSize,
@@ -39,6 +40,7 @@ import {
   isFile,
   posixRel,
   readJson as readJsonFs,
+  SymlinkError,
   walkFiles,
   writeJson as writeJsonFs,
 } from "./fsutil.js";
@@ -615,8 +617,31 @@ function bundleFiles(root: string): Set<string> {
   return out;
 }
 
+/**
+ * Why the driver must not touch `out/deliverables`: a symlink on the way to it or under it, or a
+ * check that failed. Null when there is neither.
+ *
+ * The verifier can write `out/` inside the jail, and the driver reads and writes the bundle on the
+ * host after the turn. Through a link, the view cleanup, the restore and the file listings would
+ * be a delete, a write and a listing of a host directory. The verifier can also make a directory
+ * there that the host cannot list; that check error is a refusal too, so it cannot stop the task.
+ */
+function outRefusal(ws: string): string | null {
+  try {
+    assertNoLinkBelow(ws, "out/deliverables");
+    return null;
+  } catch (e) {
+    if (e instanceof SymlinkError) return `a symlink in the delivery path: ${e.path}`;
+    return `the delivery path cannot be checked: ${(e as Error).message}`;
+  }
+}
+
 /** Check `out/deliverables` against the chosen base; the result says whether the bundle is valid and why not. */
 export function validateDelivery(ws: string, base: string): Record<string, unknown> {
+  const refusal = outRefusal(ws);
+  if (refusal) {
+    return { valid: false, reason: refusal };
+  }
   const out = join(ws, "out", "deliverables");
   if (!isDir(out)) {
     return { valid: false, reason: "out/deliverables missing" };
@@ -661,6 +686,7 @@ export function validateDelivery(ws: string, base: string): Record<string, unkno
 
 /** Remove the harness views from `out/deliverables`, then restore the base files that are missing or empty there; returns the restored paths. */
 export function completeBundle(ws: string, base: string): string[] {
+  if (outRefusal(ws)) return [];
   const out = join(ws, "out", "deliverables");
   if (isDir(out)) {
     for (const p of walkFiles(out)) {
@@ -693,6 +719,7 @@ function digestFile(p: string): string {
 
 /** The files of `out/deliverables` that differ from the base rollout. */
 export function changedFiles(ws: string, base: string): string[] {
+  if (outRefusal(ws)) return [];
   const out = join(ws, "out", "deliverables");
   const baseRoot = rolloutDir(ws, base);
   if (!isDir(out)) return [];
@@ -859,6 +886,33 @@ async function adjudicate(agent: Agent, args: DriverArgs, skills: string[]): Pro
   );
 }
 
+/**
+ * Complete the bundle after the repair turn, then check it: the delivery verdict, the restored base
+ * files and the changed files.
+ *
+ * The verifier controls what is under out/. A link there, or a file system error (a file where the
+ * bundle directory goes, a directory where a base file goes, a file that cannot be read), makes the
+ * delivery invalid with a reason, instead of stopping the task before the repair block is in
+ * finish.json. The result then has no `restored` or `changed`: they are not known, and score reads
+ * an empty `changed` as an unchanged bundle. An error with no errno code is a harness bug and is
+ * thrown.
+ */
+function settleBundle(ws: string, base: string): Record<string, unknown> {
+  const refusal = outRefusal(ws);
+  if (refusal) return { valid: false, reason: refusal };
+  try {
+    const restored = completeBundle(ws, base);
+    return {
+      ...validateDelivery(ws, base),
+      restored: restored.slice(0, 20),
+      changed: changedFiles(ws, base).slice(0, 50),
+    };
+  } catch (e) {
+    if (typeof (e as NodeJS.ErrnoException).code !== "string") throw e;
+    return { valid: false, reason: `the bundle cannot be completed: ${(e as Error).message}` };
+  }
+}
+
 async function deliver(
   agent: Agent,
   args: DriverArgs,
@@ -876,7 +930,16 @@ async function deliver(
     readFileSync(join(config.PROMPTS_DIR, "REPAIR.md"), "utf8") +
     baseLine +
     renderSkills(skills, ws, "repair", args.skillsMode, runtimeOf(args));
-  ensureDir(join(ws, "out", "deliverables"));
+  // The earlier turns can plant a link under out/, and ensureDir would follow it and create the
+  // bundle directory on the host. They can also leave a file at out/deliverables, and ensureDir
+  // then throws. The checks after the repair refuse such a bundle, so the repair runs either way.
+  if (!outRefusal(ws)) {
+    try {
+      ensureDir(join(ws, "out", "deliverables"));
+    } catch (e) {
+      log(ws, `delivery: out/deliverables not created: ${(e as Error).message}`);
+    }
+  }
   log(ws, "delivery: REPAIR.md (continuing adjudication session)");
   const repair = await turnUntil(
     agent,
@@ -886,12 +949,9 @@ async function deliver(
     [args.turnTimeout, args.nudgeTimeout],
     true,
   );
-  const restored = completeBundle(ws, base);
   const repairBlock = {
     written: repair !== null,
-    ...validateDelivery(ws, base),
-    restored: restored.slice(0, 20),
-    changed: changedFiles(ws, base).slice(0, 50),
+    ...settleBundle(ws, base),
     applied: Boolean(repair?.applied),
     changes: repair?.changes,
   };
