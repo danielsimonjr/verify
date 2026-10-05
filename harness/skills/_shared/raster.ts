@@ -27,8 +27,10 @@ import { join } from "node:path";
 
 import { findPython, sibling } from "./python.js";
 
+/** A way to turn PDF pages into PNG files. */
 export type Backend = { kind: "pymupdf"; python: string } | { kind: "pdftoppm" };
 
+/** What the host has; injected so the choice of backend is testable without either tool. */
 export type BackendProbes = {
   /** A Python that can import PyMuPDF, or null. */
   pymupdf: () => string | null;
@@ -36,6 +38,7 @@ export type BackendProbes = {
   pdftoppm: () => boolean;
 };
 
+/** The probes for this host: a Python that imports PyMuPDF, and a pdftoppm that runs. */
 export const realProbes: BackendProbes = {
   pymupdf: () => findPython(["fitz"]),
   pdftoppm: () => spawnSync("pdftoppm", ["-v"], { stdio: "ignore" }).status === 0,
@@ -48,6 +51,7 @@ export function chooseBackend(probes: BackendProbes = realProbes): Backend | nul
   return probes.pdftoppm() ? { kind: "pdftoppm" } : null;
 }
 
+/** Resolution and page range of one render, and an optional crop of the first page's area. */
 export type RasterOptions = {
   dpi: number;
   /** 1-based; default is the whole document. */
@@ -57,6 +61,7 @@ export type RasterOptions = {
   crop?: { box: readonly [number, number, number, number]; width: number; height: number };
 };
 
+/** One rendered page: its 1-based number and the PNG written for it. */
 export type RasterPage = { page: number; path: string };
 
 /** Root directory of the render skills' output folders (default /tmp, as documented). */

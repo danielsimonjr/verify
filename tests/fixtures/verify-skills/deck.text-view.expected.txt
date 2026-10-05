@@ -1,0 +1,21 @@
+# slide 1
+Gamma
+2024
+[notes] Notes for Gamma
+# slide 2
+Alpha
+first
+k | v
+n | 7
+second
+grouped one
+grouped two
+third
+[notes] Notes for Alpha
+second notes line
+# slide 3
+Beta
+Bullet 1
+Bullet 2
+line one
+line two

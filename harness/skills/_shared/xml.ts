@@ -37,11 +37,18 @@ const parser = new XMLParser({
   trimValues: false,
   parseTagValue: false,
   parseAttributeValue: false,
+  // The default caps all `&quot;`, `&lt;`, `&gt;` and `&apos;` references in a part at 1000, so a
+  // long document fails to parse at all. The caps that guard DTD entity bombs (expanded length,
+  // nesting) stay at their defaults; Office parts carry no DTD.
+  processEntities: { enabled: true, maxTotalExpansions: Infinity },
 });
 
-/** Parse an XML part into top-level nodes in file order. */
+const BYTE_ORDER_MARK = 0xfeff;
+
+/** Parse an XML part into top-level nodes in file order. A leading byte-order mark is dropped. */
 export function parseOrdered(xml: string): XNode[] {
-  return parser.parse(xml) as XNode[];
+  const text = xml.charCodeAt(0) === BYTE_ORDER_MARK ? xml.slice(1) : xml;
+  return parser.parse(text) as XNode[];
 }
 
 /** The element name of a node, or `#text` for a text node. */
@@ -101,4 +108,40 @@ export function textIn(nodes: XNode[], tags: readonly string[]): string {
     return false;
   });
   return parts.join("");
+}
+
+/** The root element of a parsed part: the first element, past the `<?xml ?>` declaration and any text. */
+export function rootOf(nodes: XNode[]): XNode | undefined {
+  return nodes.find((n) => {
+    const tag = tagOf(n);
+    return tag !== TEXT && !tag.startsWith("?");
+  });
+}
+
+/** The first child element named `tag`. */
+export function child(node: XNode | undefined, tag: string): XNode | undefined {
+  return node ? childrenOf(node).find((c) => tagOf(c) === tag) : undefined;
+}
+
+/** Every child element named `tag`, in file order. */
+export function childrenNamed(node: XNode | undefined, tag: string): XNode[] {
+  return node ? childrenOf(node).filter((c) => tagOf(c) === tag) : [];
+}
+
+/** Follow `tags` down through the first matching child at each step. */
+export function descend(node: XNode | undefined, ...tags: string[]): XNode | undefined {
+  let cur = node;
+  for (const tag of tags) cur = child(cur, tag);
+  return cur;
+}
+
+/** Every descendant element named `tag`, in document order (the node itself is not included). */
+export function findAll(node: XNode | undefined, tag: string): XNode[] {
+  const found: XNode[] = [];
+  if (node) {
+    walk(childrenOf(node), (n, t) => {
+      if (t === tag) found.push(n);
+    });
+  }
+  return found;
 }

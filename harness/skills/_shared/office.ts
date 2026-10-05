@@ -19,6 +19,7 @@ import { existsSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+/** The process runner; tests pass a stand-in for `spawnSync` so no LibreOffice is needed. */
 export type Run = typeof spawnSync;
 
 /**

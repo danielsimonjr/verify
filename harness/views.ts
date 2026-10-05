@@ -16,23 +16,39 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { XMLParser } from "fast-xml-parser";
 import JSZip from "jszip";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import { exists, isSymlink, writeText } from "./fsutil.js";
 import { renderCellsTsv } from "./materialize/renderers.js";
+import {
+  docxParagraphText,
+  isHeadingStyle,
+  paragraphStyles,
+  styleNameOf,
+  tableRows,
+} from "./skills/_shared/docx.js";
+import { readPart } from "./skills/_shared/opc.js";
+import {
+  frameText,
+  notesText,
+  paragraphText,
+  shapeNodes,
+  slidesInOrder,
+} from "./skills/_shared/pptx.js";
+import { pyStrip } from "./skills/_shared/pytext.js";
+import {
+  type XNode,
+  child,
+  childrenNamed,
+  childrenOf,
+  descend,
+  tagOf,
+} from "./skills/_shared/xml.js";
 
 export const VIEW_SUFFIXES = [".cells.tsv", ".text.txt"] as const;
 export const INSTRUMENT_SUFFIXES = [".pre-recalc.xlsx", ".recalc.xlsx"] as const;
 export const TEXT_VIEW_CAP = 400_000;
-
-const xml = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  removeNSPrefix: true,
-  preserveOrder: true,
-});
 
 export function isView(name: string): boolean {
   return (
@@ -63,143 +79,55 @@ function walkNoSymlinks(root: string, cb: (dir: string, files: string[]) => void
   walk(root);
 }
 
-type OrderedNode = { [key: string]: unknown };
-
-function textFromRuns(node: unknown): string {
-  if (node === null || node === undefined) return "";
-  if (typeof node === "string") return node;
-  if (Array.isArray(node)) {
-    if (node.length && typeof node[0] === "object" && node[0] !== null && !Array.isArray(node[0])) {
-      const parts: string[] = [];
-      for (const item of node as OrderedNode[]) {
-        const key = Object.keys(item)[0];
-        if (key === "t" || key === "r") parts.push(textFromRuns(item[key]));
-      }
-      return parts.join("");
-    }
-    return node.map(textFromRuns).join("");
-  }
-  if (typeof node === "object") {
-    const o = node as Record<string, unknown>;
-    if ("t" in o) return String(o.t ?? "");
-    if ("r" in o) return textFromRuns(o.r);
-    return Object.values(o).map(textFromRuns).join("");
-  }
-  return "";
-}
-
 async function docxText(path: string): Promise<string> {
   const zip = await JSZip.loadAsync(readFileSync(path));
-  const docXml = await zip.file("word/document.xml")?.async("string");
-  if (!docXml) return "";
-  const doc = xml.parse(docXml) as OrderedNode[];
-  const document = doc.find((n) => "document" in n)?.document as OrderedNode[];
-  const body = document?.find((n) => "body" in n)?.body as OrderedNode[];
+  const body = descend(await readPart(zip, "word/document.xml"), "w:body");
   if (!body) return "";
+  const styles = await paragraphStyles(zip);
   const lines: string[] = [];
-  for (const block of body) {
-    const tag = Object.keys(block)[0];
-    const content = block[tag];
-    if (tag === "p") {
-      const paras = Array.isArray(content) ? content : [content];
-      let style = "";
-      const texts: string[] = [];
-      for (const el of paras as OrderedNode[]) {
-        const k = Object.keys(el)[0];
-        if (k === "pPr") {
-          const pPr = el.pPr as OrderedNode[];
-          const pStyle = pPr?.find((x) => "pStyle" in x)?.pStyle as OrderedNode[] | undefined;
-          const val = pStyle?.[0]?.["@_val"];
-          if (typeof val === "string") style = val;
-        } else if (k === "r") {
-          texts.push(textFromRuns(el.r));
-        }
-      }
-      const text = texts.join("").trim();
-      if (text) {
-        const heading = style.startsWith("Heading") || style.startsWith("Title");
-        lines.push((heading ? "# " : "") + text);
-      }
-    } else if (tag === "tbl") {
-      const tbl = (Array.isArray(content) ? content : [content]) as OrderedNode[];
-      const trNodes = tbl.flatMap((x) => {
-        const k = Object.keys(x)[0];
-        return k === "tr" ? (Array.isArray(x.tr) ? x.tr : [x.tr]) : [];
-      });
-      for (const tr of trNodes as OrderedNode[]) {
-        const row = tr.tr ?? tr;
-        const rowContent = Array.isArray(row) ? row : [row];
-        const cells: string[] = [];
-        for (const cellWrap of rowContent as OrderedNode[]) {
-          const ck = Object.keys(cellWrap)[0];
-          if (ck !== "tc") continue;
-          const tc = cellWrap.tc as OrderedNode[];
-          cells.push(textFromRuns(tc).trim().replace(/\n/g, " "));
-        }
-        if (cells.length) lines.push(cells.join(" | "));
+  for (const block of childrenOf(body)) {
+    const tag = tagOf(block);
+    if (tag === "w:p") {
+      const text = pyStrip(docxParagraphText(block));
+      if (text) lines.push((isHeadingStyle(styleNameOf(block, styles)) ? "# " : "") + text);
+    } else if (tag === "w:tbl") {
+      for (const row of tableRows(block)) {
+        lines.push(row.map((t) => pyStrip(t).replace(/\n/g, " ")).join(" | "));
       }
     }
   }
   return lines.join("\n");
 }
 
-async function pptxText(path: string): Promise<string> {
-  const zip = await JSZip.loadAsync(readFileSync(path));
-  const presXml = await zip.file("ppt/presentation.xml")?.async("string");
-  if (!presXml) return "";
-  const pres = xml.parse(presXml) as OrderedNode[];
-  const presentation = pres.find((n) => "presentation" in n)?.presentation as OrderedNode[];
-  const sldIdLst = presentation?.find((n) => "sldIdLst" in n)?.sldIdLst as OrderedNode[];
-  const relsXml = (await zip.file("ppt/_rels/presentation.xml.rels")?.async("string")) ?? "";
-  const rels = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" }).parse(
-    relsXml,
-  ) as Record<string, unknown>;
-  const relArr = (rels.Relationships as Record<string, unknown>)?.Relationship;
-  const relationships = Array.isArray(relArr) ? relArr : relArr ? [relArr] : [];
-  const ridToTarget = new Map<string, string>();
-  for (const r of relationships) {
-    const rel = r as Record<string, string>;
-    if (rel["@_Type"]?.includes("/slide")) {
-      ridToTarget.set(rel["@_Id"], rel["@_Target"]!);
-    }
-  }
-  const lines: string[] = [];
-  let slideNum = 0;
-  const sldIds = sldIdLst?.filter((n) => "sldId" in n).flatMap((n) => {
-    const s = n.sldId;
-    return Array.isArray(s) ? s : [s];
-  }) ?? [];
-  for (const sid of sldIds) {
-    slideNum += 1;
-    const attrs = (sid as OrderedNode[])[0] as Record<string, string>;
-    const rid = attrs?.["@_r:id"] ?? attrs?.["@_id"];
-    const target = ridToTarget.get(String(rid));
-    if (!target) continue;
-    const slidePath = target.startsWith("slides/") ? `ppt/${target}` : `ppt/slides/${target}`;
-    const slideXml = await zip.file(slidePath)?.async("string");
-    if (!slideXml) continue;
-    lines.push(`# slide ${slideNum}`);
-    const slide = xml.parse(slideXml) as OrderedNode[];
-    const sld = slide.find((n) => "sld" in n)?.sld as OrderedNode[];
-    const cSld = sld?.find((n) => "cSld" in n)?.cSld as OrderedNode[];
-    const spTree = cSld?.find((n) => "spTree" in n)?.spTree as OrderedNode[];
-    for (const node of spTree ?? []) {
-      const tag = Object.keys(node)[0];
-      if (tag === "sp") {
-        const sp = node.sp as OrderedNode[];
-        const txBody = sp?.find((x) => "txBody" in x)?.txBody;
-        if (txBody) {
-          const t = textFromRuns(txBody).trim();
-          if (t) lines.push(t);
-        }
-      } else if (tag === "graphicFrame") {
-        const t = textFromRuns(node.graphicFrame).trim();
-        if (t.includes("|") || t) {
-          const rows = t.split("\n").filter(Boolean);
-          lines.push(...rows);
-        }
+/** The text lines of the shapes in `container`, in z-order; groups are entered. */
+function shapeText(container: XNode | undefined, lines: string[]): void {
+  for (const sh of shapeNodes(container)) {
+    const tag = tagOf(sh);
+    if (tag === "p:sp") {
+      for (const p of childrenNamed(child(sh, "p:txBody"), "a:p")) {
+        const text = pyStrip(paragraphText(p));
+        if (text) lines.push(text);
+      }
+    } else if (tag === "p:grpSp") {
+      shapeText(sh, lines);
+    } else if (tag === "p:graphicFrame") {
+      const tbl = descend(sh, "a:graphic", "a:graphicData", "a:tbl");
+      for (const row of childrenNamed(tbl, "a:tr")) {
+        const cells = childrenNamed(row, "a:tc").map((tc) => pyStrip(frameText(child(tc, "a:txBody"))));
+        lines.push(cells.join(" | "));
       }
     }
+  }
+}
+
+async function pptxText(path: string): Promise<string> {
+  const zip = await JSZip.loadAsync(readFileSync(path));
+  const lines: string[] = [];
+  for (const slide of await slidesInOrder(zip)) {
+    lines.push(`# slide ${slide.number}`);
+    shapeText(descend(await readPart(zip, slide.path), "p:cSld", "p:spTree"), lines);
+    const notes = await notesText(zip, slide.path);
+    if (notes) lines.push(`[notes] ${notes}`);
   }
   return lines.join("\n");
 }

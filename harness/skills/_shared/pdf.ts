@@ -27,11 +27,13 @@ GlobalWorkerOptions.workerSrc = pathToFileURL(
   require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs"),
 ).href;
 
+/** Open the PDF at `path` with pdf.js; the system fonts are used for text that has none embedded. */
 export async function loadPdf(path: string) {
   const data = new Uint8Array(readFileSync(path));
   return getDocument({ data, useSystemFonts: true }).promise;
 }
 
+/** One run of text: `top` from the displayed page's top edge, `x0` and `x1` from its left edge, in pt. */
 export type Word = { top: number; x0: number; x1: number; text: string };
 
 // pdfminer (so pdfplumber) boxes a glyph run from baseline + descent up one em; pdf.js
