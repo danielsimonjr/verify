@@ -318,6 +318,24 @@ describe("classifyFailure", () => {
     }
   });
 
+  test("every usage-limit message of Claude Code is a usage limit, with a straight or a curly apostrophe", () => {
+    const messages = [
+      "You've reached your monthly limit",
+      "You've reached your usage limit for Opus",
+      "You've reached your extra usage limit",
+      "You're out of usage credits",
+      "You're out of extra usage",
+      "Your org is out of usage",
+      "Your seat type doesn't include usage",
+      "Your usage allocation has been disabled by your admin",
+    ];
+    for (const message of messages) {
+      expect(classifyFailure(message)).toBe("usage-limit");
+      expect(classifyFailure(message.replaceAll("'", "’"))).toBe("usage-limit");
+      expect(classifyFailure(`Error: ${message}. Resets at 5pm`)).toBe("usage-limit");
+    }
+  });
+
   test("a usage limit beats a rate-limit word in the same text", () => {
     expect(classifyFailure("API Error: 429 rate_limit_error: you've hit your weekly limit")).toBe("usage-limit");
   });

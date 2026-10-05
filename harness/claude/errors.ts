@@ -19,9 +19,25 @@ export type FailureKind = "usage-limit" | "transient" | "fatal";
 /**
  * A subscription or budget limit. The window is hours, not seconds, so the harness's backoff (30 s to
  * 3 min) cannot outlast it. Claude Code words it several ways: "Usage limit reached", "you have reached
- * your weekly usage limit", "5-hour usage limit", "You've hit your monthly spend limit".
+ * your weekly usage limit", "5-hour usage limit", "You've hit your monthly spend limit", "You've reached
+ * your ..." (any limit), "You're out of usage credits", "You're out of extra usage", "Your org is out of
+ * usage", "Your seat type doesn't include usage" and "Your usage allocation has been disabled by your
+ * admin". Each apostrophe may be straight or curly.
  */
-const USAGE_LIMIT = /usage limit|you(?:'|’)ve hit your |reached your (?:weekly|5-hour|monthly|daily)/i;
+const USAGE_LIMIT = new RegExp(
+  [
+    "usage limit",
+    "you@ve (?:hit|reached) your ",
+    "reached your (?:weekly|5-hour|monthly|daily)",
+    "you@re out of (?:extra )?usage",
+    "org is out of usage",
+    "seat type doesn@t include usage",
+    "usage allocation has been disabled",
+  ]
+    .join("|")
+    .replaceAll("@", "['’]"),
+  "i",
+);
 
 /**
  * Provider and transport faults worth a retry. The CLI has already retried inside the turn; this is a
