@@ -35,7 +35,6 @@ function periodCols(ws: ExcelJS.Worksheet): number[] {
   const counts = new Map<number, number>();
   let rows = 0;
   ws.eachRow({ includeEmpty: false }, (row) => {
-    const vals = row.values as unknown[];
     const cells: { col: number; val: unknown }[] = [];
     row.eachCell({ includeEmpty: false }, (cell) => {
       const col = cell.fullAddress.col;
