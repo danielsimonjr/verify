@@ -9,13 +9,16 @@
 # 24.04 runner they need  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 .
 #
 # 1. The JAIL run: probe.sh runs inside the jail and must see
-#      read_host_secret=no  write_workspace=yes  write_spec=no  write_rollouts=no
-#      write_skills=no  write_vendor=no  remount_spec_rw=no  umount_cover=no
+#      read_host_secret=no  write_task_root=yes  write_workspace_dir=no  write_spec=no
+#      write_rollouts=no  write_skills=no  write_vendor=no  remount_spec_rw=no  umount_cover=no
 #      reach_docker_socket=no  capeff=0000000000000000  nnp=1
 # 2. The CONTROL run: the same probe in a bare mount namespace that has a read-only bind and a
 #    cover but keeps its capabilities. It must report the escapes (remount_spec_rw=yes,
 #    umount_cover=yes, a non-zero capeff, nnp=0). If it does not, the probe cannot tell a broken
-#    jail from a sound one and a green jail run would mean nothing.
+#    jail from a sound one and a green jail run would mean nothing. Nothing in the control is
+#    read-only except spec/, so it gets its own skills and vendor dirs under $WS, and every
+#    write probe must answer yes there.
+# 3. No probe file is left in the real harness/skills or harness/vendor.
 set -uo pipefail
 
 if [ "$(uname -s)" != "Linux" ]; then
@@ -73,7 +76,8 @@ fi
 cat "$OUT.err" >&2
 rm -f "$OUT.err"
 expect "$OUT" read_host_secret no
-expect "$OUT" write_workspace yes
+expect "$OUT" write_task_root yes
+expect "$OUT" write_workspace_dir no
 expect "$OUT" write_spec no
 expect "$OUT" write_rollouts no
 expect "$OUT" write_skills no
@@ -85,8 +89,9 @@ expect "$OUT" capeff 0000000000000000
 expect "$OUT" nnp 1
 
 echo "== control: the same probe in a mount namespace that keeps its capabilities"
-rm -rf "$WS/out.txt" "$WS/spec/probe.txt" "$WS/rollouts/probe.txt"
-mkdir -p "$WS/cover"
+rm -rf "$WS/out.txt" "$WS/spec/probe.txt" "$WS/workspace/probe.txt" "$WS/rollouts/probe.txt"
+# The control has no read-only skills or vendor bind, so it writes its probe file into these.
+mkdir -p "$WS/cover" "$WS/control-skills" "$WS/control-vendor"
 if ! unshare -r -m bash -c '
   set -e
   ws="$1"; shift
@@ -94,7 +99,7 @@ if ! unshare -r -m bash -c '
   mount -o remount,bind,ro "$ws/spec"
   mount -t tmpfs tmpfs "$ws/cover"
   cd "$ws"
-  exec bash "$ws/probe.sh" "$1" "$ws/cover" "$3" "$4"
+  exec bash "$ws/probe.sh" "$1" "$ws/cover" "$ws/control-skills" "$ws/control-vendor"
 ' control "$WS" "${PROBE_ARGS[@]}" >"$OUT" 2>"$OUT.err"; then
   echo "  FAIL  the control namespace did not run the probe:"
   sed 's/^/        /' "$OUT.err"
@@ -102,6 +107,12 @@ if ! unshare -r -m bash -c '
   exit 1
 fi
 rm -f "$OUT.err"
+# Every write probe must be able to answer yes, or a "no" in the jail run proves nothing.
+expect "$OUT" write_task_root yes
+expect "$OUT" write_workspace_dir yes
+expect "$OUT" write_rollouts yes
+expect "$OUT" write_skills yes
+expect "$OUT" write_vendor yes
 expect "$OUT" write_spec no
 expect "$OUT" remount_spec_rw yes
 expect "$OUT" umount_cover yes
@@ -112,6 +123,17 @@ if [ "$(grep -m1 '^capeff=' "$OUT" | cut -d= -f2-)" = "0000000000000000" ]; then
 else
   printf '  ok    %-22s %s\n' capeff "$(grep -m1 '^capeff=' "$OUT" | cut -d= -f2-)"
 fi
+
+echo "== the real skills and vendor dirs are untouched"
+for f in "$REPO/harness/skills/probe.txt" "$REPO/harness/vendor/probe.txt"; do
+  if [ -e "$f" ]; then
+    echo "  FAIL  a probe wrote $f"
+    rm -f "$f"
+    failed=1
+  else
+    printf '  ok    %s is absent\n' "${f#"$REPO"/}"
+  fi
+done
 
 if [ "$failed" -ne 0 ]; then
   echo "jail check FAILED"

@@ -19,7 +19,9 @@ r() {
 }
 
 r read_host_secret 'cat "$secret"'
-r write_workspace 'echo hi > "$PWD/out.txt"'
+# The task root stays writable (the verdict is written there); the evidence dirs do not.
+r write_task_root 'echo hi > "$PWD/out.txt"'
+r write_workspace_dir 'echo x > "$PWD/workspace/probe.txt"'
 r write_spec 'echo x > "$PWD/spec/probe.txt"'
 r write_rollouts 'echo x > "$PWD/rollouts/probe.txt"'
 r write_skills 'echo x > "$skills/probe.txt"'
