@@ -24,8 +24,10 @@
 #   - ~/.cache/ms-playwright        (an installed headless browser, ro, if present)
 # The host Python (task pytest / patch lab) and Node (skill CLIs, pi) stay visible
 # but read-only: a verifier that pip- or npm-installs a candidate would otherwise
-# redirect imports for every other task on the machine. A prefix of /usr is left as
-# it is: it is owned by root, which the jail cannot write.
+# redirect imports for every other task on the machine. A prefix under $HOME (nvm, pyenv)
+# stays visible too: it is staged before the covers and bound back after them. A prefix of
+# /usr is left as it is: it is owned by root, which the jail cannot write. A read-only
+# remount that fails stops the jail.
 # Everything else under $HOME, the data root, /tmp and /var/tmp is covered by tmpfs,
 # and so is every directory listed in $VERIHARNESS_JAIL_HIDE (newline-separated
 # absolute paths: the driver lists the run outputs and the benchmark checkout).
@@ -79,10 +81,10 @@ WS="$1"; HARNESS="$2"; DATA="$3"; PY_PREFIX="$4"; NODE_PREFIX="$5"; shift 5
 H="$HOME"
 S=/tmp/vh_stage
 
-# A read-only remount is best effort: some hosts refuse it. Say so, rather than leave a
-# mount writable without a word.
+# A read-only remount that fails stops the jail: the directory is shared with the host or with
+# other tasks, and a writable one would let the verifier change it for all of them.
 ro() {
-  mount -o remount,bind,ro "$1" 2>/dev/null || echo "jail_run.sh: warning: $1 could not be made read-only" >&2
+  mount -o remount,bind,ro "$1" || { echo "jail_run.sh: $1 could not be made read-only; refusing to run" >&2; exit 1; }
 }
 
 HIDE=()
@@ -104,6 +106,16 @@ if [ -d "$H/.config/gcloud" ]; then mount --rbind "$H/.config/gcloud" "$S/gcloud
 mount --rbind "$HARNESS/vendor" "$S/vendor"
 mount --rbind "$HARNESS/pi-home" "$S/pihome"
 mount --rbind "$HARNESS/skills" "$S/skills"
+# An interpreter prefix can sit under $HOME (nvm, pyenv) or under another covered directory:
+# stage it here, before the covers, and bind it back to its real path after them.
+PFX=()
+for prefix in "$PY_PREFIX" "$NODE_PREFIX"; do
+  case "$prefix" in /usr|/|"") continue ;; esac
+  [ -d "$prefix" ] || continue
+  mkdir -p "$S/pfx${#PFX[@]}"
+  mount --rbind "$prefix" "$S/pfx${#PFX[@]}"
+  PFX+=("$prefix")
+done
 
 mount -t tmpfs tmpfs "$H"
 mount -t tmpfs tmpfs /var/tmp
@@ -136,6 +148,14 @@ if [ "$HAVE_BROWSERS" = 1 ]; then
   mount --rbind "$S/browsers" "$H/.cache/ms-playwright"
   ro "$H/.cache/ms-playwright"
 fi
+# Interpreters are shared with the host and with every other task: read-only, and no installs.
+i=0
+while [ "$i" -lt "${#PFX[@]}" ]; do
+  mkdir -p "${PFX[$i]}"
+  mount --rbind "$S/pfx$i" "${PFX[$i]}"
+  ro "${PFX[$i]}"
+  i=$((i + 1))
+done
 umount -l "$S"
 mount -t tmpfs tmpfs /tmp
 
@@ -161,19 +181,7 @@ for bin in /usr/bin/docker /usr/local/bin/docker /usr/bin/podman /usr/bin/nerdct
   [ -e "$bin" ] && mount --bind /dev/null "$bin" 2>/dev/null || true
 done
 
-# Interpreters are shared with the host and with every other task: read-only, and no
-# installs. Test plugins that reseed or cache across runs are disabled for repeatability.
-for prefix in "$PY_PREFIX" "$NODE_PREFIX"; do
-  case "$prefix" in /usr|/|"") ;; *)
-    if [ -d "$prefix" ]; then
-      if mount --rbind "$prefix" "$prefix" 2>/dev/null; then
-        ro "$prefix"
-      else
-        echo "jail_run.sh: warning: $prefix could not be bound, so it is not read-only" >&2
-      fi
-    fi ;;
-  esac
-done
+# Test plugins that reseed or cache across runs are disabled for repeatability (see PYTEST_ADDOPTS).
 # A copy of the task's own project installed on the machine would shadow the candidates
 # (and leak a later version of it): hide any site-packages entry that shares a top-level
 # name with a directory of the task inputs.

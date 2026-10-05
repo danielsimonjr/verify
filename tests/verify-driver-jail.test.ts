@@ -55,7 +55,7 @@ afterAll(() => {
   // The script makes its stage directory in the real /tmp before it covers it, and the stand-in mount
   // covers nothing, so empty directories stay behind. On Windows (Git Bash) nothing else uses them.
   if (shell && process.platform === "win32") {
-    const dirs = ["ws", "gcloud", "vendor", "pihome", "skills", "worlds", "browsers"].map((d) => `/tmp/vh_stage/${d}`);
+    const dirs = ["ws", "gcloud", "vendor", "pihome", "skills", "worlds", "browsers", "pfx0", "pfx1"].map((d) => `/tmp/vh_stage/${d}`);
     spawnSync("bash", ["-c", `rmdir ${dirs.join(" ")} /tmp/vh_stage 2>/dev/null; true`]);
   }
   try {
@@ -129,6 +129,11 @@ function once<T>(fn: () => T): () => T {
 const wsArg = posix(ws);
 const lc = (lines: string[]): string[] => lines.map((l) => l.toLowerCase());
 const at = (lines: string[], text: string): number => lc(lines).findIndex((l) => l === text.toLowerCase());
+/** The stage directory the script copied `prefix` into (pfx0, pfx1: Python's prefix first, then Node's). */
+const stageOf = (lines: string[], prefix: string): string | undefined => {
+  const head = `mount --rbind ${prefix} /tmp/vh_stage/pfx`.toLowerCase();
+  return lines.find((l) => l.toLowerCase().startsWith(head))?.split(" ").at(-1);
+};
 
 describe("jail_run.sh: syntax", () => {
   shellTest("the script and the script it hands to the jail both parse", () => {
@@ -216,7 +221,7 @@ describe("jail_run.sh: a normal run", () => {
   shellTest("binds Node's install directory read-only, as the header says", () => {
     const log = run().log;
     const p = posix(nodePrefix);
-    const bound = at(log, `mount --rbind ${p} ${p}`);
+    const bound = at(log, `mount --rbind ${stageOf(log, p)} ${p}`);
     expect(bound).toBeGreaterThan(-1);
     expect(at(log, `mount -o remount,bind,ro ${p}`)).toBeGreaterThan(bound);
   });
@@ -248,19 +253,40 @@ describe("jail_run.sh: what it must not cover or change", () => {
     stub("python3", `echo "${posix(prefix)}"`, pyDir);
     const r = runJail([wsArg, "true"], {}, [pyDir]);
     const p = posix(prefix);
-    const bound = at(r.log, `mount --rbind ${p} ${p}`);
+    const bound = at(r.log, `mount --rbind ${stageOf(r.log, p)} ${p}`);
     expect(bound).toBeGreaterThan(-1);
     expect(at(r.log, `mount -o remount,bind,ro ${p}`)).toBeGreaterThan(bound);
+  });
+
+  shellTest("an interpreter prefix under $HOME is staged before the cover on $HOME and bound back after it", () => {
+    // The tmpfs on $HOME hides an nvm or pyenv install; a bind made after it finds nothing to bind.
+    const prefix = join(home, "nvm", "v20");
+    mkdirSync(join(prefix, "bin"), { recursive: true });
+    stub("node", "exit 0", join(prefix, "bin"));
+    const r = runJail([wsArg, "true"], {}, [join(prefix, "bin")]);
+    expect(r.status).toBe(0);
+    const p = posix(prefix);
+    const stage = stageOf(r.log, p);
+    const staged = at(r.log, `mount --rbind ${p} ${stage}`);
+    const cover = at(r.log, `mount -t tmpfs tmpfs ${posix(home)}`);
+    const back = at(r.log, `mount --rbind ${stage} ${p}`);
+    const ro = at(r.log, `mount -o remount,bind,ro ${p}`);
+    const unstage = at(r.log, "umount -l /tmp/vh_stage");
+    expect(staged).toBeGreaterThan(-1);
+    expect(cover).toBeGreaterThan(staged);
+    expect(back).toBeGreaterThan(cover);
+    expect(ro).toBeGreaterThan(back);
+    expect(unstage).toBeGreaterThan(ro);
   });
 });
 
 describe("jail_run.sh: a read-only remount that fails", () => {
-  shellTest("is reported on stderr and the run carries on", () => {
+  shellTest("stops the jail: the command never runs", () => {
     mkdirSync(join(home, ".config", "gcloud"), { recursive: true });
     const r = runJail([wsArg, "true"], { VH_FAIL_MOUNT: "remount,bind,ro" });
-    expect(r.status).toBe(0);
+    expect(r.status).toBe(1);
     expect(r.stderr).toContain("gcloud");
     expect(r.stderr).toContain("could not be made read-only");
-    expect(r.log.at(-1)!.startsWith("setpriv")).toBe(true);
+    expect(r.log.some((l) => l.startsWith("setpriv"))).toBe(false);
   });
 });

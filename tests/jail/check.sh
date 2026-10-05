@@ -18,7 +18,11 @@
 #    jail from a sound one and a green jail run would mean nothing. Nothing in the control is
 #    read-only except spec/, so it gets its own skills and vendor dirs under $WS, and every
 #    write probe must answer yes there.
-# 3. No probe file is left in the real harness/skills or harness/vendor.
+# 3. The NODE run: a Node install under $HOME (nvm) must be visible in the jail and read-only. The
+#    $HOME cover used to hide it before it was bound back.
+# 4. The FAIL-CLOSED run: a read-only remount that fails must stop the jail before the command runs.
+#    A stand-in `mount` fails the remount of harness/skills; the old script warned and ran the probe.
+# 5. No probe file is left in the real harness/skills or harness/vendor.
 set -uo pipefail
 
 if [ "$(uname -s)" != "Linux" ]; then
@@ -37,7 +41,7 @@ SECRET="$(mktemp "$HOME/vh-jail-secret.XXXXXX")"
 OUT="$(mktemp "$HOME/vh-jail-out.XXXXXX")"
 MADE_DIRS=()
 cleanup() {
-  rm -rf "$WS" "$SECRET" "$OUT"
+  rm -rf "$WS" "$SECRET" "$OUT" "${NODE_PFX:-}" "${STUB_DIR:-}"
   # A mount that is still there when the namespace ends leaves nothing behind; only the made dirs do.
   for d in "${MADE_DIRS[@]+"${MADE_DIRS[@]}"}"; do rmdir "$d" 2>/dev/null || true; done
 }
@@ -123,6 +127,48 @@ if [ "$(grep -m1 '^capeff=' "$OUT" | cut -d= -f2-)" = "0000000000000000" ]; then
 else
   printf '  ok    %-22s %s\n' capeff "$(grep -m1 '^capeff=' "$OUT" | cut -d= -f2-)"
 fi
+
+echo '== node under $HOME: visible in the jail and read-only'
+NODE_PFX="$(mktemp -d "$HOME/vh-jail-node.XXXXXX")"
+mkdir -p "$NODE_PFX/bin"
+printf '#!/bin/sh\nexit 0\n' > "$NODE_PFX/bin/node"
+chmod +x "$NODE_PFX/bin/node"
+rm -rf "$WS/out.txt" "$WS/spec/probe.txt" "$WS/workspace/probe.txt" "$WS/rollouts/probe.txt"
+if ! PATH="$NODE_PFX/bin:$PATH" "$JAIL" "$WS" bash "$WS/probe.sh" "${PROBE_ARGS[@]}" "$NODE_PFX" >"$OUT" 2>"$OUT.err"; then
+  echo '  FAIL  the jail did not run with node under $HOME:'
+  sed 's/^/        /' "$OUT.err"
+  rm -f "$OUT.err"
+  exit 1
+fi
+rm -f "$OUT.err"
+expect "$OUT" node_prefix_visible yes
+expect "$OUT" write_node_prefix no
+
+echo "== fail closed: a read-only remount that fails stops the jail"
+# Not under $HOME, the repo or /tmp: the jail covers those, and the stand-in must stay on PATH.
+STUB_DIR="$(mktemp -d /dev/shm/vh-jail-stub.XXXXXX)" || { echo "  FAIL  no writable /dev/shm for the stand-in mount"; exit 1; }
+REAL_MOUNT="$(command -v mount)"
+cat > "$STUB_DIR/mount" <<'STUB'
+#!/bin/bash
+# Fail the read-only remount of harness/skills; pass every other call to the real mount.
+if [ "$1" = -o ] && [ "$2" = remount,bind,ro ] && [ "$3" = "$VH_FAIL_RO" ]; then
+  echo "stand-in mount: refusing remount of $3" >&2
+  exit 32
+fi
+exec "$VH_REAL_MOUNT" "$@"
+STUB
+chmod +x "$STUB_DIR/mount"
+rm -f "$WS/out.txt"
+PATH="$STUB_DIR:$PATH" VH_REAL_MOUNT="$REAL_MOUNT" VH_FAIL_RO="$REPO/harness/skills" "$JAIL" "$WS" bash -c 'echo ran > "$PWD/ran.txt"' >"$OUT" 2>"$OUT.err"
+status=$?
+if [ "$status" -ne 0 ] && grep -q "could not be made read-only" "$OUT.err" && [ ! -e "$WS/ran.txt" ]; then
+  printf '  ok    %-22s exit %s, command not run\n' fail_closed "$status"
+else
+  printf '  FAIL  %-22s exit %s, command ran: %s\n' fail_closed "$status" "$([ -e "$WS/ran.txt" ] && echo yes || echo no)"
+  sed 's/^/        /' "$OUT.err"
+  failed=1
+fi
+rm -f "$OUT.err" "$WS/ran.txt"
 
 echo "== the real skills and vendor dirs are untouched"
 for f in "$REPO/harness/skills/probe.txt" "$REPO/harness/vendor/probe.txt"; do
