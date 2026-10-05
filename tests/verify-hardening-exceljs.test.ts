@@ -56,8 +56,10 @@ describe("exceljs conditional formatting (the uuid call site)", () => {
 
   test("reads the workbook back with both rules intact", async () => {
     const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(await conditionalFormattingWorkbook());
-    const rules = wb.getWorksheet("cf")!.conditionalFormattings.flatMap((cf) => cf.rules.map((r) => r.type));
+    // exceljs typings target Node's legacy Buffer alias, and omit the conditionalFormattings list it keeps.
+    await wb.xlsx.load((await conditionalFormattingWorkbook()) as never);
+    const sheet = wb.getWorksheet("cf") as unknown as { conditionalFormattings: { rules: { type: string }[] }[] };
+    const rules = sheet.conditionalFormattings.flatMap((cf) => cf.rules.map((r) => r.type));
     expect(rules.sort()).toEqual(["dataBar", "iconSet"]);
   });
 });
