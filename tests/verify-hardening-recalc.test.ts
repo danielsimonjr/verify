@@ -5,7 +5,16 @@
 // for LibreOffice, as in the render tests.
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import ExcelJS from "exceljs";
@@ -14,7 +23,9 @@ const REPO = resolve(import.meta.dir, "..");
 const SCRIPT = join(REPO, "harness", "skills", "repair-xlsx", "scripts", "xlsx_recalc.ts");
 const STUB = join(import.meta.dir, "fixtures", "verify-hardening", "soffice-copy.ts");
 
-const root = mkdtempSync(join(tmpdir(), "vh-recalc-"));
+// The long name of the temp directory: on the Windows runner it is C:\Users\RUNNER~1\..., the profile
+// URL then holds %7E, and a .cmd stub refuses an argument with a percent sign.
+const root = mkdtempSync(join(realpathSync.native(tmpdir()), "vh-recalc-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 // One launcher per OS, as in verify-skills-render.test.ts: Node cannot spawn a .cmd; Bun can.

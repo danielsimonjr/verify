@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -28,8 +29,12 @@ const HAVE_PDFTOPPM = spawnSync("pdftoppm", ["-v"], { stdio: "ignore" }).status 
 // default fails it. The bound covers the measured cost with headroom for a loaded machine.
 const PYTHON_CASE_TIMEOUT_MS = 30_000;
 
+// The Windows runner's temp directory is C:\Users\RUNNER~1\...; the profile URL the scripts build
+// from it holds %7E, and a .cmd stub refuses an argument with a percent sign. The long name has none.
+const TMP_ROOT = realpathSync.native(tmpdir());
+
 function scratch<T>(fn: (dir: string) => T): T {
-  const dir = mkdtempSync(join(tmpdir(), "vs-render-"));
+  const dir = mkdtempSync(join(TMP_ROOT, "vs-render-"));
   try {
     return fn(dir);
   } finally {
