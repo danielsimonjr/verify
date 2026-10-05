@@ -46,10 +46,87 @@ const parser = new XMLParser({
 
 const BYTE_ORDER_MARK = 0xfeff;
 
-/** Parse an XML part into top-level nodes in file order. A leading byte-order mark is dropped. */
+/**
+ * Conventional prefix for each standard OOXML namespace, in the Transitional and Strict forms. The
+ * readers match these prefixes (`w:p`, `p:sldId`, `a:t`); the spreadsheet and package namespaces
+ * are matched without one.
+ */
+const CANONICAL_PREFIX: Record<string, string> = {};
+for (const [prefix, path] of [
+  ["w", "wordprocessingml/2006/main"],
+  ["p", "presentationml/2006/main"],
+  ["a", "drawingml/2006/main"],
+  ["r", "officeDocument/2006/relationships"],
+  ["c", "drawingml/2006/chart"],
+  ["wp", "drawingml/2006/wordprocessingDrawing"],
+  ["pic", "drawingml/2006/picture"],
+  ["", "spreadsheetml/2006/main"],
+] as const) {
+  CANONICAL_PREFIX[`http://schemas.openxmlformats.org/${path}`] = prefix;
+  CANONICAL_PREFIX[`http://purl.oclc.org/ooxml/${path.replace("/2006/", "/")}`] = prefix;
+}
+CANONICAL_PREFIX["http://schemas.openxmlformats.org/package/2006/relationships"] = "";
+CANONICAL_PREFIX["http://schemas.openxmlformats.org/package/2006/content-types"] = "";
+const CANONICAL_PREFIXES = new Set(Object.values(CANONICAL_PREFIX).filter((p) => p !== ""));
+
+type NsScope = Map<string, string>;
+
+/** `prefix:local` of a qualified name; `prefix` is "" for an unprefixed one. */
+function splitQName(name: string): [string, string] {
+  const i = name.indexOf(":");
+  return i < 0 ? ["", name] : [name.slice(0, i), name.slice(i + 1)];
+}
+
+/**
+ * The name a qualified name has once its namespace is resolved: the conventional prefix for a
+ * standard namespace, the name as written for any other, and `{uri}local` for a name that holds a
+ * conventional prefix but is bound elsewhere (so it never matches a reader). `isAttr`: an
+ * unprefixed attribute is in no namespace, unlike an unprefixed element.
+ */
+function canonicalName(name: string, scope: NsScope, isAttr: boolean): string {
+  const [prefix, local] = splitQName(name);
+  if (prefix === "" && isAttr) return name;
+  const uri = scope.get(prefix);
+  if (uri === undefined) return name;
+  const canon = CANONICAL_PREFIX[uri];
+  if (canon !== undefined) return canon === "" ? local : `${canon}:${local}`;
+  return prefix !== "" && CANONICAL_PREFIXES.has(prefix) ? `{${uri}}${local}` : name;
+}
+
+/** Rename every element and attribute of `nodes` by the namespace it is bound to. */
+function canonicalize(nodes: XNode[], parent: NsScope): XNode[] {
+  return nodes.map((node) => {
+    const tag = tagOf(node);
+    if (tag === TEXT || tag.startsWith("?") || tag.startsWith("#")) return node;
+    const attrs = node[ATTRS] as Record<string, string> | undefined;
+    let scope = parent;
+    if (attrs) {
+      for (const [k, v] of Object.entries(attrs)) {
+        if (k === "@_xmlns" || k.startsWith("@_xmlns:")) {
+          if (scope === parent) scope = new Map(parent);
+          scope.set(k === "@_xmlns" ? "" : k.slice("@_xmlns:".length), v);
+        }
+      }
+    }
+    const out: XNode = { [canonicalName(tag, scope, false)]: canonicalize(childrenOf(node), scope) };
+    if (attrs) {
+      const renamed: Record<string, string> = {};
+      for (const [k, v] of Object.entries(attrs)) {
+        renamed[k.startsWith("@_xmlns") ? k : `@_${canonicalName(k.slice(2), scope, true)}`] = v;
+      }
+      out[ATTRS] = renamed;
+    }
+    return out;
+  });
+}
+
+/**
+ * Parse an XML part into top-level nodes in file order. A leading byte-order mark is dropped. A
+ * standard OOXML namespace reads under its conventional prefix whatever prefix the part binds to it.
+ */
 export function parseOrdered(xml: string): XNode[] {
   const text = xml.charCodeAt(0) === BYTE_ORDER_MARK ? xml.slice(1) : xml;
-  return parser.parse(text) as XNode[];
+  return canonicalize(parser.parse(text) as XNode[], new Map());
 }
 
 /** The element name of a node, or `#text` for a text node. */
