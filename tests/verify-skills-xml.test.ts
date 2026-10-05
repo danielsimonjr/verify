@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { shapeNodes } from "../harness/skills/_shared/pptx.ts";
 import { attr, findAll, ownText, parseOrdered, rootOf, tagOf } from "../harness/skills/_shared/xml.ts";
 
 // Real Office parts are not tidy: Word writes a UTF-8 byte-order mark before the XML
@@ -54,6 +55,32 @@ describe("parseOrdered maps standard namespaces to their conventional prefixes",
     expect(ss && tagOf(ss)).toBe("workbook");
     const rels = rootOf(parseOrdered(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="a"/></Relationships>`));
     expect(rels && tagOf(rels)).toBe("Relationships");
+  });
+
+  test("markup compatibility under another prefix is read as mc:, and shapeNodes follows it", () => {
+    const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
+    const MC = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+    const root = rootOf(
+      parseOrdered(
+        `<p:spTree xmlns:p="${P}" xmlns:m="${MC}"><m:AlternateContent><m:Choice Requires="x"><p:sp/></m:Choice><m:Fallback><p:pic/></m:Fallback></m:AlternateContent></p:spTree>`,
+      ),
+    );
+    expect(shapeNodes(root).map(tagOf)).toEqual(["p:sp"]);
+  });
+
+  test("a non-standard URI bound to mc is not taken for markup compatibility", () => {
+    const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
+    const root = rootOf(
+      parseOrdered(`<p:spTree xmlns:p="${P}" xmlns:mc="urn:other"><mc:AlternateContent><mc:Choice><p:sp/></mc:Choice></mc:AlternateContent></p:spTree>`),
+    );
+    expect(shapeNodes(root)).toEqual([]);
+  });
+
+  test("a namespace URI that names an Object.prototype member is not a standard namespace", () => {
+    for (const uri of ["constructor", "__proto__", "toString"]) {
+      const root = rootOf(parseOrdered(`<x:p xmlns:x="${uri}"/>`));
+      expect(root && tagOf(root)).toBe("x:p");
+    }
   });
 
   test("an inner redeclaration wins inside its element only", () => {

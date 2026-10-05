@@ -51,7 +51,9 @@ const BYTE_ORDER_MARK = 0xfeff;
  * readers match these prefixes (`w:p`, `p:sldId`, `a:t`); the spreadsheet and package namespaces
  * are matched without one.
  */
-const CANONICAL_PREFIX: Record<string, string> = {};
+// A Map: the keys are namespace URIs from the document, and a plain object would answer for
+// "constructor" or "__proto__".
+const CANONICAL_PREFIX = new Map<string, string>();
 for (const [prefix, path] of [
   ["w", "wordprocessingml/2006/main"],
   ["p", "presentationml/2006/main"],
@@ -62,12 +64,13 @@ for (const [prefix, path] of [
   ["pic", "drawingml/2006/picture"],
   ["", "spreadsheetml/2006/main"],
 ] as const) {
-  CANONICAL_PREFIX[`http://schemas.openxmlformats.org/${path}`] = prefix;
-  CANONICAL_PREFIX[`http://purl.oclc.org/ooxml/${path.replace("/2006/", "/")}`] = prefix;
+  CANONICAL_PREFIX.set(`http://schemas.openxmlformats.org/${path}`, prefix);
+  CANONICAL_PREFIX.set(`http://purl.oclc.org/ooxml/${path.replace("/2006/", "/")}`, prefix);
 }
-CANONICAL_PREFIX["http://schemas.openxmlformats.org/package/2006/relationships"] = "";
-CANONICAL_PREFIX["http://schemas.openxmlformats.org/package/2006/content-types"] = "";
-const CANONICAL_PREFIXES = new Set(Object.values(CANONICAL_PREFIX).filter((p) => p !== ""));
+CANONICAL_PREFIX.set("http://schemas.openxmlformats.org/package/2006/relationships", "");
+CANONICAL_PREFIX.set("http://schemas.openxmlformats.org/package/2006/content-types", "");
+CANONICAL_PREFIX.set("http://schemas.openxmlformats.org/markup-compatibility/2006", "mc");
+const CANONICAL_PREFIXES = new Set([...CANONICAL_PREFIX.values()].filter((p) => p !== ""));
 
 type NsScope = Map<string, string>;
 
@@ -88,7 +91,7 @@ function canonicalName(name: string, scope: NsScope, isAttr: boolean): string {
   if (prefix === "" && isAttr) return name;
   const uri = scope.get(prefix);
   if (uri === undefined) return name;
-  const canon = CANONICAL_PREFIX[uri];
+  const canon = CANONICAL_PREFIX.get(uri);
   if (canon !== undefined) return canon === "" ? local : `${canon}:${local}`;
   return prefix !== "" && CANONICAL_PREFIXES.has(prefix) ? `{${uri}}${local}` : name;
 }
