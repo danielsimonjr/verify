@@ -502,6 +502,18 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
     }
   }
 
+  // `--env none` goes to every cell. Next to a Claude Code lane it also takes the jail from a pi lane.
+  if (args.env === "none") {
+    const isCc = (pool: string) => isClaudeCodeProvider(flagValue(flagsForLane(laneOf[pool]!, driverArgs), "--provider"));
+    const piCells = cells.filter(([, pool]) => !isCc(pool)).map(([bench, pool]) => `${bench}:${pool}`);
+    if (piCells.length > 0 && piCells.length < cells.length) {
+      process.stderr.write(
+        `WARNING: --env none applies to every cell; these pi cells run without the jail, so their verifiers can read ` +
+          `other tasks' results and the benchmark answer keys: ${piCells.join(", ")}\n`,
+      );
+    }
+  }
+
   const caps = args.caps;
   const laneMax: Record<string, number> = Object.fromEntries(
     Object.keys(config.LANES).map((lane) => [

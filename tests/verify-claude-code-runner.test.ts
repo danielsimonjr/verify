@@ -120,6 +120,26 @@ describe("the Claude Code lanes", () => {
   });
 });
 
+describe("--env none applies to every cell, and the runner warns about the cells that lose the jail", () => {
+  test("a pi cell next to a Claude Code cell is named in a warning", async () => {
+    addTask(sb.dataDir, "sb2", "flash", "t1");
+    const { code, stderr } = await run("sb2:haiku", ["t1"], ["--cells", "sb2:flash", "--env", "none"]);
+    expect(code).toBe(0);
+    const warning = stderr.split(String.fromCharCode(10)).filter((l) => l.includes("WARNING"));
+    expect(warning).toHaveLength(1);
+    expect(warning[0]).toContain("sb2:flash");
+    expect(warning[0]).not.toContain("sb2:haiku");
+    expect(warning[0]).toMatch(/without the jail/);
+  });
+
+  test("no warning when every cell runs Claude Code, or when no cell does", async () => {
+    const only = await run("sb2:haiku", ["t1"], ["--env", "none"]);
+    expect(only.stderr).not.toContain("WARNING");
+    const pi = await run("sb2:flash", ["t2"], ["--env", "none"]);
+    expect(pi.stderr).not.toContain("WARNING");
+  });
+});
+
 describe("a lane that runs Claude Code needs --env none, and the runner says so before any task", () => {
   for (const env of [[], ["--env", "jail"], ["--env", "native"], ["--env", "native-full"]]) {
     test(`refused with ${env.length ? env.join(" ") : "no --env"}`, async () => {
