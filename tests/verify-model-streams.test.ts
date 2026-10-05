@@ -124,6 +124,49 @@ describe("ollama tool calls across frames [4178394592]", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  test("an id-less call before a server call with the same id keeps both calls", async () => {
+    const { events } = await drain(
+      ollama([
+        '{"message":{"tool_calls":[{"function":{"name":"read","arguments":{}}}]},"done":false}\n',
+        '{"message":{"tool_calls":[{"id":"call_0","function":{"name":"write","arguments":{"path":"b"}}}]},"done":true}\n',
+      ]).stream(ask),
+    );
+    const calls = events.flatMap((event) => (event.type === "tool_call" ? [event.toolCall] : []));
+    expect(calls.map((call) => call.name)).toEqual(["read", "write"]);
+    const ids = calls.map((call) => call.id);
+    expect(ids).toContain("call_0");
+    expect(new Set(ids).size).toBe(2);
+    expect(calls.find((call) => call.name === "write")!.id).toBe("call_0");
+  });
+
+  test("a non-streaming reply keeps a server id and numbers around it", async () => {
+    const mock = scripted(() =>
+      new Response(
+        JSON.stringify({
+          model: "qwen",
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              { function: { name: "read", arguments: {} } },
+              { id: "call_0", function: { name: "write", arguments: {} } },
+            ],
+          },
+          done: true,
+        }),
+        { headers: { "content-type": "application/json" } },
+      ),
+    );
+    const backend = createBackend(
+      resolveLocalConfig({ provider: "ollama", model: "qwen", retries: 0, timeoutMs: 1000, env: {} }),
+      { fetch: mock.fetch },
+    );
+    const reply = await backend.complete(ask);
+    const ids = reply.message.toolCalls?.map((call) => call.id) ?? [];
+    expect(reply.message.toolCalls?.map((call) => call.name)).toEqual(["read", "write"]);
+    expect(new Set(ids).size).toBe(2);
+  });
+
   test("a non-streaming reply numbers its calls once for the whole response", async () => {
     const mock = scripted(() =>
       new Response(

@@ -135,11 +135,11 @@ function safeObject(raw: string): unknown {
   }
 }
 
-function toolCallsOf(raw: unknown, fillMissingIds: boolean): ToolCall[] {
+/** The calls in a reply, in order. A call without a server id has an empty `id`. */
+function toolCallsOf(raw: unknown): ToolCall[] {
   if (!Array.isArray(raw)) return [];
   const out: ToolCall[] = [];
-  for (let i = 0; i < raw.length; i++) {
-    const item = raw[i];
+  for (const item of raw) {
     if (!item || typeof item !== "object") continue;
     const rec = item as Record<string, unknown>;
     const fn = (rec.function ?? {}) as Record<string, unknown>;
@@ -147,7 +147,7 @@ function toolCallsOf(raw: unknown, fillMissingIds: boolean): ToolCall[] {
     if (!name) continue;
     const id = typeof rec.id === "string" && rec.id ? rec.id : "";
     out.push({
-      id: id || (fillMissingIds ? `call_${i}` : ""),
+      id,
       name,
       arguments: argumentsToJson(fn.arguments),
     });
@@ -174,7 +174,8 @@ export function parseOllamaRunningContext(body: unknown, wanted: string): number
 export function parseOllamaChat(body: unknown, fallbackModel: string): ChatResponse {
   const rec = (body ?? {}) as Record<string, unknown>;
   const message = (rec.message ?? {}) as Record<string, unknown>;
-  const toolCalls = toolCallsOf(message.tool_calls, true);
+  const toolCalls: ToolCall[] = [];
+  accumulateToolCalls(toolCalls, toolCallsOf(message.tool_calls), { n: 0, generated: new Set() });
   const content = typeof message.content === "string" ? message.content : null;
   const model = typeof rec.model === "string" && rec.model ? rec.model : fallbackModel;
   const finish =
@@ -210,7 +211,7 @@ export function pushOllamaChunk(
   const text = typeof message.content === "string" ? message.content : "";
   return {
     text,
-    toolCalls: toolCallsOf(message.tool_calls, false),
+    toolCalls: toolCallsOf(message.tool_calls),
     done: rec.done === true,
     finish: typeof rec.done_reason === "string" ? rec.done_reason : undefined,
     usage: ollamaUsage(rec),
@@ -225,26 +226,43 @@ function ollamaFrameError(payload: unknown): string | undefined {
   return undefined;
 }
 
-/** Later chunks add calls. A repeated server id updates that call; missing ids get one counter for the whole stream. */
-function accumulateToolCalls(acc: ToolCall[], incoming: ToolCall[], seq: { n: number }): void {
+/** Id state for one reply: a counter for generated ids, and which calls got a generated id. */
+interface ToolCallIds {
+  n: number;
+  generated: Set<ToolCall>;
+}
+
+/**
+ * Later chunks add calls. A repeated server id updates that call; missing ids get one counter for
+ * the whole reply. A generated id never merges with a server id: when a server call arrives with an
+ * id that a generated call already holds, the generated call (our invention) takes a new id.
+ */
+function accumulateToolCalls(acc: ToolCall[], incoming: ToolCall[], ids: ToolCallIds): void {
+  const nextFreeId = (): string => {
+    let id = `call_${ids.n}`;
+    while (acc.some((item) => item.id === id)) {
+      ids.n += 1;
+      id = `call_${ids.n}`;
+    }
+    ids.n += 1;
+    return id;
+  };
   for (const call of incoming) {
     if (call.id) {
-      const existing = acc.find((item) => item.id === call.id);
+      const existing = acc.find((item) => item.id === call.id && !ids.generated.has(item));
       if (existing) {
         if (call.name) existing.name = call.name;
         if (call.arguments && call.arguments !== "{}") existing.arguments = call.arguments;
         continue;
       }
+      const clash = acc.find((item) => item.id === call.id);
+      if (clash) clash.id = nextFreeId();
       acc.push({ ...call });
       continue;
     }
-    let id = `call_${seq.n}`;
-    while (acc.some((item) => item.id === id)) {
-      seq.n += 1;
-      id = `call_${seq.n}`;
-    }
-    seq.n += 1;
-    acc.push({ ...call, id });
+    const generated = { ...call, id: nextFreeId() };
+    ids.generated.add(generated);
+    acc.push(generated);
   }
 }
 
@@ -252,7 +270,7 @@ export async function* parseOllamaNdjson(lines: AsyncIterable<string>): AsyncGen
   let finish: string | undefined;
   let usage: TokenUsage | undefined;
   const toolCalls: ToolCall[] = [];
-  const seq = { n: 0 };
+  const ids: ToolCallIds = { n: 0, generated: new Set() };
   let sawDone = false;
   for await (const line of lines) {
     const trimmed = line.trim();
@@ -269,7 +287,7 @@ export async function* parseOllamaNdjson(lines: AsyncIterable<string>): AsyncGen
     }
     const chunk = pushOllamaChunk(payload);
     if (chunk.text) yield { type: "text", text: chunk.text };
-    if (chunk.toolCalls.length) accumulateToolCalls(toolCalls, chunk.toolCalls, seq);
+    if (chunk.toolCalls.length) accumulateToolCalls(toolCalls, chunk.toolCalls, ids);
     if (chunk.finish) finish = chunk.finish;
     if (chunk.usage) usage = chunk.usage;
     if (chunk.done) {
