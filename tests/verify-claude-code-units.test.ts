@@ -57,7 +57,7 @@ describe("the provider and its tools", () => {
   });
 
   test("the options a local model needs are the ones this provider refuses", () => {
-    expect([...UNSUPPORTED_WITH_CLAUDE_CODE].sort()).toEqual(
+    expect<string[]>([...UNSUPPORTED_WITH_CLAUDE_CODE].sort()).toEqual(
       ["base-url", "context-size", "max-tokens", "request-timeout", "temperature", "thinking", "top-p"].sort(),
     );
   });
