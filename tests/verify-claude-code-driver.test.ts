@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -6,6 +6,10 @@ import { ClaudeRuntime, SESSION_MARKERS } from "../harness/claude/index.ts";
 import { SKILLS_DIR } from "../harness/config.ts";
 import { parseDriverArgv } from "../harness/driver.ts";
 import { ELIM, happyRules, makeRig, writeRule, type Call, type Rig, type Rule } from "./fixtures/verify-claude-code/rig.ts";
+
+// Tests here start child processes. On a loaded Windows host one measured 5.3 s, against
+// Bun's 5 s default; the bound is per file in Bun.
+setDefaultTimeout(30_000);
 
 let rig: Rig;
 beforeEach(() => {

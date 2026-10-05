@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import * as config from "../harness/config.ts";
 import { flagsForLane, main } from "../harness/runner.ts";
 import { addTask, captureStderr, makeSandbox, type Sandbox } from "./fixtures/verify-runner/sandbox.ts";
+
+// Tests here start child processes. On a loaded Windows host one measured 3.7 s, against
+// Bun's 5 s default; the bound is per file in Bun.
+setDefaultTimeout(30_000);
 
 const STUB = fileURLToPath(new URL("./fixtures/verify-claude-code/stub-lane-driver.mjs", import.meta.url));
 

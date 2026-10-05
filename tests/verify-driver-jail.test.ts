@@ -1,8 +1,12 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// Tests here start child processes. On a loaded Windows host one measured 5.0 s, against
+// Bun's 5 s default; the bound is per file in Bun.
+setDefaultTimeout(30_000);
 
 // These tests run harness/scripts/jail_run.sh with stand-ins for unshare, mount, umount and setpriv.
 // They check the script's logic: what it refuses, which mounts it asks for and in what order, how it

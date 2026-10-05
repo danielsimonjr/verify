@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -17,6 +17,10 @@ import { delimiter, join } from "node:path";
 import { sofficeToPdf } from "../harness/skills/_shared/office.ts";
 import { chooseBackend, rasterizePages, type BackendProbes } from "../harness/skills/_shared/raster.ts";
 import { findPython } from "../harness/skills/_shared/python.ts";
+
+// Tests here start child processes. On a loaded Windows host one measured 3.6 s, against
+// Bun's 5 s default; the bound is per file in Bun.
+setDefaultTimeout(30_000);
 
 const FIXTURES = join(import.meta.dir, "fixtures", "verify-skills");
 const TABLES = join(FIXTURES, "tables.pdf"); // 4 pages, 612x792 pt
