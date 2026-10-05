@@ -18,7 +18,6 @@ import {
   mkdtempSync,
   readFileSync,
   writeFileSync,
-  mkdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { parseArgs } from "node:util";
@@ -26,6 +25,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import ExcelJS from "exceljs";
+import { ensureDir } from "../../_shared/dirs.js";
 import { cachedValue, isFormulaValue } from "../../_shared/excel.js";
 
 const { positionals, values } = parseArgs({
@@ -53,7 +53,7 @@ copyFileSync(src, work);
 const env = { ...process.env, HOME: td };
 const profile = `-env:UserInstallation=${pathToFileURL(join(td, "profile")).href}`;
 const outDir = join(td, "out");
-mkdirSync(outDir, { recursive: true });
+ensureDir(outDir);
 
 const r = spawnSync(
   "soffice",
@@ -133,7 +133,7 @@ while (cur !== dirname(cur)) {
   const parent = dirname(cur);
   if (base === "deliverables" && basename(parent) === "out") {
     sideDir = join(parent, "recalc", relative(cur, dirname(src)));
-    mkdirSync(sideDir, { recursive: true });
+    ensureDir(sideDir);
     break;
   }
   cur = parent;

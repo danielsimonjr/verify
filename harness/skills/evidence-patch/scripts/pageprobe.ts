@@ -13,10 +13,11 @@
 // limitations under the License.
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { basename, join, resolve } from "node:path";
 import { chromium } from "playwright";
+import { ensureDir } from "../../_shared/dirs.js";
 import { serve } from "../../_shared/static_server.js";
 
 const COUNTS = `() => ({
@@ -179,7 +180,7 @@ try {
   }
 
   const outDir = values.out ?? "/tmp";
-  mkdirSync(outDir, { recursive: true });
+  ensureDir(outDir);
   const shot = join(
     outDir,
     `pageprobe_${basename(resolve(root))}_${mobile ? "m" : "d"}.png`,

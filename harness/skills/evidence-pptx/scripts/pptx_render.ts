@@ -14,7 +14,6 @@
 
 import {
   copyFileSync,
-  mkdirSync,
   mkdtempSync,
   readdirSync,
   rmSync,
@@ -22,6 +21,7 @@ import {
 import { tmpdir } from "node:os";
 import { parseArgs } from "node:util";
 import { basename, extname, join, resolve } from "node:path";
+import { ensureDir } from "../../_shared/dirs.js";
 import { sofficeToPdf } from "../../_shared/office.js";
 import { rasterizePages, renderRoot } from "../../_shared/raster.js";
 
@@ -39,7 +39,7 @@ if (!file || !(dpi > 0)) {
 function main(file: string): number {
   const src = resolve(file);
   const out = join(renderRoot(), "pptx_render", basename(src, extname(src)));
-  mkdirSync(out, { recursive: true });
+  ensureDir(out);
   // The conversion, its profile and its PDF live in a scratch directory that is removed
   // on the way out; only the slide images are kept.
   const td = mkdtempSync(join(tmpdir(), "pptx_render_"));
