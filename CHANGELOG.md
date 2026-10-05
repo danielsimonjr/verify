@@ -15,6 +15,9 @@ All notable changes to this project are recorded here. The format follows
 - `model-check --provider claude-code` prints the CLI version, the model and the key source (#11).
 - CI builds and smoke-runs the built CLI on Linux and Windows, and checks the jail on a real Linux kernel. A control run with capabilities must report every escape and every write, so a "no" in the jail run means the jail held (#9).
 
+### Changed
+- The package is named `verify`, as the repository is. It was `veriharness`. The command is still `veriharness`: cmd.exe runs its built-in VERIFY command before it searches PATH, so a `verify` command would not run there. A test checks the package name, the command and both lockfiles (#19).
+
 ### Fixed
 - Runner: an unknown `--lane` is rejected instead of stalling the scheduler; view renders are awaited before the driver starts; tasks run concurrently up to the lane and cell caps; `--sample` and `--fraction` choose the tasks that Python's `random.Random(seed).sample` chose; numeric options reject typos (#4).
 - env-derive: images build concurrently up to `--jobs`, and a timed-out build is reported (#4).

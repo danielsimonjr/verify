@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "veriharness",
+      "name": "verify",
       "dependencies": {
         "exceljs": "^4.4.0",
         "fast-xml-parser": "^5.7.0",

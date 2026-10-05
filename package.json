@@ -1,5 +1,5 @@
 {
-  "name": "veriharness",
+  "name": "verify",
   "version": "0.1.0",
   "description": "Same-model verification harness for long-horizon workspace agents",
   "license": "Apache-2.0",
