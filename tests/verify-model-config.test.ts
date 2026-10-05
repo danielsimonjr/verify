@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { main as cliMain } from "../harness/cli.ts";
-import { resolveLocalConfig } from "../harness/model/index.ts";
+import { resolveLocalConfig, secondsToMs } from "../harness/model/index.ts";
 
 /**
  * The shared configuration boundary: negative, zero, fractional or non-finite numbers must be an
@@ -55,6 +55,24 @@ describe("config boundary rejects unusable numbers [4178394554]", () => {
     }
     expect(resolveLocalConfig({ ...base, timeoutMs: 1, retries: 0 })).toMatchObject({ timeoutMs: 1, retries: 0 });
     expect(() => resolveLocalConfig({ ...base, env: { VERIHARNESS_MODEL_TIMEOUT: "0" } })).toThrow(/must be positive/);
+  });
+
+  test("a fractional millisecond timeout is an input error, a fractional second count is whole milliseconds", () => {
+    expect(() => resolveLocalConfig({ ...base, timeoutMs: 0.5 })).toThrow(/request timeout must be positive and a whole number/);
+    expect(() => resolveLocalConfig({ ...base, timeoutMs: 1.5 })).toThrow(/request timeout must be positive and a whole number/);
+    expect(() => resolveLocalConfig({ ...base, env: { VERIHARNESS_MODEL_TIMEOUT: "0.0001" } })).toThrow(
+      /VERIHARNESS_MODEL_TIMEOUT must be at least 0.001/,
+    );
+    expect(resolveLocalConfig({ ...base, env: { VERIHARNESS_MODEL_TIMEOUT: "0.5" } }).timeoutMs).toBe(500);
+    expect(resolveLocalConfig({ ...base, env: { VERIHARNESS_MODEL_TIMEOUT: "1.001" } }).timeoutMs).toBe(1001);
+    expect(secondsToMs(0.5, "request timeout")).toBe(500);
+    expect(secondsToMs(1.001, "request timeout")).toBe(1001);
+    expect(() => secondsToMs(0.0001, "request timeout")).toThrow(/at least 0.001/);
+    for (const tiny of [0.0005, 0.0009, 0.00099]) {
+      expect(() => secondsToMs(tiny, "request timeout")).toThrow(/at least 0.001/);
+    }
+    expect(secondsToMs(0.001, "request timeout")).toBe(1);
+    expect(() => secondsToMs(1e306, "request timeout")).toThrow(/must be a finite number of seconds/);
   });
 
   test("the CLI turns each of them into an input error before any request", async () => {

@@ -33,7 +33,9 @@ import { join } from "node:path";
 
 import * as config from "../config.js";
 import { isMain } from "../runtime.js";
+import { parseCount } from "../count.js";
 import { mapPool } from "../pool.js";
+import { timerDelay } from "../timer.js";
 import { exists, readText } from "../fsutil.js";
 
 export const STACK =
@@ -85,7 +87,7 @@ function runDocker(
       timer = setTimeout(() => {
         timedOut = true;
         child.kill();
-      }, opts.timeoutMs);
+      }, timerDelay(opts.timeoutMs));
     }
     child.stderr!.setEncoding("utf8");
     child.stderr!.on("data", (chunk: string) => {
@@ -152,11 +154,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     if (argv[i] === "--jobs") {
       // parseInt("abc") is NaN: mapPool then starts no workers and the run builds nothing.
       const raw = argv[++i];
-      if (raw === undefined || !/^\d+$/.test(raw.trim()) || Number(raw) < 1) {
+      const parsed = raw === undefined ? undefined : parseCount(raw.trim(), 1);
+      if (parsed === undefined) {
         process.stderr.write(`error: --jobs must be an integer of at least 1, got '${raw ?? ""}'\n`);
         return 2;
       }
-      jobs = Number(raw);
+      jobs = parsed;
     } else if (argv[i] === "--only") {
       while (argv[i + 1] && !argv[i + 1]!.startsWith("-")) only.push(argv[++i]!);
     }

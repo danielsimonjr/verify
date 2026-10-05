@@ -54,7 +54,7 @@ import {
   claudeSessionEnv,
 } from "./claude/index.js";
 import { Native, imageFor } from "./env/index.js";
-import { canonicalLocalProvider, materializePiHome, prepareLocalProvider, resolveLocalConfig } from "./model/index.js";
+import { canonicalLocalProvider, materializePiHome, prepareLocalProvider, resolveLocalConfig, secondsToMs } from "./model/index.js";
 import { isBun, isMain, runWithBudget } from "./runtime.js";
 import { isView } from "./views.js";
 
@@ -1254,7 +1254,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: DriverD
           topP: args.topP,
           maxTokens: args.maxTokens,
           contextSize: args.contextSize,
-          timeoutMs: args.requestTimeout === undefined ? undefined : args.requestTimeout * 1000,
+          timeoutMs: args.requestTimeout === undefined ? undefined : secondsToMs(args.requestTimeout, "request timeout"),
         }),
       );
       args.provider = prepared.config.provider;

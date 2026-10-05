@@ -100,6 +100,8 @@ describe("parseCliArgs", () => {
     [["--limit", "abc"], /--limit/],
     [["--limit", "-1"], /--limit/],
     [["--limit", "1.5"], /--limit/],
+    [["--limit", "9".repeat(400)], /--limit/],
+    [["--limit", "9007199254740993"], /--limit/],
     [["--limit"], /needs a value/],
     [["--pool"], /needs a value/],
     [["--pool", "nope"], /invalid --pool/],
@@ -152,6 +154,28 @@ describe("runCli persistence and laziness", () => {
     const meta = JSON.parse(readFileSync(join(pool, "meta.json"), "utf8"));
     expect(Object.keys(meta)).toEqual(["t1"]);
     expect(existsSync(join(pool, "tasks", "t1", "rollouts", "r01"))).toBe(true);
+  });
+
+  test("a task named constructor with a marker but no meta entry is re-materialized", async () => {
+    const pool = join(root, "bench", "pool");
+    mkdirSync(join(pool, ".done"), { recursive: true });
+    writeFileSync(join(pool, ".done", "constructor"), "");
+    await silence(() => runCli("bench", ["pool"], () => [taskWith("constructor")], [], root));
+    const meta = JSON.parse(readFileSync(join(pool, "meta.json"), "utf8"));
+    expect(Object.keys(meta)).toEqual(["constructor"]);
+    expect(existsSync(join(pool, "tasks", "constructor", "rollouts", "r01"))).toBe(true);
+  });
+
+  test("a task named __proto__ is stored in meta.json and skipped on the next run", async () => {
+    const pool = join(root, "bench", "pool");
+    await silence(() => runCli("bench", ["pool"], () => [taskWith("__proto__"), taskWith("t1")], [], root));
+    const meta = JSON.parse(readFileSync(join(pool, "meta.json"), "utf8"));
+    expect(Object.keys(meta).sort()).toEqual(["__proto__", "t1"]);
+    expect(Object.getPrototypeOf(meta)).toBe(Object.prototype);
+    rmSync(join(pool, "tasks", "__proto__"), { recursive: true });
+    await silence(() => runCli("bench", ["pool"], () => [taskWith("__proto__"), taskWith("t1")], [], root));
+    expect(existsSync(join(pool, "tasks", "__proto__"))).toBe(false);
+    expect(Object.keys(JSON.parse(readFileSync(join(pool, "meta.json"), "utf8"))).sort()).toEqual(["__proto__", "t1"]);
   });
 
   test("a marker WITH a meta entry is skipped", async () => {

@@ -43,9 +43,18 @@ function traj(tf: string, runDir: string): () => string {
   return () => renderAtifSteps(readJsonStrict(tf), wbToolResults(runDir));
 }
 
+/**
+ * The decimal float syntax of Python's `float(str)` that has a finite value: optional sign, digits
+ * with single underscores between them, an optional fraction and exponent, and no hex, octal or
+ * binary prefix. `Number()` accepts "0x10", "0b1" and "0o7", which `float()` rejects.
+ */
+const PY_FLOAT = /^[+-]?(?:\d+(?:_\d+)*(?:\.(?:\d+(?:_\d+)*)?)?|\.\d+(?:_\d+)*)(?:[eE][+-]?\d+(?:_\d+)*)?$/;
+
 /** The archived reward as a number; a value that is not one is an error, not a NaN score. */
 function rewardOf(reward: unknown, where: string): number {
-  const n = typeof reward === "number" || (typeof reward === "string" && reward.trim() !== "") ? Number(reward) : NaN;
+  let n = NaN;
+  if (typeof reward === "number") n = reward;
+  else if (typeof reward === "string" && PY_FLOAT.test(reward.trim())) n = Number(reward.trim().replaceAll("_", ""));
   if (!Number.isFinite(n)) throw new Error(`reward ${JSON.stringify(reward)} of ${where} is not a number`);
   return n;
 }

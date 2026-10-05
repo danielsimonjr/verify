@@ -144,9 +144,22 @@ function nonNegativeInteger(value: number, name: string): number {
   return value;
 }
 
-/** A zero or negative timeout aborts every request at once, so it is an input error, not "no limit". */
+/** A zero, negative or fractional timeout is an input error: zero aborts every request at once, not "no limit". */
 function positiveTimeout(ms: number): number {
-  if (!Number.isFinite(ms) || ms <= 0) throw new Error("request timeout must be positive");
+  if (!Number.isInteger(ms) || ms <= 0) throw new Error("request timeout must be positive and a whole number of milliseconds");
+  return ms;
+}
+
+/**
+ * A count of seconds, which may be fractional, as whole milliseconds. The product is rounded so that
+ * 1.001 s is 1001 ms, not 1000.9999999999999; a value below one millisecond is an input error.
+ */
+export function secondsToMs(seconds: number, name: string): number {
+  if (!(seconds > 0)) throw new Error(`${name} must be positive`);
+  // Before rounding: 0.0005 s would round up to 1 ms and pass.
+  if (seconds < 0.001) throw new Error(`${name} must be at least 0.001 seconds`);
+  const ms = Math.round(seconds * 1000);
+  if (!Number.isFinite(ms)) throw new Error(`${name} must be a finite number of seconds`);
   return ms;
 }
 
@@ -154,7 +167,7 @@ function timeoutFromEnv(env: NodeJS.ProcessEnv): number {
   const seconds = optionalNumber(env.VERIHARNESS_MODEL_TIMEOUT, "VERIHARNESS_MODEL_TIMEOUT");
   if (seconds === undefined) return DEFAULT_TIMEOUT_MS;
   if (seconds <= 0) throw new Error("VERIHARNESS_MODEL_TIMEOUT must be positive");
-  return seconds * 1000;
+  return secondsToMs(seconds, "VERIHARNESS_MODEL_TIMEOUT");
 }
 
 function retriesFromEnv(env: NodeJS.ProcessEnv): number {

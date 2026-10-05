@@ -18,6 +18,7 @@ import { copyFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { DATA, benchRoot } from "../config.js";
+import { parseCount } from "../count.js";
 import {
   ensureDir,
   exists,
@@ -226,10 +227,11 @@ export function parseCliArgs(argv: string[], pools: string[]) {
       only.push(value());
     } else if (a === "--limit") {
       const v = value();
-      if (!/^\d+$/.test(v)) {
+      const n = parseCount(v);
+      if (n === undefined) {
         throw new UsageError(`--limit must be a non-negative integer, got ${JSON.stringify(v)}`);
       }
-      limit = Number(v);
+      limit = n;
     } else {
       throw new UsageError(`unknown argument ${JSON.stringify(a)}`);
     }
@@ -251,9 +253,12 @@ export async function runCli(
   const { poolList, only, limit } = parseCliArgs(argv, pools);
   for (const pool of poolList) {
     const metaFile = join(dataRoot, bench, pool, "meta.json");
-    const merged: Record<string, unknown> = exists(metaFile)
-      ? readJsonStrict<Record<string, unknown>>(metaFile)
-      : {};
+    // Task keys are data. No prototype, so `constructor` is not "present" and `__proto__` is an
+    // ordinary key (JSON.parse already makes it one, but assigning it on a plain object would not).
+    const merged: Record<string, unknown> = Object.assign(
+      Object.create(null) as Record<string, unknown>,
+      exists(metaFile) ? readJsonStrict<Record<string, unknown>>(metaFile) : {},
+    );
     let done = 0;
     // Tasks are pulled one at a time, so --limit and --only stop the adapter's work early and a
     // failure on a later task cannot undo the earlier ones.
@@ -262,7 +267,7 @@ export async function runCli(
         if (only && !only.has(task.key)) continue;
         const marker = join(dataRoot, bench, pool, ".done", task.key);
         // A marker alone is not "done": the label -> seed map and the scores live in meta.json.
-        if (exists(marker) && task.key in merged) {
+        if (exists(marker) && Object.hasOwn(merged, task.key)) {
           done += 1;
         } else if (Object.keys(task.rollouts).length >= 2) {
           merged[task.key] = await writeTask(bench, pool, task, dataRoot);

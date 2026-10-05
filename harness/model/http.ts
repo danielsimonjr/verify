@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { timerDelay } from "../timer.js";
+
 /**
  * Minimal HTTP for local model servers.
  *
@@ -123,7 +125,7 @@ export class HttpClient {
     timeoutMs: number,
   ): Promise<HttpResult> {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const timer = setTimeout(() => ctrl.abort(), timerDelay(timeoutMs));
     let keepTimer = false;
     try {
       const headers: Record<string, string> = {};

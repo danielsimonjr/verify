@@ -123,8 +123,8 @@ describe("env-derive builds", () => {
 
 describe("env-derive --jobs", () => {
   // Number("abc") is NaN; mapPool then starts no workers, builds nothing and exits 0.
-  for (const bad of ["abc", "0", "-2", "1.5", ""]) {
-    test(`rejects '${bad}'`, async () => {
+  for (const bad of ["abc", "0", "-2", "1.5", "", "9".repeat(400), "9007199254740993"]) {
+    test(`rejects '${bad.slice(0, 20)}' (${bad.length} chars)`, async () => {
       const { result, stderr } = await captureStderr(() => main(["--jobs", bad]));
       expect(result).toBe(2);
       expect(stderr).toMatch(/--jobs/);

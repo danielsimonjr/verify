@@ -150,6 +150,12 @@ describe("parseDriverArgv: --env and --skill", () => {
     expect((parseDriverArgv(["ws", "--skill", "--no-skills"]) as { error: string }).error).toContain("--skill");
   });
 
+  test("--skill=NAME is the same option as --skill NAME, as for every other driver option", () => {
+    expect(parseDriverArgv(["ws", "--skill=a", "--skill", "b"])).toMatchObject({ args: { skill: ["a", "b"] } });
+    expect((parseDriverArgv(["ws", "--skill="]) as { error: string }).error).toContain("--skill");
+    expect((parseDriverArgv(["ws", "--skill=--no-skills"]) as { error: string }).error).toContain("--skill");
+  });
+
   test("repeated --skill values are kept in order", () => {
     expect(parseDriverArgv(["ws", "--skill", "a", "--skill", "b"])).toMatchObject({ args: { skill: ["a", "b"] } });
   });

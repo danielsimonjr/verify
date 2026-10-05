@@ -19,6 +19,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { timerDelay } from "../timer.js";
 
 export type RunOptions = {
   input?: string;
@@ -146,7 +147,7 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
     let stopTimer: NodeJS.Timeout | undefined;
     let child: ChildProcess | undefined;
     let stopping: Promise<void> | undefined;
-    const stopWaitMs = opts.stopWaitMs ?? STOP_WAIT_MS;
+    const stopWaitMs = timerDelay(opts.stopWaitMs ?? STOP_WAIT_MS);
 
     const finish = (status: number | null, signal: NodeJS.Signals | null): void => {
       if (finished) return;
@@ -219,7 +220,7 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
       );
       // A process that survives the kill must not hold the caller for ever.
       stopTimer = setTimeout(() => finish(null, "SIGKILL"), stopWaitMs);
-    }, opts.timeoutMs);
+    }, timerDelay(opts.timeoutMs));
   });
 }
 

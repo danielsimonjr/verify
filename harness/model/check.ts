@@ -29,7 +29,7 @@ import {
   modelCheck,
 } from "../claude/index.js";
 import { isMain } from "../runtime.js";
-import { resolveLocalConfig } from "./config.js";
+import { resolveLocalConfig, secondsToMs } from "./config.js";
 import { prepareLocalProvider } from "./prepare.js";
 import { ModelError } from "./types.js";
 
@@ -64,7 +64,7 @@ async function claudeCheck(values: Record<string, unknown>): Promise<number> {
       command: claudeCommand(values["claude-bin"] as string | undefined),
       model,
       env: process.env,
-      timeoutMs: timeoutSec === undefined ? undefined : timeoutSec * 1000,
+      timeoutMs: timeoutSec === undefined ? undefined : secondsToMs(timeoutSec, "request timeout"),
     });
     process.stdout.write(JSON.stringify(report, null, 2) + "\n");
     return 0;
@@ -109,7 +109,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       temperature: optionalNumber("temperature", values.temperature as string | undefined),
       maxTokens: optionalNumber("max-tokens", values["max-tokens"] as string | undefined),
       topP: optionalNumber("top-p", values["top-p"] as string | undefined),
-      timeoutMs: timeoutSec === undefined ? undefined : timeoutSec * 1000,
+      timeoutMs: timeoutSec === undefined ? undefined : secondsToMs(timeoutSec, "request timeout"),
     });
     const prepared = await prepareLocalProvider(config);
     process.stdout.write(

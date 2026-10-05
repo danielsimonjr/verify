@@ -20,6 +20,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { USAGE_LIMIT_EXIT, UNSUPPORTED_WITH_CLAUDE_CODE, isClaudeCodeProvider } from "./claude/index.js";
 import * as config from "./config.js";
+import { parseCount } from "./count.js";
 import { claudeCodeRefusal } from "./driver.js";
 import { exists, isDir, mtime, readText, rmrf, walkFiles, writeJson } from "./fsutil.js";
 import { flagValue, withModelOverride } from "./model/flags.js";
@@ -224,10 +225,11 @@ function parseLaneMax(specs: string[]): Record<string, number> {
       if (!isLane(lane)) {
         throw new Error(`--lane-max: unknown lane '${lane}' (known: ${Object.keys(config.LANES).join(", ")})`);
       }
-      if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+      const cap = parseCount(raw, 1);
+      if (cap === undefined) {
         throw new Error(`--lane-max: '${lane}' needs an integer of at least 1, got '${raw}'`);
       }
-      out[lane] = Number(raw);
+      out[lane] = cap;
     }
   }
   return out;
@@ -247,10 +249,11 @@ function parseCaps(spec: string): Record<string, number> {
     if (key !== "default" && !(config.BENCHES as readonly string[]).includes(key)) {
       throw new Error(`--cell-cap: unknown key '${key}' (use a bench: ${config.BENCHES.join(", ")}; or default)`);
     }
-    if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+    const cap = parseCount(raw, 1);
+    if (cap === undefined) {
       throw new Error(`--cell-cap: '${key}' needs an integer of at least 1, got '${raw}'`);
     }
-    caps[key] = Number(raw);
+    caps[key] = cap;
   }
   return caps;
 }

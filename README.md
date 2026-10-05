@@ -285,7 +285,7 @@ The driver writes the two investigation records (`elim/`, `fals/`,
 transcripts under `session/` and the result under `out/deliverables/` into the
 task directory. `--contract pick-only` stops
 after adjudication (selection only), `--no-skills` runs with an empty skill
-library, `--skill <dir>` swaps in another library, `--skills-mode auto` lets the
+library, `--skill <dir>` (or `--skill=<dir>`, like every other option) swaps in another library, `--skills-mode auto` lets the
 verifier choose which skills to read (see "Skills"), and `--env none` runs without the jail (debugging only, and required with `--provider claude-code`).
 
 **Run a benchmark.** A cell is one `bench:pool` pair; the runner copies each

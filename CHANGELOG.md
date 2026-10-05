@@ -21,7 +21,7 @@ All notable changes to this project are recorded here. The format follows
 - The built CLI resolves its prompts, skills, scripts and data from the repository root, and starts with a Node shebang (#5).
 - WorkBuddy, JobBench and SB2 task keys split at the first `__` only (#5, #8).
 - The `jb` and `wsb` judge preflights fail on a non-2xx response (#5).
-- Model options: zero, negative and fractional `--max-tokens`, `--request-timeout`, `maxTokens`, `timeoutMs` and `retries` are input errors; the Ollama context-window messages state what a user must run (#3).
+- Model options: zero and negative `--request-timeout`, and zero, negative and fractional `--max-tokens`, `maxTokens`, `timeoutMs` and `retries`, are input errors; the Ollama context-window messages state what a user must run (#3).
 - Skill scripts: PDF word coordinates start at the top-left of the displayed page; `pdf_tables` detects tables with pdfplumber; the PPTX, XLSX and PDF renderers fall back to PyMuPDF when Poppler is absent (#6).
 - Materialized views keep PPTX speaker notes, grouped text and shape order, and read DOCX text, headings and merged cells as python-docx does (#6).
 - Driver: a timed-out turn kills its whole process tree; a turn whose agent never started is reported; timeouts and options are validated; a base name from `finish.json` must be a real rollout (#7).
@@ -40,6 +40,16 @@ All notable changes to this project are recorded here. The format follows
 - `docs/local-models.md` and the context-length messages: load the model after setting `OLLAMA_CONTEXT_LENGTH`, and create a variant with `ollama create -f Modelfile` (#11).
 - `VERIHARNESS_TMP` defaults to the OS temp directory when `/var/tmp` does not exist (#11).
 - Tests: the env-derive timeout test gives its stub 2 s to start instead of 300 ms, and the Windows command-line test makes about 280 folders instead of 1,500, whose delete outlasted the 5 s cleanup hook. Nine test files that start child processes set a 30 s default: their slowest tests measured 3.2-5.3 s on a loaded Windows host, and Bun's 5 s default failed a different one on each run. Bun 1.4.2 reads no test timeout from `bunfig.toml`, and a preloaded `setDefaultTimeout` reaches only the first file (#11).
+- Model options: `timeoutMs` must be a whole number of milliseconds; a fractional count of seconds (`--request-timeout`, `VERIHARNESS_MODEL_TIMEOUT`) converts to whole milliseconds, and less than 1 ms is an error (#12).
+- Ollama: a generated tool-call id never merges with a server id, in a stream or in a whole reply, so no call is lost (#12).
+- `--jobs`, `--cell-cap`, `--lane-max` and `--limit` reject a digit string that is Infinity or an unsafe integer, through one helper, `parseCount` (#12).
+- Score: tasks named `__proto__` or `constructor` are graded and saved on the batched path, and the bootstrap interval no longer depends on the order in which tasks finish (#12).
+- Materialize: a task named `constructor` or `__proto__` is tracked correctly in `meta.json`; a WorkBuddy string reward must match Python `float()` syntax, so `0x10` is an error (#12).
+- The `--skill=NAME` form is accepted like every other `--option=value`; a test and the README say so (#12).
+- `secondsToMs` rejects a value below 0.001 s before rounding, so 0.0005 s no longer rounds up to 1 ms (#12).
+- The Workspace-Bench (`wsb`) batch grader returns a prototype-free result, so a task named `__proto__` gets its own entry and reaches score (#12).
+- A caller-supplied timeout above 2^31-1 ms (about 24.8 days) is clamped, because Node fires such a timer at once: `--request-timeout 2147484` aborted every model request after about 1 ms. `secondsToMs` says "finite" for an infinite product (#12).
+- `pptx_text` tests set the 30 s default timeout of the other child-process test files (#12).
 
 ### Security
 - Staging deliverables for grading refuses symlinks instead of copying the files that they point at (#5).
