@@ -14,10 +14,11 @@
 
 import { spawnSync } from "node:child_process";
 import { copyFileSync, cpSync, mkdtempSync, mkdirSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { benchRoot, TMP_DIR } from "../config.js";
 import {
+  assertNoLinkBelow,
   assertNoSymlinks,
   chmod,
   exists,
@@ -95,6 +96,10 @@ function stage(
   mkdirSync(join(taskDir, "output"), { recursive: true });
   const tracePath =
     trace ?? join(dirname(deliverables), "trajectory", "agent.json");
+  // The trace and its directory are refused as links, as the bundle is: copyFileSync follows a
+  // link, and would copy the host file it resolves to into the judge's input.
+  const traceDir = dirname(tracePath);
+  assertNoLinkBelow(dirname(traceDir), `${basename(traceDir)}/${basename(tracePath)}`);
   if (exists(tracePath)) {
     copyFileSync(tracePath, join(taskDir, "agent.json"));
   }

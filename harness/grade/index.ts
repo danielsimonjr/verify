@@ -14,7 +14,10 @@
 
 /** Re-grading of NEW deliverables through each benchmark's own grader. */
 
+import { basename, dirname } from "node:path";
+
 import { BENCHES, type Bench } from "../config.js";
+import { assertNoLinkBelow, SymlinkError } from "../fsutil.js";
 
 export type GradeResult = {
   score: number | null;
@@ -48,6 +51,15 @@ export async function gradeDeliverables(
   deliverables: string,
   kw: Record<string, unknown> = {},
 ): Promise<GradeResult> {
+  // A link at or under the bundle resolves on the host when a grader reads it. Refused here for
+  // every bench, before its grader loads. The directories above the bundle belong to the caller:
+  // score checks them from the task workspace.
+  try {
+    assertNoLinkBelow(dirname(deliverables), basename(deliverables));
+  } catch (e) {
+    if (e instanceof SymlinkError) return { score: null, error: e.message };
+    throw e;
+  }
   const mod = await loadGradeModule(bench);
   const ret = mod.grade(key, deliverables, kw);
   return ret instanceof Promise ? await ret : ret;
