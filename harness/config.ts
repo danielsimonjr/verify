@@ -26,7 +26,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -61,13 +61,30 @@ function envPath(varName: string, fallback: string): string {
 
 export const DATA = envPath("VERIHARNESS_DATA", join(REPO, "data"));
 export const RUNS = envPath("VERIHARNESS_RUNS", join(REPO, "runs"));
-/** Staging directory for the graders' containers (bind-mounted, so it must be a real directory). */
-export const TMP_DIR = envPath("VERIHARNESS_TMP", "/var/tmp");
+/**
+ * Staging directory for the graders' containers (bind-mounted, so it must be a real directory).
+ * `/var/tmp` where it exists; elsewhere (native Windows) the operating system's temporary directory.
+ */
+export function defaultTmpDir(varTmpExists: boolean = existsSync("/var/tmp"), osTmp: string = tmpdir()): string {
+  return varTmpExists ? "/var/tmp" : osTmp;
+}
+export const TMP_DIR = envPath("VERIHARNESS_TMP", defaultTmpDir());
 /**
  * The pi agent runtime and its config live inside the harness directory because the jail
  * exposes exactly these two paths to the verifier (scripts/setup_pi.sh installs pi).
  */
 export const PI_BIN = join(HARNESS_DIR, "vendor", "node_modules", ".bin", "pi");
+/** pi's entry script: what `.bin/pi` runs. On Windows `.bin/pi` is a POSIX shell script, so the driver runs this with Node. */
+export const PI_CLI_JS = join(
+  HARNESS_DIR,
+  "vendor",
+  "node_modules",
+  "@earendil-works",
+  "pi-coding-agent",
+  "dist",
+  "bundle",
+  "cli.js",
+);
 export const PI_HOME = join(HARNESS_DIR, "pi-home");
 
 export const BENCHES = ["apex", "wsb", "wb", "sb2", "jb"] as const;
@@ -94,6 +111,10 @@ export const LANES: Record<string, string[]> = {
     "--thinking",
     "high",
   ],
+  // The Claude Code verifier (docs/claude-code.md). Full model ids, not the `haiku` / `sonnet` aliases,
+  // so a run stays reproducible when an alias moves to a newer model.
+  haiku: ["--provider", "claude-code", "--model", "claude-haiku-4-5-20251001"],
+  sonnet: ["--provider", "claude-code", "--model", "claude-sonnet-5-5"],
 };
 
 /** Lanes served through the local litellm proxy (scripts/litellm_up.sh). */

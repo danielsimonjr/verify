@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/** VeriHarness driver: run one verification task through the pi agent runtime. */
+/**
+ * VeriHarness driver: run one verification task through an agent runtime: pi (the default, with the
+ * local and cloud providers) or Claude Code (`--provider claude-code`, see docs/claude-code.md).
+ */
 
 import { createHash } from "node:crypto";
 import {
@@ -24,7 +27,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import * as config from "./config.js";
@@ -39,9 +42,20 @@ import {
   walkFiles,
   writeJson as writeJsonFs,
 } from "./fsutil.js";
+import {
+  CLAUDE_CODE_PROVIDER,
+  ClaudeRuntime,
+  UNSUPPORTED_WITH_CLAUDE_CODE,
+  USAGE_LIMIT_EXIT,
+  claudeCommand,
+  claudeTools,
+  isClaudeCodeProvider,
+  startCheck,
+  withoutSessionMarkers,
+} from "./claude/index.js";
 import { Native, imageFor } from "./env/index.js";
 import { canonicalLocalProvider, materializePiHome, prepareLocalProvider, resolveLocalConfig } from "./model/index.js";
-import { isMain, runWithBudget } from "./runtime.js";
+import { isBun, isMain, runWithBudget } from "./runtime.js";
 import { isView } from "./views.js";
 
 export { readJsonFs as readJson, writeJsonFs as writeJson };
@@ -222,31 +236,165 @@ export function rolloutDir(ws: string, base: string): string | null {
   return isDir(dir) ? dir : null;
 }
 
-class Pi {
+/** What a runtime offers the phases of a task: sessions, turns, and the record a session wrote itself. */
+export interface Agent {
+  readonly ws: string;
+  /** A fresh lineage of sessions whose transcripts live under `<ws>/session/<name>`. */
+  withSession(name: string): Agent;
+  /** Run one turn; true when the runtime says it succeeded. The caller judges the turn by the records it left. */
+  turn(message: string, timeout: number, continueSession: boolean, tag?: string): Promise<boolean>;
+  /** The text of the record file this session wrote itself (not a file another session left), or null. */
+  ownRecord(record: string): string | null;
+}
+
+/**
+ * Run a turn, and when `output` still does not parse, one nudge turn that continues the session.
+ * Resolves to the parsed JSON of `output`, or null.
+ */
+export async function turnUntil(
+  agent: Agent,
+  message: string,
+  nudge: string,
+  output: string,
+  timeouts: [number, number],
+  continueSession: boolean,
+  tag = "",
+): Promise<Record<string, unknown> | null> {
+  await agent.turn(message, timeouts[0], continueSession, tag);
+  let result = readJsonFs<Record<string, unknown>>(output);
+  if (result === null) {
+    await agent.turn(nudge, timeouts[1], true, tag);
+    result = readJsonFs<Record<string, unknown>>(output);
+  }
+  return result;
+}
+
+/** Windows hands a process one command line of at most 32,767 characters (CreateProcess). */
+export const WINDOWS_COMMAND_LINE_LIMIT = 32_767;
+/** Linux caps a single argument at 131,072 bytes (MAX_ARG_STRLEN) and the list at a few MB. */
+export const POSIX_ARG_LIMIT = 131_072;
+/** Room kept under the Windows limit: the executable's quoting is not counted exactly. */
+const WINDOWS_MARGIN = 767;
+
+/**
+ * An upper bound on the characters the command line `cmd` takes on Windows: Node quotes an argument
+ * that holds a space, a tab or a quote, and escapes each quote and each backslash it can double.
+ */
+export function windowsCommandLineLength(cmd: readonly string[]): number {
+  let n = Math.max(0, cmd.length - 1);
+  for (const arg of cmd) n += arg.length + 2 + (arg.match(/["\\]/g)?.length ?? 0);
+  return n;
+}
+
+/** True when `cmd` can start as one process on `platform`. */
+export function fitsCommandLine(cmd: readonly string[], platform: NodeJS.Platform = process.platform): boolean {
+  if (platform === "win32") return windowsCommandLineLength(cmd) <= WINDOWS_COMMAND_LINE_LIMIT - WINDOWS_MARGIN;
+  const bytes = cmd.map((a) => Buffer.byteLength(a));
+  return bytes.every((b) => b < POSIX_ARG_LIMIT) && bytes.reduce((a, b) => a + b, 0) < 1_000_000;
+}
+
+export interface PiTurnPlan {
+  /** The command, before a jail or container wraps it. */
+  cmd: string[];
+  /** Written to the process's stdin when set. */
+  input?: string;
+  /** Where the message travels: the command line, stdin, or an `@file` argument. */
+  via: "argv" | "stdin" | "file";
+}
+
+export interface PiTurnInput {
+  piCommand: readonly string[];
+  flags: readonly string[];
+  message: string;
+  continueSession: boolean;
+  /** True when the process's stdin reaches pi: not through the jail, whose script reads its own stdin, and not through `docker run` without `-i`. */
+  canPipe: boolean;
+  /** Write `text` to a file pi can read, in the workspace, and return its absolute path. */
+  writeFile: (name: string, text: string) => string;
+  platform?: NodeJS.Platform;
+}
+
+/**
+ * The command for one pi turn. The message goes on the command line, as `pi -p ... -- <message>`, when
+ * it fits. Mounted skills alone are about 75 KB, so on Windows it often does not; then it travels on
+ * stdin (pi 0.84 reads piped stdin as the start of the message in print mode, `readPipedStdin` in
+ * main.js) or, where stdin does not reach pi, as an `@file` argument (`buildInitialMessage` in
+ * cli/initial-message.js; pi wraps the file's text in a `<file>` tag). If the flags alone are still too long, the
+ * charter goes to a file as well: pi reads `--system-prompt` as a path when the path exists
+ * (`resolvePromptInput` in core/resource-loader.js). Failing all of that, it throws, with the sizes.
+ */
+export function planPiCommand(input: PiTurnInput): PiTurnPlan {
+  const platform = input.platform ?? process.platform;
+  const head = (flags: readonly string[]): string[] => [
+    ...input.piCommand,
+    "-p",
+    ...flags,
+    ...(input.continueSession ? ["-c"] : []),
+  ];
+  const inline = [...head(input.flags), "--", input.message];
+  if (fitsCommandLine(inline, platform)) return { cmd: inline, via: "argv" };
+
+  let messageArg: string | undefined;
+  const carry = (flags: readonly string[]): PiTurnPlan =>
+    input.canPipe
+      ? { cmd: head(flags), input: input.message, via: "stdin" }
+      : {
+          cmd: [...head(flags), "--", (messageArg ??= `@${input.writeFile("turn-message.md", input.message)}`)],
+          via: "file",
+        };
+  let plan = carry(input.flags);
+  if (fitsCommandLine(plan.cmd, platform)) return plan;
+
+  const at = input.flags.indexOf("--system-prompt");
+  if (at >= 0 && at + 1 < input.flags.length) {
+    const flags = [...input.flags];
+    flags[at + 1] = input.writeFile("system-prompt.md", flags[at + 1]!);
+    plan = carry(flags);
+    if (fitsCommandLine(plan.cmd, platform)) return plan;
+  }
+  const limit = platform === "win32" ? WINDOWS_COMMAND_LINE_LIMIT : POSIX_ARG_LIMIT;
+  throw new Error(
+    `the pi command line is too long to start (${windowsCommandLineLength(plan.cmd)} characters; ${platform} allows ` +
+      `${limit}) even with the message and the charter in files: shorten the --skill list or the --pi-bin path`,
+  );
+}
+
+/** The command that starts pi: on Windows the default install's `.bin/pi` is a shell script, so run its entry script with Node. */
+export function piCommandFor(piBin: string, platform: NodeJS.Platform = process.platform): string[] {
+  if (platform === "win32" && piBin === config.PI_BIN && isFile(config.PI_CLI_JS)) {
+    return [isBun ? "node" : process.execPath, config.PI_CLI_JS];
+  }
+  return [piBin];
+}
+
+class Pi implements Agent {
   ws: string;
-  piBin: string;
+  piCommand: readonly string[];
   flags: string[];
   useJail: boolean;
   deadline: number;
   native: Native | null;
   piHome: string | null;
+  backoff: readonly number[];
 
   constructor(
     ws: string,
-    piBin: string,
+    piCommand: readonly string[],
     flags: string[],
     useJail: boolean,
     deadline: number,
     native: Native | null = null,
     piHome: string | null = null,
+    backoff: readonly number[] = RETRY_BACKOFF,
   ) {
     this.ws = ws;
-    this.piBin = piBin;
+    this.piCommand = piCommand;
     this.flags = flags;
     this.useJail = useJail;
     this.deadline = deadline;
     this.native = native;
     this.piHome = piHome;
+    this.backoff = backoff;
   }
 
   withSession(name: string): Pi {
@@ -255,7 +403,7 @@ class Pi {
     const flags = [...this.flags];
     const idx = flags.indexOf("--session-dir");
     flags[idx + 1] = sessionDir;
-    return new Pi(this.ws, this.piBin, flags, this.useJail, this.deadline, this.native, this.piHome);
+    return new Pi(this.ws, this.piCommand, flags, this.useJail, this.deadline, this.native, this.piHome, this.backoff);
   }
 
   get sessionDir(): string {
@@ -264,18 +412,33 @@ class Pi {
   }
 
   inNative(native: Native): Pi {
-    return new Pi(this.ws, this.piBin, this.flags, this.useJail, this.deadline, native, this.piHome);
+    return new Pi(this.ws, this.piCommand, this.flags, this.useJail, this.deadline, native, this.piHome, this.backoff);
   }
 
-  _cmd(message: string, continueSession: boolean, env: NodeJS.ProcessEnv): [string[], string | null] {
-    const cmd = [this.piBin, "-p", ...this.flags];
-    if (continueSession) cmd.push("-c");
-    cmd.push("--", message);
+  ownRecord(record: string): string | null {
+    return ownRecord(this.sessionDir, record);
+  }
+
+  /** The command for one turn, and what goes to its stdin. See `planPiCommand`. */
+  _cmd(message: string, continueSession: boolean, env: NodeJS.ProcessEnv): [string[], string | null, string | undefined] {
+    const plan = planPiCommand({
+      piCommand: this.piCommand,
+      flags: this.flags,
+      message,
+      continueSession,
+      canPipe: this.native === null && !this.useJail,
+      writeFile: (name, text) => {
+        ensureDir(this.sessionDir);
+        const path = join(this.sessionDir, name);
+        writeFileSync(path, text, "utf8");
+        return path;
+      },
+    });
     if (this.native !== null) {
-      const [wrapped, name] = this.native.wrap(cmd, env as Record<string, string>);
-      return [wrapped, name];
+      const [wrapped, name] = this.native.wrap(plan.cmd, env as Record<string, string>);
+      return [wrapped, name, plan.input];
     }
-    return [this.useJail ? [JAIL, this.ws, ...cmd] : cmd, null];
+    return [this.useJail ? [JAIL, this.ws, ...plan.cmd] : plan.cmd, null, plan.input];
   }
 
   async turn(message: string, timeout: number, continueSession: boolean, tag = ""): Promise<boolean> {
@@ -286,7 +449,7 @@ class Pi {
     env.PI_SKIP_VERSION_CHECK ??= "1";
     env.VERIHARNESS_DATA = config.DATA;
 
-    for (let attempt = 0; attempt < RETRY_BACKOFF.length + 1; attempt++) {
+    for (let attempt = 0; attempt < this.backoff.length + 1; attempt++) {
       const budget = Math.min(timeout, this.deadline - Date.now() / 1000);
       if (!(budget > 0)) {
         log(this.ws, `${tag}task deadline reached before turn start; skipping turn`);
@@ -297,11 +460,20 @@ class Pi {
         `${tag}pi turn (continue=${continueSession}, attempt=${attempt + 1}, budget=${Math.floor(budget)}s` +
           `${this.native ? ", native " + this.native.image : ""})`,
       );
-      const [cmd, container] = this._cmd(message, continueSession, env);
+      let cmd: string[];
+      let container: string | null;
+      let input: string | undefined;
+      try {
+        [cmd, container, input] = this._cmd(message, continueSession, env);
+      } catch (e) {
+        log(this.ws, `${tag}pi did not start: ${e instanceof Error ? e.message : String(e)}`);
+        return false;
+      }
       const run = await runWithBudget(cmd, {
         cwd: this.ws,
         env,
         budgetMs: budget * 1000,
+        input,
         onKill: container && this.native ? () => this.native!.kill(container) : undefined,
       });
 
@@ -319,32 +491,18 @@ class Pi {
       if (rc === 0) {
         return true;
       }
-      log(this.ws, `${tag}pi stderr (tail): ${run.stderr.slice(-2000)}`);
-      if (!isTransient(run.stderr) || attempt === RETRY_BACKOFF.length) {
+      log(
+        this.ws,
+        `${tag}pi stderr (tail${run.stderrCut ? ", the start was cut" : ""}): ${run.stderr.slice(-2000)}`,
+      );
+      if (!isTransient(run.stderr) || attempt === this.backoff.length) {
         return false;
       }
-      log(this.ws, `${tag}transient provider error; retrying in ${RETRY_BACKOFF[attempt]}s`);
-      await new Promise((r) => setTimeout(r, RETRY_BACKOFF[attempt]! * 1000));
+      log(this.ws, `${tag}transient provider error; retrying in ${this.backoff[attempt]}s`);
+      await new Promise((r) => setTimeout(r, this.backoff[attempt]! * 1000));
       continueSession = hasSessionFile(this.sessionDir);
     }
     return false;
-  }
-
-  async turnUntil(
-    message: string,
-    nudge: string,
-    output: string,
-    timeouts: [number, number],
-    continueSession: boolean,
-    tag = "",
-  ): Promise<Record<string, unknown> | null> {
-    await this.turn(message, timeouts[0], continueSession, tag);
-    let result = readJsonFs<Record<string, unknown>>(output);
-    if (result === null) {
-      await this.turn(nudge, timeouts[1], true, tag);
-      result = readJsonFs<Record<string, unknown>>(output);
-    }
-    return result;
   }
 }
 
@@ -386,6 +544,7 @@ export function renderSkills(
   ws: string,
   phase: string,
   mode: string = "mounted",
+  runtime: "pi" | "claude-code" = "pi",
 ): string {
   const rolloutsDir = join(ws, "rollouts");
   const delivered = new Set<string>();
@@ -426,15 +585,16 @@ export function renderSkills(
   if (mode === "auto") {
     return (
       "\n\n# Evidence instruments available for this turn\n\nNone is loaded. Read a skill's file with the " +
-      "read tool when you judge it useful for what this task delivered; skip the ones that are not. " +
+      `${runtime === "pi" ? "read" : "Read"} tool when you judge it useful for what this task delivered; skip the ones that are not. ` +
       "Relative paths inside a skill resolve against its directory.\n\n" +
       parts.join("\n") +
       "\n"
     );
   }
   return (
-    "\n\n# Evidence instruments\n\nThe skills listed in your system prompt, in full. Relative paths in them " +
-    "resolve against the skill directory given for each.\n\n" +
+    "\n\n# Evidence instruments\n\nThe skills " +
+    (runtime === "pi" ? "listed in your system prompt" : "for this turn") +
+    ", in full. Relative paths in them resolve against the skill directory given for each.\n\n" +
     parts.join("\n")
   );
 }
@@ -546,6 +706,8 @@ export interface DriverArgs {
   noSkills: boolean;
   skillsMode: string;
   piBin: string;
+  /** The Claude Code executable (`--claude-bin`); unset means VERIHARNESS_CLAUDE_BIN, then `claude`. */
+  claudeBin?: string;
   env: string;
   turnTimeout: number;
   nudgeTimeout: number;
@@ -559,15 +721,20 @@ export interface DriverArgs {
   requestTimeout?: number;
 }
 
+/** The runtime a task runs on, as `renderSkills` names it. */
+function runtimeOf(args: DriverArgs): "pi" | "claude-code" {
+  return args.provider === CLAUDE_CODE_PROVIDER ? "claude-code" : "pi";
+}
+
 async function investigate(
-  pi: Pi,
+  agent: Agent,
   args: DriverArgs,
   mission: string,
   skills: string[],
   spec: [string, string, string, string],
 ): Promise<boolean> {
   const [name, playbook, ledgerDoc, record] = spec;
-  const ws = pi.ws;
+  const ws = agent.ws;
   ensureDir(join(ws, name));
   writeFileSync(
     join(ws, name, "LEDGER.md"),
@@ -578,16 +745,15 @@ async function investigate(
     mission +
     "\n\n" +
     readFileSync(join(config.PROMPTS_DIR, playbook), "utf8") +
-    renderSkills(skills, ws, name, args.skillsMode);
+    renderSkills(skills, ws, name, args.skillsMode, runtimeOf(args));
   const tag = `[${name}] `;
   log(ws, `${tag}investigation: ${playbook}`);
-  const session = pi.withSession(name);
-  const sessionDir = join(ws, "session", name);
+  const session = agent.withSession(name);
   await session.turn(message, args.turnTimeout, false, tag);
-  if (ownRecord(sessionDir, join(ws, record)) === null) {
+  if (session.ownRecord(join(ws, record)) === null) {
     await session.turn(NUDGE_LEDGER.replace("{record}", record), args.nudgeTimeout, true, tag);
   }
-  const own = ownRecord(sessionDir, join(ws, record));
+  const own = session.ownRecord(join(ws, record));
   let ledger: Record<string, unknown> | null = null;
   if (own !== null) {
     try {
@@ -669,27 +835,28 @@ function restoreRecords(ws: string): void {
   }
 }
 
-async function adjudicate(pi: Pi, args: DriverArgs, skills: string[]): Promise<Record<string, unknown> | null> {
-  log(pi.ws, "adjudication: ADJUDICATE.md (fresh session)");
+async function adjudicate(agent: Agent, args: DriverArgs, skills: string[]): Promise<Record<string, unknown> | null> {
+  log(agent.ws, "adjudication: ADJUDICATE.md (fresh session)");
   const message =
     readFileSync(join(config.PROMPTS_DIR, "ADJUDICATE.md"), "utf8") +
-    renderSkills(skills, pi.ws, "adjudicate", args.skillsMode);
-  return pi.turnUntil(
+    renderSkills(skills, agent.ws, "adjudicate", args.skillsMode, runtimeOf(args));
+  return turnUntil(
+    agent,
     message,
     NUDGE_FINISH,
-    join(pi.ws, "finish.json"),
+    join(agent.ws, "finish.json"),
     [args.turnTimeout, args.nudgeTimeout],
     false,
   );
 }
 
 async function deliver(
-  pi: Pi,
+  agent: Agent,
   args: DriverArgs,
   finish: Record<string, unknown>,
   skills: string[],
 ): Promise<void> {
-  const ws = pi.ws;
+  const ws = agent.ws;
   const base = baseOf(finish);
   const baseLine =
     base !== "none"
@@ -699,10 +866,11 @@ async function deliver(
   const message =
     readFileSync(join(config.PROMPTS_DIR, "REPAIR.md"), "utf8") +
     baseLine +
-    renderSkills(skills, ws, "repair", args.skillsMode);
+    renderSkills(skills, ws, "repair", args.skillsMode, runtimeOf(args));
   ensureDir(join(ws, "out", "deliverables"));
   log(ws, "delivery: REPAIR.md (continuing adjudication session)");
-  const repair = await pi.turnUntil(
+  const repair = await turnUntil(
+    agent,
     message,
     NUDGE_REPAIR,
     join(ws, "repair.json"),
@@ -756,6 +924,30 @@ function positiveSeconds(name: string, raw: string | undefined, fallback: number
 
 const ENVS = ["jail", "none", "native", "native-full"] as const;
 
+/**
+ * Why `--provider claude-code` cannot run with these options, or null. It needs `--env none`: the jail
+ * replaces $HOME, so Claude Code would find no login inside it, and the container runs pi only. It needs
+ * `--model`, a full model id, so a run stays reproducible when an alias moves. The options that
+ * configure a local model server or pi's thinking level have no Claude Code counterpart: they are
+ * refused rather than ignored, because an ignored `--temperature` reads as one that took effect.
+ */
+export function claudeCodeRefusal(env: string, model: string | undefined, given: Record<string, unknown>): string | null {
+  if (env !== "none") {
+    return (
+      `--provider claude-code needs --env none (got --env ${env}): the jail replaces $HOME, so Claude Code would ` +
+      "find no login in it, and containers run pi only. --env none runs the verifier's Bash tool on the host."
+    );
+  }
+  if (model === undefined || model.trim() === "") {
+    return "--model is required for --provider claude-code (a full model id, e.g. claude-haiku-4-5-20251001)";
+  }
+  const unsupported = UNSUPPORTED_WITH_CLAUDE_CODE.filter((name) => given[name] !== undefined);
+  if (unsupported.length) {
+    return `${unsupported.map((n) => "--" + n).join(", ")} not supported with --provider claude-code`;
+  }
+  return null;
+}
+
 export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs } | { error: string } {
   const skillsFromArgv: string[] = [];
   const passthrough: string[] = [];
@@ -784,6 +976,7 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
         "no-skills": { type: "boolean", default: false },
         "skills-mode": { type: "string", default: "mounted" },
         "pi-bin": { type: "string", default: config.PI_BIN },
+        "claude-bin": { type: "string" },
         env: { type: "string", default: "jail" },
         "turn-timeout": { type: "string", default: "1800" },
         "nudge-timeout": { type: "string", default: "600" },
@@ -830,7 +1023,14 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
     if (topP && typeof topP === "object") return topP;
     const requestTimeout = optionalNumber("request-timeout", values["request-timeout"] as string | undefined);
     if (requestTimeout && typeof requestTimeout === "object") return requestTimeout;
-    const provider = canonicalLocalProvider(values.provider as string | undefined) ?? (values.provider as string | undefined);
+    const rawProvider = values.provider as string | undefined;
+    const provider = isClaudeCodeProvider(rawProvider)
+      ? CLAUDE_CODE_PROVIDER
+      : (canonicalLocalProvider(rawProvider) ?? rawProvider);
+    if (provider === CLAUDE_CODE_PROVIDER) {
+      const refusal = claudeCodeRefusal(env, values.model as string | undefined, values as Record<string, unknown>);
+      if (refusal !== null) return { error: refusal };
+    }
     return {
       ws: positionals[0]!,
       args: {
@@ -842,6 +1042,7 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
         noSkills: Boolean(values["no-skills"]),
         skillsMode,
         piBin: String(values["pi-bin"]),
+        claudeBin: values["claude-bin"] as string | undefined,
         env,
         turnTimeout,
         nudgeTimeout,
@@ -859,7 +1060,134 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
   }
 }
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+/** What `main` takes from outside the command line: tests replace the runtimes and the waits with stubs. */
+export interface DriverDeps {
+  /** The command that starts pi (default: `piCommandFor(--pi-bin)`). */
+  piCommand?: readonly string[];
+  /** The command that starts Claude Code (default: `--claude-bin`, VERIHARNESS_CLAUDE_BIN, then `claude`). */
+  claudeCommand?: readonly string[];
+  /** Seconds to wait before each retry of a transient failure (default `RETRY_BACKOFF`). */
+  backoff?: readonly number[];
+  /** Replaces the wait between Claude Code retries. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * The phases every runtime shares: the two investigations in parallel, the adjudication, then, on the
+ * artifact contract, the repair. `adjudicator` is called once the investigations have left their
+ * records, so a runtime can change where it runs between the phases. Resolves to the exit code.
+ */
+async function runPhases(
+  investigator: Agent,
+  adjudicator: () => Agent,
+  args: DriverArgs,
+  mission: string,
+  skills: string[],
+): Promise<number> {
+  const ws = investigator.ws;
+  const ok = await Promise.all(
+    INVESTIGATIONS.map((spec) => investigate(investigator, args, mission, skills, spec)),
+  );
+  restoreRecords(ws);
+  if (!ok.every(Boolean)) {
+    log(ws, "an investigation left no record; recording no-output");
+    return 1;
+  }
+
+  const agent = adjudicator();
+  const finish = await adjudicate(agent, args, skills);
+  if (finish === null) {
+    log(ws, "no finish.json after nudge; recording no-output");
+    return 1;
+  }
+  log(
+    ws,
+    `finish: base=${baseOf(finish)} work=${(finish.work as unknown[] | undefined)?.length ?? 0} ` +
+      `open=${(finish.open as unknown[] | undefined)?.length ?? 0}`,
+  );
+
+  if (args.contract === "artifact") {
+    await deliver(agent, args, finish, skills);
+  }
+  return 0;
+}
+
+/**
+ * The directories outside the workspace a Claude Code verifier is allowed to read, for `--add-dir`: the
+ * harness skills directory once, and the directory of any other skill. A skill is a directory or a file.
+ */
+export function skillRoots(skills: readonly string[], skillsDir: string = config.SKILLS_DIR): string[] {
+  const roots = new Set<string>();
+  for (const skill of skills) {
+    const dir = isDir(skill) ? skill : dirname(skill);
+    const rel = relative(skillsDir, dir);
+    const inside = rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+    roots.add(inside ? skillsDir : dir);
+  }
+  return [...roots];
+}
+
+/** One task through Claude Code. The records, the phases and the scoring are the same as for pi. */
+async function runClaudeCode(
+  ws: string,
+  args: DriverArgs,
+  deps: DriverDeps,
+  charter: string,
+  mission: string,
+  skills: string[],
+): Promise<number> {
+  // A verifier started from inside a Claude Code session must not inherit that session's identity.
+  const env = withoutSessionMarkers(agentEnv(process.env));
+  const command = deps.claudeCommand ?? claudeCommand(args.claudeBin, process.env);
+  const started = startCheck(command, env);
+  if (!started.ok) {
+    process.stderr.write(`error: ${started.error}\n`);
+    return 2;
+  }
+  log(ws, "no isolation (--env none): the verifier's Bash tool runs directly on the host");
+
+  // The charter goes in a file and the message on stdin: with mounted skills they are longer than the
+  // 32,767 characters a Windows command line holds.
+  const charterFile = join(ws, "session", "charter.md");
+  ensureDir(dirname(charterFile));
+  writeFileSync(charterFile, charter, "utf8");
+
+  const runtime = new ClaudeRuntime({
+    ws,
+    command,
+    model: args.model!,
+    tools: claudeTools(TOOLS[args.contract]!),
+    charterFile,
+    addDirs: skillRoots(skills),
+    env,
+    deadline: Date.now() / 1000 + args.taskTimeout,
+    backoff: deps.backoff ?? RETRY_BACKOFF,
+    log: (message) => log(ws, message),
+    sleep: deps.sleep,
+  });
+  // A driver that is killed still gives the saved copies back.
+  const onExit = (): void => runtime.finish();
+  process.once("exit", onExit);
+  try {
+    let code = await runPhases(runtime.session(""), () => runtime.session("adjudicate"), args, mission, skills);
+    if (runtime.usageLimit !== null) {
+      // The limit is the account's, not the task's: say so in the record, and let the runner stop the lane.
+      const finish = readJsonFs<Record<string, unknown>>(join(ws, "finish.json"));
+      if (finish !== null) {
+        finish.repair = { ...(finish.repair as object | undefined), error: "usage-limit" };
+        writeJsonFs(join(ws, "finish.json"), finish);
+      }
+      log(ws, `usage-limit: ${runtime.usageLimit}`);
+      code = USAGE_LIMIT_EXIT;
+    }
+    return code;
+  } finally {
+    runtime.finish();
+    process.removeListener("exit", onExit);
+  }
+}
+
+export async function main(argv: string[] = process.argv.slice(2), deps: DriverDeps = {}): Promise<number> {
   const parsed = parseDriverArgv(argv);
   if ("error" in parsed) {
     if (parsed.error === "HELP") {
@@ -867,9 +1195,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         "usage: veriharness driver <ws> [--contract artifact|pick-only] [--provider P] [--model M] " +
           "[--thinking T] [--base-url URL] [--context-size N] [--temperature N] [--max-tokens N] [--top-p N] " +
           "[--request-timeout S] [--skill NAME]... [--no-skills] [--skills-mode mounted|auto] " +
-          "[--env jail|none|native|native-full] [--turn-timeout S] [--nudge-timeout S] [--task-timeout S]\n" +
+          "[--env jail|none|native|native-full] [--turn-timeout S] [--nudge-timeout S] [--task-timeout S] " +
+          "[--pi-bin PATH] [--claude-bin PATH]\n" +
           "local providers: --provider ollama (default http://127.0.0.1:11434) or --provider llamacpp " +
-          "(default http://127.0.0.1:8080). Both need --model. No API key.\n",
+          "(default http://127.0.0.1:8080). Both need --model. No API key.\n" +
+          "Claude Code: --provider claude-code --model <full model id> --env none. Uses the login Claude Code " +
+          "holds (or ANTHROPIC_API_KEY). See docs/claude-code.md.\n",
       );
       return 0;
     }
@@ -953,6 +1284,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       `timeouts(turn/nudge/task)=${args.turnTimeout}/${args.nudgeTimeout}/${args.taskTimeout}s`,
   );
 
+  if (args.provider === CLAUDE_CODE_PROVIDER) {
+    return runClaudeCode(ws, args, deps, charter, mission, skills);
+  }
+
   const useJail = args.env !== "none";
   if (useJail) {
     const why = jailUnavailable();
@@ -967,7 +1302,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     log(ws, "no isolation (--env none): sessions run directly on the host");
   }
 
-  let pi = new Pi(ws, args.piBin, flags, useJail, Date.now() / 1000 + args.taskTimeout, null, localPiHome);
+  const pi = new Pi(
+    ws,
+    deps.piCommand ?? piCommandFor(args.piBin),
+    flags,
+    useJail,
+    Date.now() / 1000 + args.taskTimeout,
+    null,
+    localPiHome,
+    deps.backoff ?? RETRY_BACKOFF,
+  );
 
   const nativeImage =
     args.env === "native" || args.env === "native-full" ? imageFor(ws) : null;
@@ -981,35 +1325,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     log(ws, `native environment for the investigations: ${nativeImage}`);
   }
 
-  const ok = await Promise.all(
-    INVESTIGATIONS.map((spec) => investigate(investigator, args, mission, skills, spec)),
+  return runPhases(
+    investigator,
+    () => {
+      if (!nativeImage) return pi;
+      log(ws, `native environment for adjudication and delivery: ${nativeImage}`);
+      return pi.inNative(new Native(ws, nativeImage));
+    },
+    args,
+    mission,
+    skills,
   );
-  restoreRecords(ws);
-  if (!ok.every(Boolean)) {
-    log(ws, "an investigation left no record; recording no-output");
-    return 1;
-  }
-
-  if (nativeImage) {
-    log(ws, `native environment for adjudication and delivery: ${nativeImage}`);
-    pi = pi.inNative(new Native(ws, nativeImage));
-  }
-
-  const finish = await adjudicate(pi, args, skills);
-  if (finish === null) {
-    log(ws, "no finish.json after nudge; recording no-output");
-    return 1;
-  }
-  log(
-    ws,
-    `finish: base=${baseOf(finish)} work=${(finish.work as unknown[] | undefined)?.length ?? 0} ` +
-      `open=${(finish.open as unknown[] | undefined)?.length ?? 0}`,
-  );
-
-  if (args.contract === "artifact") {
-    await deliver(pi, args, finish, skills);
-  }
-  return 0;
 }
 
 if (isMain(import.meta.url)) {

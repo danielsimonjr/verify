@@ -1,0 +1,73 @@
+// Copyright 2026 The VeriHarness Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+/**
+ * The environment of a verifier started from inside a Claude Code session.
+ *
+ * `veriharness` can be started by a tool a Claude Code session runs, so its environment may carry the
+ * variables that Claude Code puts into every process it starts. A verifier that inherits them is not the
+ * same program as one started from a terminal: it believes it is a child of that session, it may try to
+ * reach that session's IDE or message channel, and (Claude Code 2.1) a child-session marker changes
+ * whether the transcript is saved. The harness needs the saved transcript: `--resume` reads it.
+ */
+
+/**
+ * The variables that name or reach one running Claude Code session. Claude Code puts `CLAUDECODE`,
+ * `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_SESSION_ATTENDED` and `CLAUDE_PID`
+ * into every process it starts, and `AI_AGENT`, `CLAUDE_EFFORT` and `TRACEPARENT` when they apply. The
+ * others name the session's own entry point and executable, its IDE port and its message channel.
+ * Settings such as `CLAUDE_CODE_MAX_OUTPUT_TOKENS` or `CLAUDE_CODE_GIT_BASH_PATH` are the user's
+ * configuration, not session markers, and are kept.
+ *
+ * `CLAUDE_CODE_MESSAGING_TOKEN` is not an Anthropic credential: it opens the parent session's message
+ * socket, and a verifier's `Bash` tool would otherwise be able to read it.
+ */
+export const SESSION_MARKERS: readonly string[] = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_EXECPATH",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_SESSION_ATTENDED",
+  "CLAUDE_PID",
+  "CLAUDE_CODE_SSE_PORT",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_CODE_MESSAGING_TOKEN",
+  "AI_AGENT",
+  "CLAUDE_EFFORT",
+  "TRACEPARENT",
+];
+
+/**
+ * What is never stripped, however the list above changes: the login and the choice of provider. A test
+ * asserts that no entry of `SESSION_MARKERS` is in this list or starts with one of its prefixes.
+ */
+export const KEPT_VARIABLES: readonly string[] = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CONFIG_DIR",
+  "CLAUDE_CODE_GIT_BASH_PATH",
+];
+
+const MARKER_SET = new Set(SESSION_MARKERS.map((n) => n.toUpperCase()));
+
+/** A copy of `env` without the session markers. Names are compared upper-cased: Windows ignores case. */
+export function withoutSessionMarkers(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !MARKER_SET.has(name.toUpperCase())));
+}

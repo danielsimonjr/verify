@@ -14,18 +14,24 @@
 
 /** Batch runner: drive materialized tasks through the driver with one global work pool. */
 
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, writeSync } from "node:fs";
+import { closeSync, cpSync, mkdirSync, openSync, readdirSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
+import { USAGE_LIMIT_EXIT, UNSUPPORTED_WITH_CLAUDE_CODE, isClaudeCodeProvider } from "./claude/index.js";
 import * as config from "./config.js";
+import { claudeCodeRefusal } from "./driver.js";
 import { exists, isDir, mtime, readText, rmrf, walkFiles, writeJson } from "./fsutil.js";
 import { flagValue, withModelOverride } from "./model/flags.js";
 import { PyRandom, pyRound } from "./pyrandom.js";
 import { harnessCommand, isMain } from "./runtime.js";
 import { renderViews } from "./views.js";
 
-const DEFAULT_LANE_MAX: Record<string, number> = { flash: 25, opus: 45 };
+/**
+ * Tasks a lane runs at once. The Claude Code lanes default low: a subscription's usage limit is shared
+ * with every other Claude Code session of the account, so they start at 2 and `--lane-max haiku=4` raises one.
+ */
+const DEFAULT_LANE_MAX: Record<string, number> = { flash: 25, opus: 45, haiku: 2, sonnet: 2 };
 const DEFAULT_CELL_CAP: Record<string, number> = {
   apex: 8,
   wb: 10,
@@ -102,6 +108,8 @@ async function runTask(
   } finally {
     closeSync(outFd);
   }
+  // A usage limit is the account's, not the task's: the driver says so by exit code, and the caller stops the lane.
+  if (rc === USAGE_LIMIT_EXIT) return "usage-limit";
   return exists(join(ws, "finish.json")) ? "ok" : `no-finish(rc=${rc})`;
 }
 
@@ -110,8 +118,13 @@ interface RunnerArgs {
   runName: string;
   contract: string;
   lane?: string;
-  maxFlash: number;
-  maxOpus: number;
+  /** `--max-flash`, an alias of `--lane-max flash=N`. */
+  maxFlash?: number;
+  /** `--max-opus`, an alias of `--lane-max opus=N`. */
+  maxOpus?: number;
+  laneMax: Record<string, number>;
+  /** `--env`, passed to every driver; unset leaves the driver's default (the jail). */
+  env?: string;
   caps: Record<string, number>;
   only: string[];
   onlyFile?: string;
@@ -198,6 +211,29 @@ function optionalPositive(name: string, raw: string | undefined): number | undef
 }
 
 /**
+ * Parse `--lane-max lane=N[,lane=N]` (repeatable). A lane that does not exist would do nothing, and a
+ * cap that is not an integer of at least 1 would let the lane never start a task.
+ */
+function parseLaneMax(specs: string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const spec of specs) {
+    for (const item of spec.split(",").filter((s) => s.trim())) {
+      const eq = item.indexOf("=");
+      const lane = (eq < 0 ? item : item.slice(0, eq)).trim();
+      const raw = eq < 0 ? "" : item.slice(eq + 1).trim();
+      if (!isLane(lane)) {
+        throw new Error(`--lane-max: unknown lane '${lane}' (known: ${Object.keys(config.LANES).join(", ")})`);
+      }
+      if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+        throw new Error(`--lane-max: '${lane}' needs an integer of at least 1, got '${raw}'`);
+      }
+      out[lane] = Number(raw);
+    }
+  }
+  return out;
+}
+
+/**
  * Parse `bench=N,...` (key `default` for the rest) over the default caps. A cap that is not an
  * integer of at least 1 would make `inUseCell < cap` false forever: the cell never starts and
  * the scheduler loop wakes every few seconds for nothing. An unknown key would do nothing.
@@ -217,6 +253,16 @@ function parseCaps(spec: string): Record<string, number> {
     caps[key] = Number(raw);
   }
   return caps;
+}
+
+const ENVS = ["jail", "none", "native", "native-full"];
+
+/** `--env`: one of the driver's environments, or unset. Anything else would fail every task at its start. */
+function envOption(raw: string | undefined): string | undefined {
+  if (raw !== undefined && !ENVS.includes(raw)) {
+    throw new Error(`--env must be one of ${ENVS.join("|")}, got '${raw}'`);
+  }
+  return raw;
 }
 
 /** `--fraction`: a number from 0 to 1. A typo parsed as NaN would mean "no sampling", the full set. */
@@ -268,8 +314,10 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
         "run-name": { type: "string" },
         contract: { type: "string", default: "artifact" },
         lane: { type: "string" },
-        "max-flash": { type: "string", default: String(DEFAULT_LANE_MAX.flash) },
-        "max-opus": { type: "string", default: String(DEFAULT_LANE_MAX.opus) },
+        "max-flash": { type: "string" },
+        "max-opus": { type: "string" },
+        "lane-max": { type: "string", multiple: true },
+        env: { type: "string" },
         "cell-cap": { type: "string", default: "" },
         "only-file": { type: "string" },
         limit: { type: "string", default: "0" },
@@ -300,8 +348,10 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
       runName: String(values["run-name"]),
       contract: String(values.contract ?? "artifact"),
       lane: values.lane as string | undefined,
-      maxFlash: intOption("max-flash", values["max-flash"], DEFAULT_LANE_MAX.flash!, 1),
-      maxOpus: intOption("max-opus", values["max-opus"], DEFAULT_LANE_MAX.opus!, 1),
+      maxFlash: optionalPositive("max-flash", values["max-flash"]),
+      maxOpus: optionalPositive("max-opus", values["max-opus"]),
+      laneMax: parseLaneMax((values["lane-max"] as string[] | undefined) ?? []),
+      env: envOption(values.env as string | undefined),
       caps: parseCaps(String(values["cell-cap"] ?? "")),
       only,
       onlyFile: values["only-file"] as string | undefined,
@@ -415,6 +465,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
   if (args.noSkills) driverArgs.push("--no-skills");
   for (const s of args.skill) driverArgs.push("--skill", s);
   if (args.skillsMode !== "mounted") driverArgs.push("--skills-mode", args.skillsMode);
+  if (args.env !== undefined) driverArgs.push("--env", args.env);
   const modelFlags: string[] = [];
   for (const [flag, value] of [
     ["--provider", args.provider],
@@ -439,12 +490,28 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
     }
   }
 
+  // A lane that runs Claude Code fails every task at its start unless it runs with --env none: say so now.
+  for (const lane of new Set(Object.values(laneOf))) {
+    const flags = flagsForLane(lane, driverArgs);
+    if (!isClaudeCodeProvider(flagValue(flags, "--provider"))) continue;
+    const given = Object.fromEntries(UNSUPPORTED_WITH_CLAUDE_CODE.map((n) => [n, flagValue(flags, `--${n}`)]));
+    const refusal = claudeCodeRefusal(args.env ?? "jail", flagValue(flags, "--model"), given);
+    if (refusal !== null) {
+      process.stderr.write(`error: lane ${lane}: ${refusal}\n`);
+      return 2;
+    }
+  }
+
   const caps = args.caps;
   const laneMax: Record<string, number> = Object.fromEntries(
-    Object.keys(config.LANES).map((lane) => [lane, Math.max(...Object.values(DEFAULT_LANE_MAX))]),
+    Object.keys(config.LANES).map((lane) => [
+      lane,
+      DEFAULT_LANE_MAX[lane] ?? Math.max(...Object.values(DEFAULT_LANE_MAX)),
+    ]),
   );
-  laneMax.flash = args.maxFlash;
-  laneMax.opus = args.maxOpus;
+  if (args.maxFlash !== undefined) laneMax.flash = args.maxFlash;
+  if (args.maxOpus !== undefined) laneMax.opus = args.maxOpus;
+  Object.assign(laneMax, args.laneMax);
 
   const root = join(runsDir, args.runName);
   const plan: [string, string, string, string][][] = [];
@@ -494,6 +561,8 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
   }
   const counts: Record<string, number> = {};
   let done = 0;
+  /** Lanes whose account hit a usage limit: no further task starts on them. */
+  const stopped = new Set<string>();
 
   const withLock = <T>(fn: () => T): T => {
     while (lock.locked) {
@@ -521,6 +590,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
     } catch (e) {
       status = `error(${e})`;
     }
+    if (status === "usage-limit") stopped.add(laneOf[pool]!);
     withLock(() => {
       inUseLane[laneOf[pool]!]!--;
       inUseCell[cellKey(bench, pool)]!--;
@@ -549,6 +619,14 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
     for (const item of pending) {
       const [bench, pool] = item;
       const lane = laneOf[pool]!;
+      if (stopped.has(lane)) {
+        withLock(() => {
+          counts["lane-stopped"] = (counts["lane-stopped"] ?? 0) + 1;
+          done++;
+          console.log(`[${done}/${total}] ${bench}/${pool} ${item[3]}: lane-stopped (usage limit on lane ${lane}; not started)`);
+        });
+        continue;
+      }
       const ok = withLock(() => {
         const ck = cellKey(bench, pool);
         if (inUseLane[lane]! + ext[lane]! < laneMax[lane]! && inUseCell[ck]! < cellCap[ck]!) {
