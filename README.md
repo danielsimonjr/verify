@@ -52,6 +52,7 @@ these numbers is released (see [Data](#data)).
 - [Repository layout](#repository-layout)
 - [Setup](#setup)
 - [Local models](#local-models)
+- [Claude Code as the verifier](#claude-code-as-the-verifier)
 - [Usage](#usage)
 - [Benchmarks and grading](#benchmarks-and-grading)
 - [Data](#data)
@@ -112,6 +113,7 @@ harness/
   score.ts         score a run against the archived pool (selection and final scores)
   config.ts        locations and model lanes; all host specifics come from the environment
   model/           local backends (Ollama, llama.cpp): HTTP client, preflight, pi registry
+  claude/          the Claude Code runtime: turn runner, stream parser, preflight, session environment
   views.ts         plain-text views rendered beside binary artifacts (.cells.tsv, .text.txt)
   prompts/         CHARTER (system prompt), MISSION, the two investigation playbooks and
                    record formats, ADJUDICATE, REPAIR
@@ -195,6 +197,10 @@ driver to use other models, for example
   bun harness/cli.ts driver <task-dir> --provider llamacpp --model model.gguf --env none
   ```
 
+* **Claude Code** (`haiku` and `sonnet` lanes): the `claude` command-line program,
+  signed in on the host, runs each turn. No pi runtime and no API key are
+  needed. See [Claude Code as the verifier](#claude-code-as-the-verifier).
+
 The source repository is [danielsimonjr/verify](https://github.com/danielsimonjr/verify)
 (renamed from `veriharness`). Package, CLI and import names are unchanged.
 
@@ -205,13 +211,14 @@ Host-specific locations are environment variables (see `harness/config.ts`):
 | `VERIHARNESS_DATA`                                            | materialized rollout pools                                                        | `./data`                                          |
 | `VERIHARNESS_RUNS`                                            | run outputs                                                                       | `./runs`                                          |
 | `VERIHARNESS_BENCH_ROOT`                                      | upstream benchmark checkouts and archived rollouts (materialize and grade only)   | unset                                               |
-| `VERIHARNESS_TMP`                                             | staging directory for the graders' containers (bind-mounted, so a real directory) | `/var/tmp`                                        |
+| `VERIHARNESS_TMP`                                             | staging directory for the graders' containers (bind-mounted, so a real directory) | `/var/tmp`, or the operating system's temporary directory when `/var/tmp` does not exist |
 | `VERIHARNESS_WB_INDEX`                                        | index of archived WorkBuddy run directories (materialize only)                    | `<bench root>/benchmarks/workbuddy/wb_index.json` |
 | `VERIHARNESS_IMAGE_<BENCH>`, `VERIHARNESS_IMAGE_SB2_GRADER` | image overrides (see "Native environments" and`harness/grade/sb2.ts`)           | per bench                                           |
 | `VERIHARNESS_OLLAMA_BASE_URL`, `OLLAMA_HOST`                | Ollama server                                                                     | `http://127.0.0.1:11434`                            |
 | `VERIHARNESS_LLAMACPP_BASE_URL`, `LLAMA_BASE_URL`           | llama-server                                                                      | `http://127.0.0.1:8080`                             |
 | `VERIHARNESS_TEMPERATURE`, `VERIHARNESS_TOP_P`, `VERIHARNESS_MAX_TOKENS`, `VERIHARNESS_CONTEXT_SIZE` | local-model request options                                            | unset (the server must advertise a context window above 4096) |
 | `VERIHARNESS_MODEL_TIMEOUT`                                 | preflight HTTP timeout, seconds                                                   | `180`                                               |
+| `VERIHARNESS_CLAUDE_BIN`                                    | the `claude` program for `--provider claude-code` (`--claude-bin` overrides it)   | `claude` from `PATH`                                |
 
 `<data>/_worlds/` holds the task environments that accompany the pools: the
 APEX world archives and the WorkBuddy task repositories with their image
@@ -232,6 +239,23 @@ llama-server -m model.gguf --host 127.0.0.1 --port 8080 --jinja -c 32768
 bun harness/cli.ts driver <task-dir> --provider llamacpp --model model.gguf --env none
 ```
 
+## Claude Code as the verifier
+
+Claude Haiku and Claude Sonnet can run as the verifier through the `claude` command-line program. The harness uses the login that Claude Code already holds. It sets no credential. Details, including the isolation flags, the session files and the usage-limit behavior, are in [docs/claude-code.md](docs/claude-code.md).
+
+```bash
+bun harness/cli.ts model-check --provider claude-code --model claude-haiku-4-5-20251001
+bun harness/cli.ts driver <task-dir> --provider claude-code --model claude-haiku-4-5-20251001 --env none
+bun harness/cli.ts runner --run-name demo --cells sb2:haiku --env none --lane-max haiku=4
+```
+
+`model-check` prints the CLI version, the model and the credential source.
+
+* `--env none` is required. The jail replaces `$HOME`, so Claude Code finds no login in it, and the containers run pi only. `--env jail`, `native` and `native-full` stop with an error. Without the jail, the verifier's Bash tool runs on the host with the permissions of the user who starts the driver: run it on a host where that is acceptable.
+* The `haiku` and `sonnet` lanes start at two concurrent drivers each, because every Claude Code session of the account counts against one usage limit.
+* When Claude Code reports a usage limit, the driver exits with code 75. The runner stops that lane and marks the queued tasks `lane-stopped`.
+* Windows is supported for this provider. Install Python 3 with `openpyxl` and `python-docx` for the repair turn.
+
 ## Usage
 
 **Task workspace.** Everything the verifier sees is a directory:
@@ -248,7 +272,7 @@ bun harness/cli.ts driver <task-dir> --provider llamacpp --model model.gguf --en
 `bun harness/cli.ts materialize <bench>` (or `node dist/harness/cli.js materialize <bench>`) builds these from an archive of
 rollouts. The adapters encode the archive layout our pools were generated
 into; to verify your own rollouts, produce the layout above directly or write
-an adapter that yields `materialize.base.Task` objects.
+a TypeScript adapter in `harness/materialize/` whose `iterTasks(pool)` generator yields `Task` objects (the `Task` and `Rollout` classes in `harness/materialize/base.ts`).
 
 **Run one task.**
 
@@ -262,7 +286,7 @@ transcripts under `session/` and the result under `out/deliverables/` into the
 task directory. `--contract pick-only` stops
 after adjudication (selection only), `--no-skills` runs with an empty skill
 library, `--skill <dir>` swaps in another library, `--skills-mode auto` lets the
-verifier choose which skills to read (see "Skills"), and `--env none` runs without the jail (debugging only).
+verifier choose which skills to read (see "Skills"), and `--env none` runs without the jail (debugging only, and required with `--provider claude-code`).
 
 **Run a benchmark.** A cell is one `bench:pool` pair; the runner copies each
 task workspace under `<runs>/<run-name>/<bench>_<pool>/` and drives the tasks
@@ -388,7 +412,8 @@ dependencies (`harness/env/derive.ts` adds it to WorkBuddy's task images).
 
 * Concurrency: a driver holds up to two model sessions (the investigations run
   concurrently). Lane limits are a shared budget: a second runner on the same
-  host must be given the same `--max-<lane>` values, since each counts the
+  host must be given the same lane limits (`--lane-max <lane>=N`, repeatable;
+  `--max-flash` and `--max-opus` are aliases), since each counts the
   other's drivers.
 * Grading containers: `wb` and `wsb` grade in networked containers; churning
   more than about twenty short-lived ones at once destabilises the host's

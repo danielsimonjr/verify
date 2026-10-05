@@ -40,13 +40,26 @@ For Ollama, a model that is already loaded reports its effective window as `cont
 
 ```bash
 OLLAMA_CONTEXT_LENGTH=32768 ollama serve
+ollama run qwen2.5-coder:7b ""
 ```
 
-or, as a model variant:
+The second command loads the model. `OLLAMA_CONTEXT_LENGTH` is a setting of the server, so `ollama show` does not report it. Only `GET /api/ps` reports it, and only for a loaded model. Ollama unloads an idle model after 5 minutes unless `OLLAMA_KEEP_ALIVE` says otherwise, so run `model-check` or the driver soon after the load.
+
+As an alternative, set the window in a model variant. Save these two lines in a file named `Modelfile`:
+
+```
+FROM qwen2.5-coder:7b
+PARAMETER num_ctx 32768
+```
+
+Then create the variant and pass its name to `--model`:
 
 ```bash
-printf 'FROM qwen2.5-coder:7b\nPARAMETER num_ctx 32768\n' | ollama create qwen2.5-coder:7b
+ollama create qwen2.5-coder-32k -f Modelfile
+bun harness/cli.ts model-check --provider ollama --model qwen2.5-coder-32k
 ```
+
+`ollama create` reads the Modelfile only from the file named by `-f` (default `./Modelfile`). It does not read standard input. `ollama show` reports the `num_ctx` of the variant at once, with no load step.
 
 Ollama's OpenAI endpoint, which is what pi calls, uses that configured context rather than a per-request field. `--context-size` is accepted only when the advertised window is at least that large. The window registered with pi is the requested size when you pass one, and the advertised window otherwise. A window of 4096 or less is an error. A window above 4096 and below 8192 still runs, with a warning: verifier tasks are long.
 
