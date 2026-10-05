@@ -1,10 +1,11 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { GradeResult } from "../harness/grade/index.ts";
 import { main, type GradeApi } from "../harness/score.ts";
+import { canLinkFiles } from "./fixtures/links.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "vd-score-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -186,6 +187,124 @@ describe("score: progress is persisted as tasks finish", () => {
     expect(row.base_regraded).toBe(0.6);
     expect(row.out_graded).toBe(0.9);
     expect(row.final).toBeCloseTo(0.8, 10);
+  });
+});
+
+// The verifier writes its whole workspace, and a link it makes there resolves on the host when a
+// grader reads it. Each side of a task is refused, ungraded, when a link sits on any step of what
+// its grader reads: the bundle, or the base rollout's trace.
+describe("score: a link in a workspace is refused, not followed", () => {
+  /** Replace `<ws>/<rel>` with a link to a directory elsewhere that a grader could read. */
+  function linkAway(ws: string, rel: string): void {
+    const target = join(scratch, `elsewhere${counter++}`);
+    mkdirSync(join(target, "deliverables"), { recursive: true });
+    writeFileSync(join(target, "deliverables", "f.txt"), "elsewhere");
+    writeFileSync(join(target, "f.txt"), "elsewhere");
+    writeFileSync(join(target, "agent.json"), "{}");
+    const at = join(ws, ...rel.split("/"));
+    rmSync(at, { recursive: true, force: true });
+    mkdirSync(dirname(at), { recursive: true });
+    symlinkSync(target, at, "junction");
+  }
+
+  const baseDir = (ws: string) => join(ws, "rollouts", "r1", "deliverables");
+  const outDir = (ws: string) => join(ws, "out", "deliverables");
+
+  /** Score a cell whose one task is "t", with graders that record each directory they are given. */
+  async function scoreOne(cell: string, data: string): Promise<{ row: Record<string, unknown>; seen: string[] }> {
+    const seen: string[] = [];
+    const api = graders(async (_key, dir) => {
+      seen.push(dir);
+      return { score: isOut(dir) ? 0.9 : 0.6 };
+    });
+    await quiet(() => main([cell], { dataRoot: data, grade: api }));
+    return { row: readScores(cell).tasks.t!, seen };
+  }
+
+  // [where the link is, the side or sides it stops]. Both sides are given the base rollout's trace,
+  // so a link on its path stops both.
+  const cases: [string, "out" | "base" | "both"][] = [
+    ["out", "out"],
+    ["out/deliverables", "out"],
+    ["out/deliverables/sub", "out"],
+    ["rollouts/r1/deliverables", "base"],
+    ["rollouts/r1", "both"],
+    ["rollouts/r1/trajectory", "both"],
+  ];
+  for (const [rel, side] of cases) {
+    test(`a link at ${rel} stops ${side === "both" ? "both sides" : `the ${side} side`}, and its grader never sees the path`, async () => {
+      const { cell, data } = makeCell([{ key: "t" }]);
+      const ws = join(cell, "t");
+      linkAway(ws, rel);
+      const { row, seen } = await scoreOne(cell, data);
+      expect(row.error).toContain(`symlink: ${rel}`);
+      expect(row.base_regraded).toBe(side === "out" ? 0.6 : null);
+      expect(row.out_graded).toBe(side === "base" ? 0.9 : null);
+      const graded = { out: [baseDir(ws)], base: [outDir(ws)], both: [] }[side];
+      expect(seen).toEqual(graded);
+    });
+  }
+
+  test("a dangling link stops its side too", async () => {
+    const { cell, data } = makeCell([{ key: "t" }]);
+    const ws = join(cell, "t");
+    rmSync(outDir(ws), { recursive: true, force: true });
+    symlinkSync(join(scratch, `nowhere${counter++}`), outDir(ws), "junction");
+    const { row, seen } = await scoreOne(cell, data);
+    expect(row.error).toContain("symlink: out/deliverables");
+    expect(row).toMatchObject({ base_regraded: 0.6, out_graded: null });
+    expect(seen).toEqual([baseDir(ws)]);
+  });
+
+  test.skipIf(!canLinkFiles)("a file link inside the delivered bundle stops the out side", async () => {
+    const { cell, data } = makeCell([{ key: "t" }]);
+    const ws = join(cell, "t");
+    const secret = join(scratch, `secret${counter++}.txt`);
+    writeFileSync(secret, "elsewhere");
+    symlinkSync(secret, join(outDir(ws), "g.txt"), "file");
+    const { row, seen } = await scoreOne(cell, data);
+    expect(row.error).toContain("symlink: out/deliverables/g.txt");
+    expect(row).toMatchObject({ base_regraded: 0.6, out_graded: null });
+    expect(seen).toEqual([baseDir(ws)]);
+  });
+
+  test("a trace that is a plain file is not refused", async () => {
+    const { cell, data } = makeCell([{ key: "t" }]);
+    const ws = join(cell, "t");
+    mkdirSync(join(ws, "rollouts", "r1", "trajectory"));
+    writeFileSync(join(ws, "rollouts", "r1", "trajectory", "agent.json"), "{}");
+    const { row, seen } = await scoreOne(cell, data);
+    expect(row).toMatchObject({ base_regraded: 0.6, out_graded: 0.9, error: null });
+    expect(seen).toEqual([baseDir(ws), outDir(ws)]);
+  });
+
+  test("batched grading refuses each linked side and grades the rest", async () => {
+    const { cell, data } = makeCell(["a", "b", "c"].map((key) => ({ key })));
+    linkAway(join(cell, "a"), "out");
+    linkAway(join(cell, "b"), "rollouts/r1/deliverables");
+    const seen: string[] = [];
+    const api: GradeApi = {
+      preflight: async () => "",
+      gradeDeliverables: async () => {
+        throw new Error("a batched bench is not graded one task at a time");
+      },
+      loadGradeModule: async () => ({
+        grade: () => ({ score: null }),
+        gradeBatch: async (items: [string, string, string | null][]) => {
+          for (const [, dir] of items) seen.push(dir);
+          return Object.fromEntries(items.map(([key, dir]) => [key, { score: isOut(dir) ? 0.9 : 0.6 }]));
+        },
+      }),
+    };
+    await quiet(() => main([cell, "--batch", "2", "--workers", "2"], { dataRoot: data, grade: api }));
+    const { tasks } = readScores(cell);
+    expect(tasks.a).toMatchObject({ base_regraded: 0.6, out_graded: null });
+    expect(tasks.a!.error).toContain("symlink: out");
+    expect(tasks.b).toMatchObject({ base_regraded: null, out_graded: 0.9 });
+    expect(tasks.b!.error).toContain("symlink: rollouts/r1/deliverables");
+    expect(tasks.c).toMatchObject({ base_regraded: 0.6, out_graded: 0.9, error: null });
+    const ws = (key: string) => join(cell, key);
+    expect(seen.sort()).toEqual([baseDir(ws("a")), outDir(ws("b")), baseDir(ws("c")), outDir(ws("c"))].sort());
   });
 });
 

@@ -13,14 +13,26 @@
 // limitations under the License.
 
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import JSZip from "jszip";
 
 import * as config from "../config.js";
 import { benchRoot, DATA, TMP_DIR } from "../config.js";
-import { exists, isFile, posixRel, readJson, readText, rmrf, walkFiles, writeFileAtomic, writeText } from "../fsutil.js";
+import {
+  assertNoLinkBelow,
+  exists,
+  isFile,
+  posixRel,
+  readJson,
+  readText,
+  rmrf,
+  SymlinkError,
+  walkFiles,
+  writeFileAtomic,
+  writeText,
+} from "../fsutil.js";
 import { defaultTasks, domainCode, type ApexTask } from "../materialize/apex.js";
 import { readJsonStrict } from "../materialize/base.js";
 import { isView } from "../views.js";
@@ -158,6 +170,14 @@ export async function grade(
   opts: ApexOptions = {},
 ): Promise<GradeResult> {
   const timeout = opts.timeout ?? 1_800_000;
+  // readText follows a link, and the answer goes to the judge: a linked bundle or answer.md would
+  // send the host file it resolves to.
+  try {
+    assertNoLinkBelow(dirname(deliverables), basename(deliverables));
+  } catch (e) {
+    if (e instanceof SymlinkError) return { score: null, error: e.message, grader: GRADER };
+    throw e;
+  }
   const ans = join(deliverables, "answer.md");
   if (!exists(ans)) {
     return { score: 0.0, error: "no answer.md in deliverables", grader: GRADER };

@@ -59,6 +59,7 @@ All notable changes to this project are recorded here. The format follows
 - Tests: the suite has one test timeout, 30 s, from `bun test --timeout 30000` in the `test` script, and CI runs `bun run test`. In Bun 1.4.2 the flag reaches every file and every `beforeAll` and `afterAll` hook; `bunfig.toml` sets no test timeout, and a preloaded `setDefaultTimeout` reaches only the first file. The flag replaces a `setDefaultTimeout(30_000)` call in each of 12 files. Child-process tests measured up to 5.3 s on a loaded Windows host, against Bun's 5 s default. Tests fail when a file sets its own default again, or when a CI step runs a bare `bun test` (#14).
 
 ### Security
+- Grading refuses a symlink at any step of what a grader reads: the bundle, each directory above it in the workspace, and the base rollout's trace. A link that the verifier makes resolves on the host at grade time. That side of the task stays ungraded, and its error names the link. The `grade` CLI, the APEX `answer.md` read and the WSB trace copy refuse links too (#15).
 - SB2 grading refuses a `<task>_output.xlsx` that is a symlink, so a deliverable cannot make the grader read a host file (#13).
 - The jail stops when a read-only remount fails, instead of warning and running with a writable skills, vendor or interpreter directory (#13).
 - Staging deliverables for grading refuses symlinks instead of copying the files that they point at (#5).

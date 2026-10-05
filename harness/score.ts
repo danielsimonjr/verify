@@ -20,7 +20,7 @@ import { parseArgs } from "node:util";
 import * as config from "./config.js";
 import { parseCount } from "./count.js";
 import { baseOf, readJson, rolloutDir } from "./driver.js";
-import { isDir, isFile, readText, writeJson } from "./fsutil.js";
+import { assertNoLinkBelow, isDir, isFile, readText, writeJson } from "./fsutil.js";
 import {
   gradeDeliverables,
   loadGradeModule,
@@ -62,6 +62,13 @@ function bootstrapCi(xs: number[], iters = 10000, alpha = 0.05, seed = 0): [numb
   return [means[Math.floor(alpha / 2 * iters)]!, means[Math.floor((1 - alpha / 2) * iters) - 1]!];
 }
 
+/** An ungraded result that names the error. */
+function errorResult(e: unknown): GradeResult {
+  const name = e instanceof Error ? e.constructor.name : "Error";
+  const msg = e instanceof Error ? e.message : String(e);
+  return { score: null, error: `${name}: ${msg.slice(0, 200)}` };
+}
+
 async function safeGrade(
   grade: GradeApi,
   bench: string,
@@ -72,10 +79,40 @@ async function safeGrade(
   try {
     return await grade.gradeDeliverables(bench, key, deliverables, kw);
   } catch (e) {
-    const name = e instanceof Error ? e.constructor.name : "Error";
-    const msg = e instanceof Error ? e.message : String(e);
-    return { score: null, error: `${name}: ${msg.slice(0, 200)}` };
+    return errorResult(e);
   }
+}
+
+/**
+ * The refusal for a symlink on any step of the workspace paths `rels`, or null when there is none.
+ * An error during the check is a refusal too: a path that cannot be checked is not graded.
+ */
+function linkRefusal(ws: string, rels: string[]): GradeResult | null {
+  try {
+    for (const rel of rels) assertNoLinkBelow(ws, rel);
+    return null;
+  } catch (e) {
+    return errorResult(e);
+  }
+}
+
+/**
+ * The result each side of a task gets without a grader, as [base, delivered]; null for a side
+ * that is graded.
+ *
+ * The verifier writes its whole workspace, and a symlink it makes there resolves on the host when
+ * a grader reads it. So a side is refused when a link sits on any step of what its grader reads:
+ * its bundle, or the base rollout's trace, which both sides are given.
+ */
+function ungraded(ws: string, base: string, deliveryValid: boolean): [GradeResult | null, GradeResult | null] {
+  const baseRel = `rollouts/${base}/deliverables`;
+  const trace = `rollouts/${base}/trajectory/agent.json`;
+  const missingBase: GradeResult = { score: null, error: "no base" };
+  const invalidDelivery: GradeResult = { score: null, error: "delivery failed the bundle contract" };
+  return [
+    linkRefusal(ws, [baseRel, trace]) ?? (isDir(join(ws, baseRel)) ? null : missingBase),
+    linkRefusal(ws, ["out/deliverables", trace]) ?? (deliveryValid ? null : invalidDelivery),
+  ];
 }
 
 type GradeJob = [string, string, string, boolean];
@@ -84,13 +121,10 @@ async function gradeTask(grade: GradeApi, job: GradeJob): Promise<[string, Grade
   const [bench, wsStr, base, deliveryValid] = job;
   const key = basename(wsStr);
   const baseDir = join(wsStr, "rollouts", base, "deliverables");
-  const gBase = isDir(baseDir)
-    ? await safeGrade(grade, bench, key, baseDir)
-    : { score: null, error: "no base" };
   const trace = join(baseDir, "..", "trajectory", "agent.json");
-  const gOut = deliveryValid
-    ? await safeGrade(grade, bench, key, join(wsStr, "out", "deliverables"), { trace })
-    : { score: null, error: "delivery failed the bundle contract" };
+  const [baseUngraded, outUngraded] = ungraded(wsStr, base, deliveryValid);
+  const gBase = baseUngraded ?? (await safeGrade(grade, bench, key, baseDir));
+  const gOut = outUngraded ?? (await safeGrade(grade, bench, key, join(wsStr, "out", "deliverables"), { trace }));
   return [key, gBase, gOut];
 }
 
@@ -107,9 +141,7 @@ async function runBatch(
     const res = await gradeBatch(items, batch);
     return [side, res];
   } catch (e) {
-    const name = e instanceof Error ? e.constructor.name : "Error";
-    const msg = e instanceof Error ? e.message : String(e);
-    const err: GradeResult = { score: null, error: `${name}: ${msg.slice(0, 200)}` };
+    const err = errorResult(e);
     return [side, Object.fromEntries(items.map(([k]) => [k, err]))];
   }
 }
@@ -135,10 +167,7 @@ async function* gradeBatched(
     const key = basename(ws);
     const baseDir = join(ws, "rollouts", base, "deliverables");
     const trace = join(baseDir, "..", "trajectory", "agent.json");
-    const pair: [GradeResult | null, GradeResult | null] = [
-      isDir(baseDir) ? null : { score: null, error: "no base" },
-      deliveryValid ? null : { score: null, error: "delivery failed the bundle contract" },
-    ];
+    const pair = ungraded(ws, base, deliveryValid);
     pending.set(key, pair);
     if (pair[0] === null) {
       baseItems.push([key, baseDir, null]);

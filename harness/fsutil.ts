@@ -199,14 +199,23 @@ export function copyFile(src: string, dst: string): void {
   copyFileSync(src, dst);
 }
 
-/** A bundle staged for a grader holds a symlink. `path` is relative to the bundle root. */
+/** A grader's input holds a symlink. `path` is relative to the directory the check started from. */
 export class SymlinkError extends Error {
   readonly path: string;
 
   constructor(path: string) {
-    super(`deliverables contain a symlink: ${path}`);
+    super(`grader input holds a symlink: ${path}`);
     this.name = "SymlinkError";
     this.path = path;
+  }
+}
+
+/** Throw SymlinkError for the first symlink under directory `dir`, named `<rel>/<entry>`. */
+function walkForLinks(dir: string, rel: string): void {
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    const entRel = rel ? `${rel}/${ent.name}` : ent.name;
+    if (ent.isSymbolicLink()) throw new SymlinkError(entRel);
+    if (ent.isDirectory()) walkForLinks(join(dir, ent.name), entRel);
   }
 }
 
@@ -219,14 +228,36 @@ export class SymlinkError extends Error {
  */
 export function assertNoSymlinks(root: string): void {
   if (isSymlink(root)) throw new SymlinkError(".");
-  const walk = (dir: string, rel: string): void => {
-    for (const ent of readdirSync(dir, { withFileTypes: true })) {
-      const entRel = rel ? `${rel}/${ent.name}` : ent.name;
-      if (ent.isSymbolicLink()) throw new SymlinkError(entRel);
-      if (ent.isDirectory()) walk(join(dir, ent.name), entRel);
+  walkForLinks(root, "");
+}
+
+/**
+ * Throw SymlinkError for the first symlink on the way from `root` down to `root/rel`, or under it.
+ *
+ * Each step of `rel` is checked without following it, so a link above a bundle (`out`, or the
+ * bundle directory itself) is refused as well as a link inside it. `root` is not checked: it is
+ * the caller's own directory. A step that does not exist ends the check, as there is nothing
+ * there to follow. The error names the link relative to `root`.
+ */
+export function assertNoLinkBelow(root: string, rel: string): void {
+  let path = root;
+  let at = "";
+  // Only the platform's separators: on POSIX a backslash is part of a name, and splitting there
+  // would make up steps that do not exist and end the check early.
+  for (const step of rel.split(sep === "/" ? "/" : /[\\/]/).filter(Boolean)) {
+    path = join(path, step);
+    at = at ? `${at}/${step}` : step;
+    let st;
+    try {
+      st = lstatSync(path);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return;
+      throw e;
     }
-  };
-  walk(root, "");
+    if (st.isSymbolicLink()) throw new SymlinkError(at);
+  }
+  if (isDir(path)) walkForLinks(path, at);
 }
 
 /**
