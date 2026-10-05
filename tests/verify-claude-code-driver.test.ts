@@ -80,6 +80,63 @@ describe("a whole task through the stub claude", () => {
   });
 });
 
+// The verifier can write out/ in every turn, and the driver completes and checks the bundle on the
+// host after the repair. Nothing the verifier leaves there may make the driver follow a link, or stop
+// the task before the repair block is in finish.json.
+describe("what the verifier leaves under out/", () => {
+  /** The happy rules, with `items` added to the `key` list of the turn whose prompt has `heading`. */
+  function happyWith(heading: string, key: "writes" | "links", items: object[]): Rule[] {
+    return happyRules(rig.ws).map((r) => {
+      if (r.match !== heading) return r;
+      const existing = (r.action[key] as object[] | undefined) ?? [];
+      return { ...r, action: { ...r.action, [key]: [...existing, ...items] } };
+    });
+  }
+
+  /** The repair block of finish.json. */
+  const repairOf = () => JSON.parse(readFileSync(join(rig.ws, "finish.json"), "utf8")).repair;
+
+  test("a link at out to a host directory: no deliverables directory is made there", async () => {
+    const host = join(rig.root, "host");
+    mkdirSync(host);
+    rig.script(happyWith("# Adjudication", "links", [{ path: "out", target: host }]));
+    expect(await rig.run(ARGS)).toBe(0);
+    expect(readdirSync(host)).toEqual([]);
+    const repair = repairOf();
+    expect(repair).toMatchObject({ valid: false });
+    expect(repair).not.toContainAnyKeys(["restored", "changed"]);
+    expect(String(repair.reason)).toContain("delivery path: out");
+  });
+
+  test("a dangling link at out/deliverables: the repair runs and nothing is made at the target", async () => {
+    const nowhere = join(rig.root, "nowhere");
+    rig.script(happyWith("# Adjudication", "links", [{ path: "out/deliverables", target: nowhere }]));
+    expect(await rig.run(ARGS)).toBe(0);
+    expect(existsSync(nowhere)).toBe(false);
+    expect(callsWith("# Repair")).toHaveLength(1);
+    expect(String(repairOf().reason)).toContain("delivery path: out/deliverables");
+  });
+
+  test("a file at out/deliverables: the repair runs and the delivery is invalid", async () => {
+    rig.script(happyWith("# Adjudication", "writes", [{ path: "out/deliverables", content: "x" }]));
+    expect(await rig.run(ARGS)).toBe(0);
+    expect(callsWith("# Repair")).toHaveLength(1);
+    const repair = repairOf();
+    expect(repair).toMatchObject({ valid: false });
+    expect(repair).not.toContainAnyKeys(["restored", "changed"]);
+    expect(String(repair.reason)).toContain("the bundle cannot be completed");
+  });
+
+  test("a directory where a base file goes: the delivery is invalid", async () => {
+    rig.script(happyWith("# Repair", "writes", [{ path: "out/deliverables/answer.txt/inner.txt", content: "x" }]));
+    expect(await rig.run(ARGS)).toBe(0);
+    const repair = repairOf();
+    expect(repair).toMatchObject({ valid: false });
+    expect(repair).not.toContainAnyKeys(["restored", "changed"]);
+    expect(String(repair.reason)).toContain("the bundle cannot be completed");
+  });
+});
+
 describe("the command line of every turn", () => {
   test("the prompt is on stdin, never on the command line", async () => {
     rig.script(happyRules(rig.ws));

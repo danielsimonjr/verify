@@ -1,9 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { canLinkFiles, linkDir } from "./fixtures/links.ts";
+import { canDenyList, denyList } from "./fixtures/perms.ts";
 import {
   JAIL_PROBE,
   agentEnv,
@@ -102,6 +104,74 @@ describe("a base that is not a rollout name never reads from outside rollouts/",
     expect(completeBundle(ws, "r1")).toEqual(["answer.txt"]);
     expect(validateDelivery(ws, "r1")).toMatchObject({ valid: true, n_base: 1, n_out: 1 });
     expect(changedFiles(ws, "r1")).toEqual([]);
+  });
+});
+
+// The verifier can write out/ inside the jail. The driver completes and checks the bundle on the
+// host after the turn, so a link there would turn the view cleanup, the restore and the file
+// listings into a delete, a write and a listing of a host directory.
+describe("a link under out/ is never followed on the host", () => {
+  /** A host directory with a view-named file and a file named like a secret. */
+  function hostDir(dir: string): string {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "keep.text.txt"), "a host file whose name looks like a view");
+    writeFileSync(join(dir, "secret-name.txt"), "x");
+    return dir;
+  }
+
+  /** The names in `dir`, sorted. */
+  const names = (dir: string) => readdirSync(dir).sort();
+
+  // [where the link is, where the bundle then resolves under the link's target]
+  test.each([
+    ["out/deliverables", ""],
+    ["out", "deliverables"],
+  ])("a link at %s: nothing is deleted or written there", (rel, under) => {
+    const tag = rel.replace("/", "-");
+    const ws = makeWs(`ws-link-${tag}`);
+    const target = join(scratch, `host-${tag}`);
+    const host = hostDir(join(target, under));
+    const at = join(ws, ...rel.split("/"));
+    rmSync(at, { recursive: true, force: true });
+    linkDir(target, at);
+    const before = names(host);
+    expect(completeBundle(ws, "r1")).toEqual([]);
+    expect(names(host)).toEqual(before);
+    expect(changedFiles(ws, "r1")).toEqual([]);
+    const verdict = validateDelivery(ws, "r1");
+    expect(verdict.valid).toBe(false);
+    expect(String(verdict.reason)).toContain(`delivery path: ${rel}`);
+    expect(JSON.stringify(verdict)).not.toContain("secret-name");
+  });
+
+  test.skipIf(!canLinkFiles)("a file link inside out/deliverables is not written through", () => {
+    const ws = makeWs("ws-link-file");
+    const host = hostDir(join(scratch, "host-link-file"));
+    // Dangling: the restore would create the host file it points at.
+    symlinkSync(join(host, "planted.txt"), join(ws, "out", "deliverables", "answer.txt"), "file");
+    expect(completeBundle(ws, "r1")).toEqual([]);
+    expect(existsSync(join(host, "planted.txt"))).toBe(false);
+    expect(String(validateDelivery(ws, "r1").reason)).toContain("delivery path: out/deliverables/answer.txt");
+  });
+});
+
+// A verifier that can write out/ can also make a directory there that the host cannot list. The
+// check then fails, and the driver must refuse the bundle rather than throw and lose the finish step.
+describe("a delivery path that cannot be checked", () => {
+  test.skipIf(!canDenyList)("is refused, and nothing throws", () => {
+    const ws = makeWs("ws-unlistable");
+    const locked = join(ws, "out", "deliverables", "locked");
+    mkdirSync(locked);
+    const undo = denyList(locked);
+    try {
+      expect(completeBundle(ws, "r1")).toEqual([]);
+      expect(changedFiles(ws, "r1")).toEqual([]);
+      const verdict = validateDelivery(ws, "r1");
+      expect(verdict.valid).toBe(false);
+      expect(String(verdict.reason)).toContain("the delivery path cannot be checked");
+    } finally {
+      undo();
+    }
   });
 });
 
