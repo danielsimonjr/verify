@@ -6,7 +6,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { join, parse, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const REPO = resolve(import.meta.dir, "..");
@@ -53,6 +53,15 @@ describe("ensureDir (skills/_shared/dirs.ts)", () => {
     const cwd = fresh("parents");
     expect(run(cwd, "a/b/c").stdout.trim()).toBe("done");
     expect(existsSync(join(cwd, "a", "b", "c"))).toBe(true);
+  });
+
+  // A recursive mkdir of a Windows drive root throws EPERM in Node and Bun. On Linux `mkdir -p /`
+  // succeeds, so this case can fail only on Windows.
+  test("accepts the filesystem root, which exists", () => {
+    const cwd = fresh("root");
+    const r = run(cwd, parse(cwd).root);
+    expect(r.stderr).toBe("");
+    expect(r.stdout.trim()).toBe("done");
   });
 });
 
