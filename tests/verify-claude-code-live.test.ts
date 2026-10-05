@@ -79,7 +79,9 @@ describe.skipIf(!live)("Claude Code live", () => {
       expect(existsSync(join(ws, "elim", "ledger_elim.json"))).toBe(true);
       expect(existsSync(join(ws, "fals", "ledger_fals.json"))).toBe(true);
       const finish = JSON.parse(readFileSync(finishPath, "utf8")) as { base?: string; repair?: { valid?: boolean } };
-      expect(["r1", "r2"]).toContain(String(finish.base));
+      // r1 holds the right sum (42) and r2 a wrong one (43). A verifier that picks r2 has failed the task,
+      // so the run must not pass on either answer.
+      expect(finish.base).toBe("r1");
       expect(finish.repair?.valid).toBe(true);
       // The saved copies left Claude Code's directory for the task's own.
       for (const name of ["elim", "fals", "adjudicate"]) {
