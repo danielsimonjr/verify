@@ -148,10 +148,12 @@ if [ "$HAVE_BROWSERS" = 1 ]; then
   mount --rbind "$S/browsers" "$H/.cache/ms-playwright"
   ro "$H/.cache/ms-playwright"
 fi
-# The stage lives in /tmp, and the cover on /tmp below hides it. Move it under $HOME, which no
-# later cover touches, so the prefixes can be bound back after the last cover.
+# The stage lives in /tmp, and the cover on /tmp below hides it. Bind it under $HOME, which no
+# later cover touches, so the prefixes can be bound back after the last cover. (mount --move
+# succeeds in a user namespace but exits 32 over the mount table, so it is not used.)
 mkdir -p "$H/.vh_stage"
-mount --move "$S" "$H/.vh_stage"
+mount --rbind "$S" "$H/.vh_stage"
+umount -l "$S"
 S="$H/.vh_stage"
 mount -t tmpfs tmpfs /tmp
 # Interpreters are shared with the host and with every other task: read-only, and no installs.

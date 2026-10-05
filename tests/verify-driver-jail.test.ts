@@ -129,7 +129,7 @@ function once<T>(fn: () => T): () => T {
 const wsArg = posix(ws);
 const lc = (lines: string[]): string[] => lines.map((l) => l.toLowerCase());
 const at = (lines: string[], text: string): number => lc(lines).findIndex((l) => l === text.toLowerCase());
-/** Where the script binds a staged prefix back from: the stage is moved under $HOME before the /tmp cover. */
+/** Where the script binds a staged prefix back from: the stage is bound under $HOME before the /tmp cover. */
 const movedStage = (stage: string | undefined): string | undefined => stage?.replace("/tmp/vh_stage", `${posix(home)}/.vh_stage`);
 /** The stage directory the script copied `prefix` into (pfx0, pfx1: Python's prefix first, then Node's). */
 const stageOf = (lines: string[], prefix: string): string | undefined => {
@@ -272,7 +272,7 @@ describe("jail_run.sh: what it must not cover or change", () => {
       const stage = stageOf(r.log, prefix);
       expect(stage).toBeDefined();
       const cover = at(r.log, "mount -t tmpfs tmpfs /tmp");
-      const moved = at(r.log, `mount --move /tmp/vh_stage ${posix(home)}/.vh_stage`);
+      const moved = at(r.log, `mount --rbind /tmp/vh_stage ${posix(home)}/.vh_stage`);
       const back = at(r.log, `mount --rbind ${movedStage(stage)} ${prefix}`);
       const ro = at(r.log, `mount -o remount,bind,ro ${prefix}`);
       expect(moved).toBeGreaterThan(-1);
