@@ -41,12 +41,17 @@ const USAGE_LIMIT = new RegExp(
 
 /**
  * Provider and transport faults worth a retry. The CLI has already retried inside the turn; this is a
- * second layer. A status code counts only as a whole number: "41503 tokens" and "0.429" are not a 503
- * or a 429.
+ * second layer. A status code counts only as a whole number, and only in HTTP context: "41503 tokens",
+ * "0.429", a stack line "index.js:503:17" and "exit code 503" are not a 503 or a 429.
  */
+const CODE = String.raw`(?<![\d.])(?:429|502|503|504|529)(?![\d:])`;
+
 const TRANSIENT: readonly RegExp[] = [
   /\bAPI Error:? (?:429|5\d\d)\b/i,
-  /(?<![\d.])(?:429|502|503|504|529)(?!\d)/,
+  // A bare status code in HTTP context only. "app.js:503:17", "line 502" and "exit code 503" are not one.
+  new RegExp(String.raw`(?:HTTP/?[\d.]*|status(?: code)?|api error)["']?\s*[:=]?\s*${CODE}`, "i"),
+  new RegExp(String.raw`${CODE}\s+(?:service unavailable|bad gateway|gateway time-?out|overloaded|too many requests)`, "i"),
+  new RegExp(String.raw`(?:failed with|responded with|returned|got|received)(?: an?)?(?: http)?(?: status)?(?: code)? ${CODE}`, "i"),
   /overloaded/i,
   /rate[_ ]limit/i,
   /\bapi_error\b/,

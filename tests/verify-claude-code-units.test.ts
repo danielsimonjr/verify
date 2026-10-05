@@ -391,6 +391,34 @@ describe("classifyFailure", () => {
     }
   });
 
+  test("a status code inside a stack trace or a source position is not an HTTP status", () => {
+    for (const text of [
+      "    at handler (/app/server.js:503:17)",
+      "TypeError: x is not a function\n    at run (file:///c:/w/index.mjs:429:9)",
+      "error at line 502, column 4",
+      "exit code 503",
+      "SyntaxError: bad token at foo.ts:504",
+    ]) {
+      expect(classifyFailure(text)).toBe("fatal");
+    }
+  });
+
+  test("a status code in an HTTP context is transient", () => {
+    for (const text of [
+      "API Error: 503",
+      "HTTP 502 Bad Gateway",
+      "status: 529",
+      "status code 504",
+      "Request failed with status code 429",
+      "503 Service Unavailable",
+      "529 overloaded",
+      "got a 502 from the upstream",
+      '{"status":503}',
+    ]) {
+      expect(classifyFailure(text)).toBe("transient");
+    }
+  });
+
   test("a status code counts only as a whole number", () => {
     for (const text of ["41503 tokens used", "ratio 0.429", "id 15290", "Invalid API key", "", "max turns reached"]) {
       expect(classifyFailure(text)).toBe("fatal");
