@@ -129,6 +129,8 @@ function once<T>(fn: () => T): () => T {
 const wsArg = posix(ws);
 const lc = (lines: string[]): string[] => lines.map((l) => l.toLowerCase());
 const at = (lines: string[], text: string): number => lc(lines).findIndex((l) => l === text.toLowerCase());
+/** Where the script binds a staged prefix back from: the stage is moved under $HOME before the /tmp cover. */
+const movedStage = (stage: string | undefined): string | undefined => stage?.replace("/tmp/vh_stage", `${posix(home)}/.vh_stage`);
 /** The stage directory the script copied `prefix` into (pfx0, pfx1: Python's prefix first, then Node's). */
 const stageOf = (lines: string[], prefix: string): string | undefined => {
   const head = `mount --rbind ${prefix} /tmp/vh_stage/pfx`.toLowerCase();
@@ -221,7 +223,7 @@ describe("jail_run.sh: a normal run", () => {
   shellTest("binds Node's install directory read-only, as the header says", () => {
     const log = run().log;
     const p = posix(nodePrefix);
-    const bound = at(log, `mount --rbind ${stageOf(log, p)} ${p}`);
+    const bound = at(log, `mount --rbind ${movedStage(stageOf(log, p))} ${p}`);
     expect(bound).toBeGreaterThan(-1);
     expect(at(log, `mount -o remount,bind,ro ${p}`)).toBeGreaterThan(bound);
   });
@@ -253,9 +255,33 @@ describe("jail_run.sh: what it must not cover or change", () => {
     stub("python3", `echo "${posix(prefix)}"`, pyDir);
     const r = runJail([wsArg, "true"], {}, [pyDir]);
     const p = posix(prefix);
-    const bound = at(r.log, `mount --rbind ${stageOf(r.log, p)} ${p}`);
+    const bound = at(r.log, `mount --rbind ${movedStage(stageOf(r.log, p))} ${p}`);
     expect(bound).toBeGreaterThan(-1);
     expect(at(r.log, `mount -o remount,bind,ro ${p}`)).toBeGreaterThan(bound);
+  });
+
+  shellTest("an interpreter prefix under /tmp is bound back after the cover on /tmp, from a stage that cover cannot hide", () => {
+    // Binding it back before the cover on /tmp left it hidden: the jail then reached setpriv with no interpreter.
+    const made = spawnSync("bash", ["-c", "mktemp -d /tmp/vd-jail-node.XXXXXX"], { encoding: "utf8" });
+    const prefix = made.stdout.trim();
+    try {
+      mkdirSync(join(root, "tmpnode-bin"), { recursive: true });
+      spawnSync("bash", ["-c", `mkdir -p ${prefix}/bin && printf '#!/bin/bash\nexit 0\n' > ${prefix}/bin/node && chmod +x ${prefix}/bin/node`]);
+      const r = runJail([wsArg, "true"], {}, [`${prefix}/bin`]);
+      expect(r.status).toBe(0);
+      const stage = stageOf(r.log, prefix);
+      expect(stage).toBeDefined();
+      const cover = at(r.log, "mount -t tmpfs tmpfs /tmp");
+      const moved = at(r.log, `mount --move /tmp/vh_stage ${posix(home)}/.vh_stage`);
+      const back = at(r.log, `mount --rbind ${movedStage(stage)} ${prefix}`);
+      const ro = at(r.log, `mount -o remount,bind,ro ${prefix}`);
+      expect(moved).toBeGreaterThan(-1);
+      expect(cover).toBeGreaterThan(moved);
+      expect(back).toBeGreaterThan(cover);
+      expect(ro).toBeGreaterThan(back);
+    } finally {
+      spawnSync("bash", ["-c", `rm -r ${prefix}`]);
+    }
   });
 
   shellTest("an interpreter prefix under $HOME is staged before the cover on $HOME and bound back after it", () => {
@@ -269,9 +295,9 @@ describe("jail_run.sh: what it must not cover or change", () => {
     const stage = stageOf(r.log, p);
     const staged = at(r.log, `mount --rbind ${p} ${stage}`);
     const cover = at(r.log, `mount -t tmpfs tmpfs ${posix(home)}`);
-    const back = at(r.log, `mount --rbind ${stage} ${p}`);
+    const back = at(r.log, `mount --rbind ${movedStage(stage)} ${p}`);
     const ro = at(r.log, `mount -o remount,bind,ro ${p}`);
-    const unstage = at(r.log, "umount -l /tmp/vh_stage");
+    const unstage = at(r.log, `umount -l ${posix(home)}/.vh_stage`);
     expect(staged).toBeGreaterThan(-1);
     expect(cover).toBeGreaterThan(staged);
     expect(back).toBeGreaterThan(cover);

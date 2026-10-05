@@ -107,7 +107,7 @@ mount --rbind "$HARNESS/vendor" "$S/vendor"
 mount --rbind "$HARNESS/pi-home" "$S/pihome"
 mount --rbind "$HARNESS/skills" "$S/skills"
 # An interpreter prefix can sit under $HOME (nvm, pyenv) or under another covered directory:
-# stage it here, before the covers, and bind it back to its real path after them.
+# stage it here, before the covers, and bind it back to its real path after the last one.
 PFX=()
 for prefix in "$PY_PREFIX" "$NODE_PREFIX"; do
   case "$prefix" in /usr|/|"") continue ;; esac
@@ -148,7 +148,14 @@ if [ "$HAVE_BROWSERS" = 1 ]; then
   mount --rbind "$S/browsers" "$H/.cache/ms-playwright"
   ro "$H/.cache/ms-playwright"
 fi
+# The stage lives in /tmp, and the cover on /tmp below hides it. Move it under $HOME, which no
+# later cover touches, so the prefixes can be bound back after the last cover.
+mkdir -p "$H/.vh_stage"
+mount --move "$S" "$H/.vh_stage"
+S="$H/.vh_stage"
+mount -t tmpfs tmpfs /tmp
 # Interpreters are shared with the host and with every other task: read-only, and no installs.
+# This comes after every cover, so a prefix under $HOME, /tmp or a hidden directory stays visible.
 i=0
 while [ "$i" -lt "${#PFX[@]}" ]; do
   mkdir -p "${PFX[$i]}"
@@ -157,7 +164,7 @@ while [ "$i" -lt "${#PFX[@]}" ]; do
   i=$((i + 1))
 done
 umount -l "$S"
-mount -t tmpfs tmpfs /tmp
+rmdir "$S" 2>/dev/null || true
 
 # Evidence is read-only: spec/, workspace/, rollouts/ cannot be
 # altered by the verifier; out/ and the rest of the task dir stay writable.

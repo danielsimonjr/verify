@@ -20,6 +20,7 @@
 #    write probe must answer yes there.
 # 3. The NODE run: a Node install under $HOME (nvm) must be visible in the jail and read-only. The
 #    $HOME cover used to hide it before it was bound back.
+#    The same for a Node install under /tmp, which the cover on /tmp used to hide.
 # 4. The FAIL-CLOSED run: a read-only remount that fails must stop the jail before the command runs.
 #    A stand-in `mount` fails the remount of harness/skills; the old script warned and ran the probe.
 # 5. No probe file is left in the real harness/skills or harness/vendor.
@@ -41,7 +42,7 @@ SECRET="$(mktemp "$HOME/vh-jail-secret.XXXXXX")"
 OUT="$(mktemp "$HOME/vh-jail-out.XXXXXX")"
 MADE_DIRS=()
 cleanup() {
-  rm -rf "$WS" "$SECRET" "$OUT" "${NODE_PFX:-}" "${STUB_DIR:-}"
+  rm -rf "$WS" "$SECRET" "$OUT" "${NODE_PFX:-}" "${NODE_TMP:-}" "${STUB_DIR:-}"
   # A mount that is still there when the namespace ends leaves nothing behind; only the made dirs do.
   for d in "${MADE_DIRS[@]+"${MADE_DIRS[@]}"}"; do rmdir "$d" 2>/dev/null || true; done
 }
@@ -136,6 +137,22 @@ chmod +x "$NODE_PFX/bin/node"
 rm -rf "$WS/out.txt" "$WS/spec/probe.txt" "$WS/workspace/probe.txt" "$WS/rollouts/probe.txt"
 if ! PATH="$NODE_PFX/bin:$PATH" "$JAIL" "$WS" bash "$WS/probe.sh" "${PROBE_ARGS[@]}" "$NODE_PFX" >"$OUT" 2>"$OUT.err"; then
   echo '  FAIL  the jail did not run with node under $HOME:'
+  sed 's/^/        /' "$OUT.err"
+  rm -f "$OUT.err"
+  exit 1
+fi
+rm -f "$OUT.err"
+expect "$OUT" node_prefix_visible yes
+expect "$OUT" write_node_prefix no
+
+echo '== node under /tmp: the cover on /tmp must not hide it'
+NODE_TMP="$(mktemp -d /tmp/vh-jail-node.XXXXXX)"
+mkdir -p "$NODE_TMP/bin"
+printf '#!/bin/sh\nexit 0\n' > "$NODE_TMP/bin/node"
+chmod +x "$NODE_TMP/bin/node"
+rm -rf "$WS/out.txt" "$WS/spec/probe.txt" "$WS/workspace/probe.txt" "$WS/rollouts/probe.txt"
+if ! PATH="$NODE_TMP/bin:$PATH" "$JAIL" "$WS" bash "$WS/probe.sh" "${PROBE_ARGS[@]}" "$NODE_TMP" >"$OUT" 2>"$OUT.err"; then
+  echo '  FAIL  the jail did not run with node under /tmp:'
   sed 's/^/        /' "$OUT.err"
   rm -f "$OUT.err"
   exit 1
