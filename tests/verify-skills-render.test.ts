@@ -201,6 +201,25 @@ describe("soffice conversion", () => {
     });
   });
 
+  test("a PDF left by an earlier render is not taken for this render's output", () => {
+    scratch((dir) => {
+      writeFileSync(join(dir, "a.pdf"), "%PDF-STALE");
+      const { run } = stub(() => {}, { status: 1, stderr: "Error: source file could not be loaded" });
+      const r = sofficeToPdf(join(dir, "a.xlsx"), dir, run);
+      expect(r).toEqual({ error: "Error: source file could not be loaded" });
+      expect(existsSync(join(dir, "a.pdf"))).toBe(false);
+    });
+  });
+
+  test("a run that exits with no PDF and no output still says what happened", () => {
+    scratch((dir) => {
+      const exited = sofficeToPdf(join(dir, "a.xlsx"), dir, stub(() => {}, { status: 81 }).run);
+      expect(exited).toEqual({ error: "soffice exited with status 81 and produced no PDF" });
+      const killed = sofficeToPdf(join(dir, "a.xlsx"), dir, stub(() => {}, { status: null, signal: "SIGKILL" }).run);
+      expect(killed).toEqual({ error: "soffice was stopped by SIGKILL and produced no PDF" });
+    });
+  });
+
   test("says soffice could not be started instead of printing nothing", () => {
     scratch((dir) => {
       const { run } = stub(() => {}, { status: null, error: new Error("spawnSync soffice ENOENT") });

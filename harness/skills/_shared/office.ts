@@ -15,7 +15,7 @@
 /** Office file to PDF through headless LibreOffice, for the pptx and xlsx render skills. */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -34,14 +34,18 @@ export function sofficeToPdf(
   workDir: string,
   run: Run = spawnSync,
 ): { pdf: string } | { error: string } {
+  const pdf = join(workDir, `${basename(copy, extname(copy))}.pdf`);
+  // workDir can be a persistent render directory: a PDF from an earlier run would pass for this run's output.
+  rmSync(pdf, { force: true });
   const profile = pathToFileURL(join(workDir, "profile")).href;
   const r = run(
     "soffice",
     ["--headless", `-env:UserInstallation=${profile}`, "--convert-to", "pdf", "--outdir", workDir, copy],
     { encoding: "utf-8", timeout: 300_000, env: { ...process.env, HOME: workDir } },
   );
-  const pdf = join(workDir, `${basename(copy, extname(copy))}.pdf`);
   if (existsSync(pdf)) return { pdf };
   // r.error is set when soffice could not be started or timed out; its streams are empty then.
-  return { error: (r.stderr || r.stdout || r.error?.message || "").trim().slice(-400) };
+  const said = String(r.stderr || r.stdout || r.error?.message || "").trim();
+  if (said) return { error: said.slice(-400) };
+  return { error: r.signal ? `soffice was stopped by ${r.signal} and produced no PDF` : `soffice exited with status ${r.status} and produced no PDF` };
 }
