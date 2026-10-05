@@ -95,6 +95,31 @@ describe("run", () => {
     expect(called).toBe(true);
   });
 
+  // A one-shot grader exits on the result. If the result came back before onTimeout finished,
+  // the `docker kill` it starts would die with the grader and the container would keep running.
+  test("returns only after onTimeout has finished", async () => {
+    let stopped = false;
+    await sh("setTimeout(() => {}, 60000)", {
+      timeoutMs: 300,
+      onTimeout: async () => {
+        await new Promise((r) => setTimeout(r, 800));
+        stopped = true;
+      },
+    });
+    expect(stopped).toBe(true);
+  });
+
+  test("an onTimeout that never settles does not hold the caller past the stop wait", async () => {
+    const t0 = Date.now();
+    const r = await sh("setTimeout(() => {}, 60000)", {
+      timeoutMs: 300,
+      stopWaitMs: 1_000,
+      onTimeout: () => new Promise(() => {}),
+    });
+    expect(r.timedOut).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(6_000);
+  });
+
   test("does not block the event loop while the child runs", async () => {
     let ticks = 0;
     const iv = setInterval(() => ticks++, 20);

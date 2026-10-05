@@ -27,8 +27,13 @@ export type RunOptions = {
   env?: NodeJS.ProcessEnv;
   /** Most stdout bytes kept (default 256 MiB). More than that kills the process and sets `truncated`. */
   maxStdout?: number;
-  /** Runs when the timeout fires, besides the tree kill: stop what the tree cannot reach (a container). */
+  /**
+   * Runs when the timeout fires, besides the tree kill: stop what the tree cannot reach (a container).
+   * The result waits for it, so a caller that exits on the result does not cut the stop short.
+   */
   onTimeout?: () => Promise<unknown>;
+  /** How long a timeout waits for the kill and onTimeout before it returns anyway (default 10 s). */
+  stopWaitMs?: number;
 };
 
 export type RunResult = {
@@ -110,6 +115,17 @@ function release(): void {
   forwarders.clear();
 }
 
+/** Resolves when `p` settles or after `ms`, whichever comes first. Leaves no timer behind. */
+function settleWithin(p: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise((done) => {
+    const t = setTimeout(done, ms);
+    void p.finally(() => {
+      clearTimeout(t);
+      done();
+    });
+  });
+}
+
 function untrack(c: ChildProcess): void {
   live.delete(c);
   if (!live.size) release();
@@ -129,6 +145,8 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
     let timer: NodeJS.Timeout | undefined;
     let stopTimer: NodeJS.Timeout | undefined;
     let child: ChildProcess | undefined;
+    let stopping: Promise<void> | undefined;
+    const stopWaitMs = opts.stopWaitMs ?? STOP_WAIT_MS;
 
     const finish = (status: number | null, signal: NodeJS.Signals | null): void => {
       if (finished) return;
@@ -136,7 +154,7 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
       clearTimeout(timer);
       clearTimeout(stopTimer);
       if (child) untrack(child);
-      resolve({
+      const result: RunResult = {
         status,
         signal,
         stdout: Buffer.concat(out).toString("utf8"),
@@ -145,7 +163,9 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
         timedOut,
         truncated,
         timeoutMs: opts.timeoutMs,
-      });
+      };
+      if (stopping) void stopping.then(() => resolve(result));
+      else resolve(result);
     };
 
     try {
@@ -191,9 +211,14 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
 
     timer = setTimeout(() => {
       timedOut = true;
-      void Promise.allSettled([killTree(c), Promise.resolve().then(() => opts.onTimeout?.())]);
+      // The child closes as soon as the tree kill lands, which can be before onTimeout has stopped
+      // the container. finish() waits for both, up to stopWaitMs.
+      stopping = settleWithin(
+        Promise.allSettled([killTree(c), Promise.resolve().then(() => opts.onTimeout?.())]),
+        stopWaitMs,
+      );
       // A process that survives the kill must not hold the caller for ever.
-      stopTimer = setTimeout(() => finish(null, "SIGKILL"), STOP_WAIT_MS);
+      stopTimer = setTimeout(() => finish(null, "SIGKILL"), stopWaitMs);
     }, opts.timeoutMs);
   });
 }
