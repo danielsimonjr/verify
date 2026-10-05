@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,13 +8,6 @@ import JSZip from "jszip";
 
 const RT = process.execPath; // bun under `bun test`
 const SCENARIO = join(import.meta.dir, "fixtures", "verify-pipeline", "grade-scenario.ts");
-
-// Every case starts the grader in a fresh Bun process. Measured on an idle Windows host: about 2 s
-// for a plain case, 3.8-4.5 s for the three that wait out a deliberate timeout, and 13.7-14.8 s
-// for the slow docker kill (its fake kill alone takes 11 s). Bun's 5 s default fails those on a
-// loaded machine, and when it fires it also kills the grader process, so the case reports a
-// missing result instead of a timeout. The bound is per file in Bun.
-setDefaultTimeout(30_000);
 
 let root: string;
 let deliverables: string;
@@ -107,10 +100,13 @@ describe("apex grade", () => {
   });
 
   test("the event loop keeps running while the runner works (no spawnSync in the async worker)", () => {
-    const r = scenario("apex-gap", { FAKE_MODE: "sleep" });
+    // The runner signals that it has started and waits for the grading process's event loop to
+    // answer. spawnSync holds the loop for the whole run, so the runner would give up after 5 s
+    // and record no-go.
+    const files = { READY_FILE: join(root, "ready"), GO_FILE: join(root, "go"), SAW_FILE: join(root, "saw") };
+    const r = scenario("apex-gap", { FAKE_MODE: "handshake", ...files });
     expect(r.json.result.score).toBe(0.5);
-    // spawnSync holds the loop for the whole 800 ms run: the largest gap would be >= 800 ms.
-    expect(r.json.maxGap).toBeLessThan(400);
+    expect(r.json.saw).toBe("go");
   });
 
   test("a timeout is an error that says so, and kills the runner's own children", () => {

@@ -45,7 +45,7 @@ All notable changes to this project are recorded here. The format follows
 - CHARTER.md matches MISSION.md, and states the `# cut at N cells` and 400,000-character limits of the rendered views (#11).
 - `docs/local-models.md` and the context-length messages: load the model after setting `OLLAMA_CONTEXT_LENGTH`, and create a variant with `ollama create -f Modelfile` (#11).
 - `VERIHARNESS_TMP` defaults to the OS temp directory when `/var/tmp` does not exist (#11).
-- Tests: the env-derive timeout test gives its stub 2 s to start instead of 300 ms, and the Windows command-line test makes about 280 folders instead of 1,500, whose delete outlasted the 5 s cleanup hook. Nine test files that start child processes set a 30 s default: their slowest tests measured 3.2-5.3 s on a loaded Windows host, and Bun's 5 s default failed a different one on each run. Bun 1.4.2 reads no test timeout from `bunfig.toml`, and a preloaded `setDefaultTimeout` reaches only the first file (#11).
+- Tests: the env-derive timeout test gives its stub 2 s to start instead of 300 ms, and the Windows command-line test makes about 280 folders instead of 1,500, whose delete outlasted the 5 s cleanup hook. (#11).
 - Model options: `timeoutMs` must be a whole number of milliseconds; a fractional count of seconds (`--request-timeout`, `VERIHARNESS_MODEL_TIMEOUT`) converts to whole milliseconds, and less than 1 ms is an error (#12).
 - Ollama: a generated tool-call id never merges with a server id, in a stream or in a whole reply, so no call is lost (#12).
 - `--jobs`, `--cell-cap`, `--lane-max` and `--limit` reject a digit string that is Infinity or an unsafe integer, through one helper, `parseCount` (#12).
@@ -55,7 +55,8 @@ All notable changes to this project are recorded here. The format follows
 - `secondsToMs` rejects a value below 0.001 s before rounding, so 0.0005 s no longer rounds up to 1 ms (#12).
 - The Workspace-Bench (`wsb`) batch grader returns a prototype-free result, so a task named `__proto__` gets its own entry and reaches score (#12).
 - A caller-supplied timeout above 2^31-1 ms (about 24.8 days) is clamped, because Node fires such a timer at once: `--request-timeout 2147484` aborted every model request after about 1 ms. `secondsToMs` says "finite" for an infinite product (#12).
-- `pptx_text` tests set the 30 s default timeout of the other child-process test files (#12).
+- Tests: the env-derive concurrency test counts the builds that are open at once, behind a barrier in the stub docker, instead of timing them. Under CPU load the time check failed at 4.0 s to 7.1 s against its 2.5 s limit, and the old count failed once at 3 of 4, because a fourth build could start after the first one ended. The APEX event-loop test replaces its 400 ms gap limit, which a loaded host passed at 511 ms, with a handshake: the fake runner waits for an answer that only the grading process's event loop can write (#14).
+- Tests: the suite has one test timeout, 30 s, from `bun test --timeout 30000` in the `test` script, and CI runs `bun run test`. In Bun 1.4.2 the flag reaches every file and every `beforeAll` and `afterAll` hook; `bunfig.toml` sets no test timeout, and a preloaded `setDefaultTimeout` reaches only the first file. The flag replaces a `setDefaultTimeout(30_000)` call in each of 12 files. Child-process tests measured up to 5.3 s on a loaded Windows host, against Bun's 5 s default. Tests fail when a file sets its own default again, or when a CI step runs a bare `bun test` (#14).
 
 ### Security
 - SB2 grading refuses a `<task>_output.xlsx` that is a symlink, so a deliverable cannot make the grader read a host file (#13).

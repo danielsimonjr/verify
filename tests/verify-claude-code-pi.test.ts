@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -13,10 +13,6 @@ import {
 } from "../harness/driver.ts";
 import { runWithBudget } from "../harness/runtime.ts";
 import { STUB_PI, makeRig, piHappyRules, type Rig } from "./fixtures/verify-claude-code/rig.ts";
-
-// Tests here start child processes. On a loaded Windows host one measured 4.7 s, against
-// Bun's 5 s default; the bound is per file in Bun.
-setDefaultTimeout(30_000);
 
 let rig: Rig;
 beforeEach(() => {

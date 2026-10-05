@@ -1,11 +1,9 @@
-import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { deriveImages } from "../harness/env/derive.ts";
 import { run } from "../harness/grade/proc.ts";
 import { HttpClient } from "../harness/model/http.ts";
 import { MAX_TIMER_MS } from "../harness/timer.ts";
-
-setDefaultTimeout(30_000);
 
 // Node fires a timer at once when its delay is above 2^31-1 ms (with a TimeoutOverflowWarning); Bun
 // does not. The shipped CLI runs on Node, so under Bun the test records the delays instead.

@@ -43,9 +43,16 @@ describe("ci.yml build job", () => {
     const at = (needle: string) => commands.findIndex((c) => c.includes(needle));
     expect(at("bun install --frozen-lockfile")).toBeGreaterThanOrEqual(0);
     expect(at("bun run typecheck")).toBeGreaterThan(at("bun install"));
-    expect(at("bun test")).toBeGreaterThan(at("bun run typecheck"));
-    expect(at("bun run build")).toBeGreaterThan(at("bun test"));
+    expect(at("bun run test")).toBeGreaterThan(at("bun run typecheck"));
+    expect(at("bun run build")).toBeGreaterThan(at("bun run test"));
     expect(at("node tests/smoke/built-cli.mjs")).toBeGreaterThan(at("bun run build"));
+  });
+
+  // The suite's test timeout is the --timeout flag in the `test` script; a bare `bun test` runs
+  // without it, at Bun's 5 s default.
+  test("no step in any job runs a bare `bun test`", () => {
+    const all = Object.values(ci.jobs).flatMap((j) => j.steps.map((s) => s.run ?? ""));
+    expect(all.filter((run) => /(^|[\n;&|]\s*)bun test\b/.test(run))).toEqual([]);
   });
 
   test("installs the Node the built CLI runs on", () => {
