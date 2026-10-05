@@ -1145,6 +1145,11 @@ async function runClaudeCode(
     return 2;
   }
   log(ws, "no isolation (--env none): the verifier's Bash tool runs directly on the host");
+  log(
+    ws,
+    "WARNING: no jail for claude-code lanes: VERIHARNESS_JAIL_HIDE is not enforced, so this verifier can read " +
+      "other tasks' results, archived grades and benchmark answer keys; scores from this lane are not protected against that",
+  );
 
   // The charter goes in a file and the message on stdin: with mounted skills they are longer than the
   // 32,767 characters a Windows command line holds.

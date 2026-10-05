@@ -289,6 +289,15 @@ describe("the environment of the verifier", () => {
 });
 
 describe("what the log says about the session", () => {
+  test("one warning per task says that the answer keys are not protected", async () => {
+    rig.script(happyRules(rig.ws));
+    await rig.run(ARGS);
+    const lines = rig.log().split(String.fromCharCode(10)).filter((l) => l.includes("WARNING: no jail"));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/answer keys/);
+    expect(lines[0]).toMatch(/other tasks' results/);
+  });
+
   test("the model, version, key source and tools of the first init event", async () => {
     rig.script(happyRules(rig.ws));
     await rig.run(ARGS);

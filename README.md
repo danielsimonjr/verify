@@ -364,7 +364,11 @@ read-only, the rest of `$HOME`, the data root, the run outputs, the benchmark
 checkout, `/tmp` and `/var/tmp` are hidden, host Python and Node stay
 read-only, and container runtimes are masked. The session runs with no
 capabilities, so it cannot undo those mounts. Archived scores and benchmark
-answer keys are therefore unreachable from a session. The task workspace and
+answer keys are therefore unreachable from a pi session that runs in the jail.
+This does not hold for `claude-code` lanes: they require `--env none`, run
+without the jail, and can read other tasks' results, archived grades and the
+benchmark answer keys. Scores from those lanes are not protected against
+that (see `docs/claude-code.md`). The task workspace and
 the repo must not be under `/tmp`: the jail refuses such a path. There is no
 network namespace, so model endpoints stay reachable. Graders run on the host
 after the verifier batch, never inside the jail.
