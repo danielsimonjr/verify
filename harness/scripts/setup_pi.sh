@@ -16,12 +16,14 @@
 set -euo pipefail
 
 PI_VERSION="${PI_VERSION:-0.84.4}"
+# PI_SPEC overrides the whole install spec, for example a local .tgz made with `npm pack`.
+PI_SPEC="${PI_SPEC:-@danielsimonjr/pi@${PI_VERSION}}"
 VENDOR_DIR="$(cd "$(dirname "$0")/.." && pwd)/vendor"
 
 mkdir -p "$VENDOR_DIR"
 cd "$VENDOR_DIR"
 [ -f package.json ] || npm init -y >/dev/null
-npm install --no-fund --no-audit --save-exact "@earendil-works/pi-coding-agent@${PI_VERSION}"
+npm install --no-fund --no-audit --save-exact "${PI_SPEC}"
 
 PI_BIN="$VENDOR_DIR/node_modules/.bin/pi"
 "$PI_BIN" --version

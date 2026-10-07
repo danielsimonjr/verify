@@ -16,6 +16,7 @@ All notable changes to this project are recorded here. The format follows
 - CI builds and smoke-runs the built CLI on Linux and Windows, and checks the jail on a real Linux kernel. A control run with capabilities must report every escape and every write, so a "no" in the jail run means the jail held (#9).
 
 ### Changed
+- The pi agent runtime now comes from `@danielsimonjr/pi` (0.84.4, a fork of `earendil-works/pi` built from upstream `v0.84.4`) and not from `@earendil-works/pi-coding-agent`. `setup_pi.sh` installs it, `PI_SPEC` overrides the install spec, and `PI_CLI_JS` points into the new package directory.
 - The package is named `verify`, as the repository is. It was `veriharness`. The command is still `veriharness`: cmd.exe runs its built-in VERIFY command before it searches PATH, so a `verify` command would not run there. A test checks the package name, the command and both lockfiles (#19).
 
 ### Fixed

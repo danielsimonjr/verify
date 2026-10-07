@@ -160,7 +160,7 @@ npm run build
 node dist/harness/cli.js driver <task-dir> --provider google-vertex --model gemini-3.5-flash --thinking high
 ```
 
-The harness drives the open-source [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+The harness drives the open-source [pi](https://www.npmjs.com/package/@danielsimonjr/pi)
 coding-agent runtime and works with any model provider pi supports (Anthropic,
 OpenAI, Google AI Studio, Vertex AI, OpenAI-compatible endpoints and others);
 no Google account or service is required. A *lane*
@@ -493,8 +493,8 @@ Apache 2.0; see [`LICENSE`](LICENSE).
 
 ## Acknowledgements
 
-The verifier runs on the [pi](https://github.com/earendil-works/pi) coding-agent
-runtime (MIT); Claude is served through a local
+The verifier runs on the [pi](https://github.com/danielsimonjr/pi) coding-agent
+runtime (MIT; a fork of [earendil-works/pi](https://github.com/earendil-works/pi)); Claude is served through a local
 [LiteLLM](https://github.com/BerriAI/litellm) proxy (MIT). Neither is vendored:
 the setup scripts install both. Re-grading uses the benchmarks' own graders: the
 [APEX-Agents](https://github.com/Mercor-Intelligence/archipelago) grading runner,

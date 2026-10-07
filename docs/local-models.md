@@ -2,7 +2,7 @@
 
 The verifier can run against a model on this machine, through [Ollama](https://ollama.com) or through [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`, in addition to the hosted providers pi already supports. No API key is required.
 
-The agent loop (tools, sessions, the four verifier turns) still runs in [pi](https://github.com/earendil-works/pi). Before the first turn the harness talks to the local server itself: it checks that the process is up, that the model is pulled or loaded, and that the model can call tools. Hosted lanes are unchanged.
+The agent loop (tools, sessions, the four verifier turns) still runs in [pi](https://github.com/danielsimonjr/pi). Before the first turn the harness talks to the local server itself: it checks that the process is up, that the model is pulled or loaded, and that the model can call tools. Hosted lanes are unchanged.
 
 ## Why tool calling is required
 

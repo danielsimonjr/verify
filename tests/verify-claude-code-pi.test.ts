@@ -153,7 +153,7 @@ describe("how pi is started", () => {
   });
 
   test("on Windows the default install runs its entry script with Node, because .bin/pi is a shell script", () => {
-    expect(config.PI_CLI_JS.replace(/\\/g, "/")).toMatch(/vendor\/node_modules\/@earendil-works\/pi-coding-agent\/dist\/bundle\/cli\.js$/);
+    expect(config.PI_CLI_JS.replace(/\\/g, "/")).toMatch(/vendor\/node_modules\/@danielsimonjr\/pi\/dist\/bundle\/cli\.js$/);
     const cmd = piCommandFor(config.PI_BIN, "win32");
     if (existsSync(config.PI_CLI_JS)) {
       expect(cmd).toHaveLength(2);
