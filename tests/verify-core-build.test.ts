@@ -108,16 +108,16 @@ describe("package.json scripts and bin point at real files", () => {
   });
 });
 
-// The package is named for the repository. The command keeps the old name: cmd.exe runs its built-in VERIFY
-// command before it searches PATH, so a `verify` command would never run there.
+// The package is the scoped @danielsimonjr/verify: the plain name `verify` on npm belongs to another package. The command
+// is veriharness: cmd.exe runs its built-in VERIFY command before it searches PATH, so a `verify` command would never run there.
 describe("package name and command", () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as {
     name: string;
     bin: Record<string, string>;
   };
 
-  test("the package is verify, and its only command is veriharness", () => {
-    expect(pkg.name).toBe("verify");
+  test("the package is @danielsimonjr/verify, and its only command is veriharness", () => {
+    expect(pkg.name).toBe("@danielsimonjr/verify");
     expect(Object.keys(pkg.bin)).toEqual(["veriharness"]);
   });
 

@@ -1,5 +1,5 @@
 {
-  "name": "verify",
+  "name": "@danielsimonjr/verify",
   "version": "0.1.0",
   "description": "Same-model verification harness for long-horizon workspace agents",
   "license": "Apache-2.0",
@@ -8,6 +8,18 @@
     "url": "git+https://github.com/danielsimonjr/verify.git"
   },
   "type": "module",
+  "files": [
+    "dist",
+    "harness",
+    "!harness/vendor",
+    "!**/__pycache__",
+    "!**/*.pyc",
+    "tsconfig.json",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=22.19.0"
   },
@@ -26,7 +38,8 @@
     "start": "node dist/harness/cli.js",
     "smoke": "node tests/smoke/built-cli.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
-    "test": "bun test --timeout 30000"
+    "test": "bun test --timeout 30000",
+    "prepublishOnly": "npm run typecheck && npm run build"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

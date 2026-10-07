@@ -6,6 +6,10 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-06
+
+First release, published to npm as `@danielsimonjr/verify`.
+
 ### Added
 - The harness is TypeScript: Bun runs it in development and Node runs the built `dist/` in production (#1).
 - Local model backends: Ollama and llama.cpp, with a `model-check` preflight that refuses a server that is down, a missing model, or a model that cannot call tools (#2).
@@ -17,7 +21,8 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 - The pi agent runtime now comes from `@danielsimonjr/pi` (0.84.4, a fork of `earendil-works/pi` built from upstream `v0.84.4`) and not from `@earendil-works/pi-coding-agent`. `setup_pi.sh` installs it, `PI_SPEC` overrides the install spec, and `PI_CLI_JS` points into the new package directory.
-- The package is named `verify`, as the repository is. It was `veriharness`. The command is still `veriharness`: cmd.exe runs its built-in VERIFY command before it searches PATH, so a `verify` command would not run there. A test checks the package name, the command and both lockfiles (#19).
+- The package is named `@danielsimonjr/verify`. It was `veriharness`. The plain name `verify` on npm belongs to another package. The command is still `veriharness`: cmd.exe runs its built-in VERIFY command before it searches PATH, so a `verify` command would not run there. A test checks the package name, the command and both lockfiles (#19).
+- The npm package ships `dist/` and `harness/` (its TypeScript source, prompts, skills and scripts) and leaves out `harness/vendor/`. `npm publish` runs the typecheck and the build first.
 
 ### Fixed
 - Runner: an unknown `--lane` is rejected instead of stalling the scheduler; view renders are awaited before the driver starts; tasks run concurrently up to the lane and cell caps; `--sample` and `--fraction` choose the tasks that Python's `random.Random(seed).sample` chose; numeric options reject typos (#4).
