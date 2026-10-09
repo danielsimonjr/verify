@@ -1,0 +1,173 @@
+// Copyright 2026 The VeriHarness Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+/**
+ * What a worker left: its deliverable, parsed from its last message, and the numbers of its session,
+ * read from the event stream. The deliverable form is recorded, not hidden: a task that asks for pure
+ * JSON and gets a fenced block has a format error, even though the value parses.
+ */
+
+import { parseStream } from "../claude/stream.js";
+
+export type DeliverableForm = "pure" | "fenced" | "embedded";
+
+export type WorkerError = "timeout" | "no-result" | "no-json" | "start-failed" | "usage-limit" | null;
+
+export interface WorkerRecord {
+  rollout: string;
+  exit: number | null;
+  seconds: number;
+  turns: number;
+  tools: number;
+  peakContext: number;
+  outputTokens: number;
+  form: DeliverableForm | null;
+  error: WorkerError;
+}
+
+export interface StreamStats {
+  /** The text of the last assistant message. */
+  finalText: string;
+  /** Assistant messages. */
+  turns: number;
+  /** Tool calls that ran. */
+  tools: number;
+  /** The largest prompt of one turn: input plus cache read plus cache write tokens. */
+  peakContext: number;
+  outputTokens: number;
+}
+
+const WHOLE_FENCE = /^```[\w-]*[ \t]*\n([\s\S]*?)\n?```$/;
+const ANY_FENCE = /```[\w-]*[ \t]*\n([\s\S]*?)```/g;
+
+function tryParse(text: string): { ok: true; value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/** The end of the balanced `{...}` that starts at `start`, skipping braces inside strings; -1 if none. */
+function objectEnd(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/** Parse a JSON deliverable: the whole text, one whole fence, or a fence or bare object in prose. */
+export function parseJsonDeliverable(text: string): { value: unknown; form: DeliverableForm } | null {
+  const trimmed = text.trim();
+  if (trimmed === "") return null;
+  const pure = tryParse(trimmed);
+  if (pure.ok) return { value: pure.value, form: "pure" };
+  const whole = WHOLE_FENCE.exec(trimmed);
+  if (whole) {
+    const inner = tryParse(whole[1]!.trim());
+    if (inner.ok) return { value: inner.value, form: "fenced" };
+  }
+  for (const match of trimmed.matchAll(ANY_FENCE)) {
+    const inner = tryParse(match[1]!.trim());
+    if (inner.ok) return { value: inner.value, form: "embedded" };
+  }
+  for (let start = trimmed.indexOf("{"); start >= 0; start = trimmed.indexOf("{", start + 1)) {
+    const end = objectEnd(trimmed, start);
+    if (end < 0) continue;
+    const bare = tryParse(trimmed.slice(start, end + 1));
+    if (bare.ok) return { value: bare.value, form: "embedded" };
+  }
+  return null;
+}
+
+function events(text: string): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.includes('"type"')) continue;
+    try {
+      const e = JSON.parse(line) as unknown;
+      if (e && typeof e === "object") out.push(e as Record<string, unknown>);
+    } catch {
+      // A partial last line from a killed process is not an event.
+    }
+  }
+  return out;
+}
+
+const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((b) => b && typeof b === "object" && (b as { type?: unknown }).type === "text")
+    .map((b) => String((b as { text?: unknown }).text ?? ""))
+    .join("");
+}
+
+/** pi `--mode json`: assistant `message_end` events carry the usage; `tool_execution_end` is one tool call. */
+export function piStreamStats(text: string): StreamStats {
+  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0 };
+  for (const e of events(text)) {
+    if (e.type === "tool_execution_end") stats.tools++;
+    if (e.type !== "message_end") continue;
+    const m = (e.message ?? {}) as Record<string, unknown>;
+    if (m.role !== "assistant") continue;
+    const u = (m.usage ?? {}) as Record<string, unknown>;
+    stats.turns++;
+    stats.peakContext = Math.max(stats.peakContext, num(u.input) + num(u.cacheRead) + num(u.cacheWrite));
+    stats.outputTokens += num(u.output);
+    stats.finalText = textOf(m.content);
+  }
+  return stats;
+}
+
+/**
+ * Claude Code `stream-json`: one `assistant` event per content block, each with the message's usage, so
+ * a turn is a message id. The `result` event holds the final text and the session's output total.
+ */
+export function claudeStreamStats(text: string): StreamStats {
+  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0 };
+  const output = new Map<string, number>();
+  let lastText = "";
+  let resultUsage: Record<string, unknown> | undefined;
+  for (const e of events(text)) {
+    if (e.type === "result") resultUsage = (e.usage ?? undefined) as Record<string, unknown> | undefined;
+    if (e.type !== "assistant") continue;
+    const m = (e.message ?? {}) as Record<string, unknown>;
+    const id = typeof m.id === "string" ? m.id : `#${output.size}`;
+    const u = (m.usage ?? {}) as Record<string, unknown>;
+    output.set(id, num(u.output_tokens));
+    const context = num(u.input_tokens) + num(u.cache_read_input_tokens) + num(u.cache_creation_input_tokens);
+    stats.peakContext = Math.max(stats.peakContext, context);
+    if (Array.isArray(m.content)) {
+      stats.tools += m.content.filter((b) => b && typeof b === "object" && (b as { type?: unknown }).type === "tool_use").length;
+    }
+    const blockText = textOf(m.content);
+    if (blockText !== "") lastText = blockText;
+  }
+  stats.turns = output.size;
+  const result = parseStream(text).result;
+  stats.outputTokens = resultUsage ? num(resultUsage.output_tokens) : [...output.values()].reduce((a, b) => a + b, 0);
+  stats.finalText = result && !result.isError ? result.text : lastText;
+  return stats;
+}
