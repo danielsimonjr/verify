@@ -15,7 +15,9 @@ import { CLAUDE_CODE_PROVIDER, isClaudeCodeProvider } from "./claude/provider.js
 import { DEFAULT_LLAMACPP_BASE_URL, DEFAULT_OLLAMA_BASE_URL } from "./model/config.js";
 import { canonicalLocalProvider } from "./model/index.js";
 
+/** The verifier roles, in the order of their phases. */
 export const ROLES = ["checker", "challenger", "reviewer", "fixer"] as const;
+/** One verifier role: `checker`, `challenger`, `reviewer` or `fixer`. */
 export type Role = (typeof ROLES)[number];
 
 /** The model of one role. `provider` and `model` are undefined when the run leaves pi its own default. */
@@ -42,10 +44,19 @@ export function canonicalProvider(name: string): string {
 /** Split `ROLE=VALUE`, checking the role. */
 function roleValue(option: string, entry: string): { role: Role; value: string } | { error: string } {
   const eq = entry.indexOf("=");
-  const name = eq < 0 ? entry : entry.slice(0, eq);
-  if (eq >= 0 && !isRole(name)) return { error: `${option}: unknown role '${name}' (known: ${ROLES.join(", ")})` };
   if (eq < 0) return { error: `${option} '${entry}': expected ROLE=${option === "--role" ? "PROVIDER:MODEL" : "VALUE"}` };
-  return { role: name as Role, value: entry.slice(eq + 1) };
+  const name = entry.slice(0, eq);
+  if (!isRole(name)) return { error: `${option}: unknown role '${name}' (known: ${ROLES.join(", ")})` };
+  return { role: name, value: entry.slice(eq + 1) };
+}
+
+/** The model a `--role-base-url` or `--role-context-size` entry tunes: it must be a local role's. */
+function localRoleSpec(option: string, role: Role, set: Partial<Record<Role, RoleModel>>): RoleModel | { error: string } {
+  const spec = set[role];
+  if (!spec) return { error: `${option} ${role}: the role has no --role ${role}=PROVIDER:MODEL` };
+  if (spec.provider === CLAUDE_CODE_PROVIDER) return { error: `${option} ${role}: not supported with claude-code` };
+  if (!canonicalLocalProvider(spec.provider)) return { error: `${option} ${role}: only for ollama and llamacpp roles` };
+  return spec;
 }
 
 /**
@@ -71,22 +82,16 @@ export function parseRoleOptions(
   for (const entry of baseUrls) {
     const parsed = roleValue("--role-base-url", entry);
     if ("error" in parsed) return parsed;
-    const spec = out[parsed.role];
-    if (!spec) return { error: `--role-base-url ${parsed.role}: the role has no --role ${parsed.role}=PROVIDER:MODEL` };
-    if (spec.provider === CLAUDE_CODE_PROVIDER) return { error: `--role-base-url ${parsed.role}: not supported with claude-code` };
+    const spec = localRoleSpec("--role-base-url", parsed.role, out);
+    if ("error" in spec) return spec;
     if (!parsed.value) return { error: `--role-base-url ${parsed.role}: empty URL` };
     spec.baseUrl = parsed.value;
   }
   for (const entry of contextSizes) {
     const parsed = roleValue("--role-context-size", entry);
     if ("error" in parsed) return parsed;
-    const spec = out[parsed.role];
-    if (!spec) {
-      return { error: `--role-context-size ${parsed.role}: the role has no --role ${parsed.role}=PROVIDER:MODEL` };
-    }
-    if (spec.provider === CLAUDE_CODE_PROVIDER) {
-      return { error: `--role-context-size ${parsed.role}: not supported with claude-code` };
-    }
+    const spec = localRoleSpec("--role-context-size", parsed.role, out);
+    if ("error" in spec) return spec;
     const n = /^\d+$/.test(parsed.value) ? Number(parsed.value) : NaN;
     if (!Number.isSafeInteger(n) || n <= MIN_CONTEXT) {
       return { error: `--role-context-size ${parsed.role}: needs a whole number above ${MIN_CONTEXT}, got '${parsed.value}'` };
@@ -130,10 +135,11 @@ export function sharedServerWarnings(roles: Record<Role, RoleModel>): string[] {
   const a = roles.checker;
   const b = roles.challenger;
   const server = localServer(a);
-  if (server === null || server !== localServer(b) || a.model === b.model) return [];
+  if (server === null || server !== localServer(b) || roleKey(a) === roleKey(b)) return [];
+  const what = (m: RoleModel): string => (m.contextSize ? `${m.model}, context ${m.contextSize}` : `${m.model}`);
   return [
-    `the checker (${a.model}) and the challenger (${b.model}) run at the same time on one server, ${server}: ` +
-      `it must hold both models at once or swap them on every request; use one model or two servers`,
+    `the checker (${what(a)}) and the challenger (${what(b)}) run at the same time on one server, ${server}: ` +
+      `it must hold both at once or reload on every request; use one model and one context size, or two servers`,
   ];
 }
 

@@ -60,6 +60,13 @@ describe("parseRoleOptions", () => {
     }
   });
 
+  test("a base URL or a context size on a role that is not local is an error, not ignored", () => {
+    const url = parseRoleOptions(["checker=google:gemini-x"], ["checker=http://h:1"], []);
+    expect("error" in url && url.error).toMatch(/--role-base-url checker: only for ollama and llamacpp roles/);
+    const ctx = parseRoleOptions(["checker=anthropic:m"], [], ["checker=8192"]);
+    expect("error" in ctx && ctx.error).toMatch(/--role-context-size checker: only for ollama and llamacpp roles/);
+  });
+
   test("a base URL or a context size on a claude-code role is an error", () => {
     expect("error" in parseRoleOptions(["reviewer=claude-code:m"], ["reviewer=http://h:1"], [])).toBe(true);
     expect("error" in parseRoleOptions(["reviewer=claude-code:m"], [], ["reviewer=8192"])).toBe(true);
@@ -110,6 +117,17 @@ describe("sharedServerWarnings", () => {
     expect(w[0]).toContain("checker");
     expect(w[0]).toContain("challenger");
     expect(w[0]).toContain("http://127.0.0.1:11434");
+  });
+
+  test("one model with two context sizes on one server: a warning too (the server reloads it)", () => {
+    const cc = { provider: "claude-code", model: "x" };
+    const w = sharedServerWarnings({
+      checker: { provider: "ollama", model: "a", contextSize: 8192 },
+      challenger: { provider: "ollama", model: "a", contextSize: 32768 },
+      reviewer: cc,
+      fixer: cc,
+    });
+    expect(w).toHaveLength(1);
   });
 
   test("no warning for one model, for two servers, or for Claude Code", () => {

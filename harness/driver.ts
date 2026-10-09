@@ -932,7 +932,7 @@ function settleBundle(ws: string, base: string): Record<string, unknown> {
 
 /** What a fixer in a fresh session is told first: the adjudication it did not see. */
 const FRESH_FIXER_BRIEF =
-  "The adjudication ran in another session, on another model. You did not see it. `finish.json` is its " +
+  "The adjudication ran in another session, on another model or server. You did not see it. `finish.json` is its " +
   "result. Before you start, read `finish.json`, the two investigation records (`ledger_elim.json` and " +
   "`ledger_fals.json`), `MISSION.md` and the rollouts that `finish.json` names.\n\n";
 

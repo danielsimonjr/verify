@@ -19,8 +19,8 @@ repeatable, one time for each role.
 | Option | Value | Applies to |
 |---|---|---|
 | `--role ROLE=PROVIDER:MODEL` | The provider and the model of the role. The model id can contain colons (`ollama:qwen3.5:9b`). | all providers |
-| `--role-base-url ROLE=URL` | The server of a local role. | `ollama`, `llamacpp` |
-| `--role-context-size ROLE=N` | The context window of a local role. N must be a whole number above 4096. | `ollama`, `llamacpp` |
+| `--role-base-url ROLE=URL` | The server of a local role. Refused for other providers. | `ollama`, `llamacpp` |
+| `--role-context-size ROLE=N` | The context window of a local role. N must be a whole number above 4096. Refused for other providers. | `ollama`, `llamacpp` |
 
 ```bash
 # A local Checker and Challenger; Claude Opus 5.5 reviews and fixes.
@@ -61,10 +61,11 @@ bun harness/cli.ts runner --run-name demo --cells sb2:haiku --env none \
 ## Local servers
 
 The checker and the challenger run at the same time. When they use two
-different models on one local server, the server must hold the two models at
-the same time. If it cannot, it swaps the models on each request and every turn
-becomes slow. The driver writes a warning to `driver.log` for this case. Use
-one model for the two roles, or put the two models on two servers:
+different models, or one model with two context sizes, on one local server, the
+server must hold the two at the same time. If it cannot, it reloads on each
+request and every turn becomes slow. The driver writes a warning to
+`driver.log` for this case. Use one model and one context size for the two
+roles, or use two servers:
 
 ```bash
 --role checker=ollama:qwen3.5:9b --role challenger=ollama:qwen2.5-coder:7b \
