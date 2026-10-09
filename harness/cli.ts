@@ -30,6 +30,7 @@ commands:
   grade         grade one deliverables directory
   env-derive    derive WorkBuddy images with the tool stack
   model-check   probe a local Ollama or llama.cpp server, or the Claude Code CLI
+  batch         split an items file into task folders that fit a token budget
 `;
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
@@ -61,6 +62,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
     case "env-derive": {
       const m = await import("./env/derive.js");
+      return m.main(rest);
+    }
+    case "batch": {
+      const m = await import("./batch/main.js");
       return m.main(rest);
     }
     case "model-check": {
