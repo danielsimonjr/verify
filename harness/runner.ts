@@ -34,7 +34,7 @@ import { renderViews } from "./views.js";
  * every other Claude Code session of the account, so the caps stay low: the two larger models start at 2,
  * haiku and sonnet at 4. `--lane-max fable=3` changes one.
  */
-const DEFAULT_LANE_MAX: Record<string, number> = { fable: 2, opus: 2, haiku: 4, sonnet: 4 };
+const DEFAULT_LANE_MAX = config.DEFAULT_LANE_MAX;
 const DEFAULT_CELL_CAP: Record<string, number> = {
   apex: 8,
   wb: 10,

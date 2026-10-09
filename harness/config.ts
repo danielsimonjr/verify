@@ -115,6 +115,9 @@ export const CLAUDE_CODE_WINDOWS: Readonly<Record<string, number>> = {
   "claude-sonnet-5-5": 1_000_000,
 };
 
+/** How many sessions of each lane run at the same time, unless an option changes it. */
+export const DEFAULT_LANE_MAX: Readonly<Record<string, number>> = { fable: 2, opus: 2, haiku: 4, sonnet: 4 };
+
 /** The table window of a Claude model id, or undefined. Inherited keys such as `constructor` are not ids. */
 export function claudeCodeWindow(model: string): number | undefined {
   return Object.hasOwn(CLAUDE_CODE_WINDOWS, model) ? CLAUDE_CODE_WINDOWS[model] : undefined;

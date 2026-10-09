@@ -31,6 +31,7 @@ commands:
   env-derive    derive WorkBuddy images with the tool stack
   model-check   probe a local Ollama or llama.cpp server, or the Claude Code CLI
   batch         split an items file into task folders that fit a token budget
+  workers       run worker rollouts on each batch, each in an isolated copy
 `;
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
@@ -66,6 +67,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
     case "batch": {
       const m = await import("./batch/main.js");
+      return m.main(rest);
+    }
+    case "workers": {
+      const m = await import("./workers/main.js");
       return m.main(rest);
     }
     case "model-check": {
