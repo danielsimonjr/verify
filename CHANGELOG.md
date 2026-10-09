@@ -6,6 +6,9 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `.github/workflows/publish.yml`: a published GitHub release publishes the package to npm, with provenance. The release tag must name `package.json`'s version (`scripts/publish-version-guard.mjs`), and a version already on npm is skipped. The job needs the repository secret `NPM`.
+
 ## [0.4.0] - 2026-10-09
 
 ### Added
