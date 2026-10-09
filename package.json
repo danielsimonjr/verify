@@ -1,6 +1,6 @@
 {
   "name": "@danielsimonjr/verify",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Same-model verification harness for long-horizon workspace agents",
   "license": "Apache-2.0",
   "repository": {

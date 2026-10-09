@@ -6,9 +6,16 @@ name: Publish
 #
 # The release's tag must name package.json's version (scripts/publish-version-guard.mjs).
 # A version that is already on npm is skipped, so re-running the job is safe.
+# workflow_dispatch runs the same job for an existing tag, for a re-run. The tag must hold
+# scripts/publish-version-guard.mjs, so v0.4.1 is the first tag it can take.
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, for example v0.4.0"
+        required: true
 
 # contents: read checks out the tagged commit. id-token: write lets npm ask
 # Sigstore for a provenance statement (this repository is public).
@@ -17,7 +24,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: publish-${{ github.event.release.tag_name }}
+  group: publish-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -37,7 +44,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -50,7 +57,7 @@ jobs:
 
       - name: Refuse a release whose tag is not package.json's version
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: node scripts/publish-version-guard.mjs "$TAG"
 
       - name: Skip when this version is already on npm
