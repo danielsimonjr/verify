@@ -6,6 +6,9 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `docs/specs/batching-and-workers.md`: the spec for `--context-size auto`, `veriharness batch` and `veriharness workers`, and for the verify-mcp tools that wrap them.
+
 ## [0.4.1] - 2026-10-09
 
 ### Added
