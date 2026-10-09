@@ -270,7 +270,7 @@ A large check splits into task folders that each fit a token budget. Workers the
 
 ```bash
 bun harness/cli.ts batch --items todo.md --split "heading:^### TODO line (\d+)$" --spec task.md \
-  --shared CHANGELOG.md --prompt worker_prompt.md --provider ollama --model qwen3.5:9b-64k --out work
+  --reference CHANGELOG.md --prompt worker_prompt.md --provider ollama --model qwen3.5:9b-64k --out work
 bun harness/cli.ts workers work --provider ollama --model qwen3.5:9b-64k --count 3
 bun harness/cli.ts driver work/b01 --provider ollama --model qwen3.6:latest --env none
 ```

@@ -195,6 +195,48 @@ describe("veriharness batch", () => {
     // spec 16 + folder 36 = 52 characters, 15 tokens, plus two items of 100.
     expect(manifest(f.out).batches[0].estTokens).toBe(215);
   });
+
+  test("a reference file is copied to every batch and not counted", async () => {
+    const f = files();
+    // 36,000 characters, 10,000 tokens: as a shared file it would put the fixed part over the budget.
+    const corpus = join(root, "corpus.md");
+    writeFileSync(corpus, "c".repeat(36_000));
+    const r = await batch([...base(f), "--reference", corpus, "--batch-tokens", "250", "--overhead-tokens", "0"]);
+    expect(r.code).toBe(0);
+    for (const b of ["b01", "b02"]) {
+      expect(readFileSync(join(f.out, b, "workspace", "corpus.md"), "utf8")).toHaveLength(36_000);
+    }
+    const m = manifest(f.out);
+    // spec 16 + two items of 360 = 736 characters, 205 tokens: the reference adds nothing.
+    expect(m.batches[0]).toEqual({ name: "b01", items: ["7", "8"], estTokens: 205, overBudget: false });
+    expect(m.reference).toEqual(["corpus.md"]);
+  });
+
+  test("a reference folder is copied whole", async () => {
+    const f = files();
+    const dir = join(root, "ref-dir");
+    mkdirSync(join(dir, "sub"), { recursive: true });
+    writeFileSync(join(dir, "sub", "a.txt"), "a".repeat(36_000));
+    const r = await batch([...base(f), "--reference", dir, "--batch-tokens", "250", "--overhead-tokens", "0"]);
+    expect(r.code).toBe(0);
+    expect(readFileSync(join(f.out, "b01", "workspace", "ref-dir", "sub", "a.txt"), "utf8")).toHaveLength(36_000);
+  });
+
+  test("a reference that lands on the name of a shared file or the items is an input error", async () => {
+    const f = files();
+    const other = join(root, "other");
+    mkdirSync(other);
+    const twin = join(other, "CHANGELOG.md");
+    writeFileSync(twin, "x");
+    const items = join(other, "items.md");
+    writeFileSync(items, "x");
+    for (const clash of [twin, items]) {
+      const r = await batch([...base(f), "--shared", f.shared, "--reference", clash, "--batch-tokens", "250"]);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("two files would land at workspace/");
+      expect(existsSync(f.out)).toBe(false);
+    }
+  });
 });
 
 describe("veriharness batch on the command line", () => {

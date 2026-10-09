@@ -6,6 +6,19 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-09
+
+### Added
+- `veriharness batch --reference PATH`: a file or folder that each batch gets in `workspace/`, like
+  `--shared`, but not counted in the token estimate, because the worker only searches it. The manifest
+  lists the reference names.
+
+### Fixed
+- The batching guide, the spec and the README passed the searched CHANGELOG as `--shared`. The
+  estimate counts a shared file as read whole, so a real CHANGELOG (1 MB, about 290,000 tokens) put the
+  fixed part of every batch over the budget and the command stopped with exit 2. The examples now use
+  `--reference`.
+
 ## [0.6.0] - 2026-10-09
 
 ### Added

@@ -13,12 +13,17 @@ The task: for each closed row in `TODO.md`, find out if `CHANGELOG.md` records i
 
 ```
 veriharness batch --items TODO-closed.md --split "heading:^### TODO line (\d+)$" \
-  --spec task.md --shared CHANGELOG.md --prompt worker_prompt.md \
+  --spec task.md --reference CHANGELOG.md --prompt worker_prompt.md \
   --provider ollama --model qwen3.5:9b-64k --base-url http://evo-x2:11434 --out work
 ```
 
 Each line that matches the regex starts one item. The capture group is the item id. The command
 resolves the worker model's window, takes half of it as the budget, and packs the items in file order.
+
+`--shared` and `--reference` both copy a file or a folder into each batch's `workspace/`. Use
+`--shared` for a file that the worker reads whole: the estimate counts it. Use `--reference` for a
+file that the worker only searches, such as a large CHANGELOG: the estimate does not count it. A
+CHANGELOG of 1 MB is about 290,000 tokens, so as `--shared` it puts every batch over the budget.
 
 ```
 work/
@@ -67,6 +72,8 @@ ceil((chars(spec) + chars(shared) + chars(items)) / R) + overhead + item_tokens 
 worker's system prompt and tool definitions. `item_tokens` is `--item-tokens` (default 0): the reads
 and search results that the work on one item adds.
 
+`shared` is the `--shared` files; `--reference` files are not in the estimate.
+
 The estimate counts only the text that the worker gets at the start. A worker that reads files and
 runs searches adds tokens on each turn. Measured on a 9B model with a 64k window: batches estimated at
 30k tokens reached a peak context of 34k to 48k. Set `--item-tokens` to keep that growth under the
@@ -83,7 +90,7 @@ alone exceed the budget, the command stops with exit code 2.
   "budget": 32768, "budgetSource": "half-window",
   "window": 65536, "windowSource": "loaded",
   "charsPerToken": 3.6, "overheadTokens": 2000, "itemTokens": 0,
-  "split": "heading:^### TODO line (\\d+)$",
+  "split": "heading:^### TODO line (\\d+)$", "reference": ["CHANGELOG.md"],
   "batches": [{"name": "b01", "items": ["6857", "6858"], "estTokens": 29674, "overBudget": false}]
 }
 ```

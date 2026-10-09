@@ -14,7 +14,7 @@
 
 /**
  * `veriharness batch` — split an items file into task folders that each fit a token budget. Each
- * batch gets the spec, the shared files, its own items and an empty `rollouts/`, so `workers` and
+ * batch gets the spec, the shared and reference files, its own items and an empty `rollouts/`, so `workers` and
  * `driver` can run on it. The whole output is written to a temp sibling of `--out` and renamed into
  * place, so a failure leaves no partial output.
  */
@@ -31,7 +31,7 @@ import { parseSplitRule, splitItems, type Item, type SplitRule } from "./split.j
 
 const USAGE =
   "usage: veriharness batch --items FILE --split jsonl|blank-line|heading:REGEX --spec FILE --out DIR\n" +
-  "         [--shared PATH]... [--prompt FILE] [--items-name NAME]\n" +
+  "         [--shared PATH]... [--reference PATH]... [--prompt FILE] [--items-name NAME]\n" +
   "         [--batch-tokens N | --provider P --model M [--base-url U] [--context-size N|auto]]\n" +
   "         [--chars-per-token R] [--overhead-tokens N] [--item-tokens N] [--max-items N]\n";
 
@@ -88,6 +88,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Backend
         spec: { type: "string" },
         out: { type: "string" },
         shared: { type: "string", multiple: true },
+        reference: { type: "string", multiple: true },
         prompt: { type: "string" },
         "items-name": { type: "string" },
         "batch-tokens": { type: "string" },
@@ -110,10 +111,12 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Backend
     const specPath = required(values, "spec");
     const out = resolve(required(values, "out"));
     const shared = (values.shared ?? []).map((p) => resolve(p));
+    // A worker searches a reference file with tools and never reads it whole, so it is not counted.
+    const reference = (values.reference ?? []).map((p) => resolve(p));
     const rule = parseSplitRule(splitRaw);
     const itemsName = values["items-name"] ?? (rule.kind === "jsonl" ? "items.jsonl" : "items.md");
-    const sharedNames = shared.map((p) => basename(p));
-    const clash = sharedNames.find((n, i) => sharedNames.indexOf(n) !== i || n === itemsName);
+    const workspaceNames = [...shared, ...reference].map((p) => basename(p));
+    const clash = workspaceNames.find((n, i) => workspaceNames.indexOf(n) !== i || n === itemsName);
     if (clash) throw new UsageError(`two files would land at workspace/${clash}`);
     if (existsSync(out) && readdirSync(out).length > 0) throw new UsageError(`--out ${out} is not empty`);
     // Checked before the first write, as the other inputs are: a missing prompt is an input error.
@@ -168,7 +171,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Backend
       mkdirSync(join(dir, "workspace"), { recursive: true });
       mkdirSync(join(dir, "rollouts"), { recursive: true });
       copyFileSync(specPath, join(dir, "spec", "task.md"));
-      for (const p of shared) {
+      for (const p of [...shared, ...reference]) {
         const dest = join(dir, "workspace", basename(p));
         if (statSync(p).isDirectory()) copyTree(p, dest);
         else copyFileSync(p, dest);
@@ -187,6 +190,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Backend
       overheadTokens: options.overheadTokens,
       itemTokens: options.itemTokens,
       split: splitRaw,
+      reference: reference.map((p) => basename(p)),
       batches: batches.map((b) => ({ name: b.name, items: b.items.map((i) => i.id), estTokens: b.estTokens, overBudget: b.overBudget })),
     };
     writeFileSync(join(tmp, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");

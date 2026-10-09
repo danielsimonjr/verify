@@ -56,7 +56,7 @@ The run continues.
 
 ```
 veriharness batch --items FILE --split RULE --spec FILE --out DIR
-                  [--shared PATH]... [--prompt FILE] [--items-name NAME]
+                  [--shared PATH]... [--reference PATH]... [--prompt FILE] [--items-name NAME]
                   [--batch-tokens N | --provider P --model M [--base-url U] [--context-size N|auto]]
                   [--chars-per-token R] [--overhead-tokens N] [--item-tokens N] [--max-items N]
 ```
@@ -67,7 +67,8 @@ veriharness batch --items FILE --split RULE --spec FILE --out DIR
 | `--split RULE` | How the file divides into items: `jsonl`, `heading:REGEX` or `blank-line`. | required |
 | `--spec FILE` | The task statement. The harness copies it to `spec/task.md` in each batch. | required |
 | `--out DIR` | The output root. It must not exist, or it must be empty. | required |
-| `--shared PATH` | A file or a folder that each batch gets under `workspace/`. Repeatable. | none |
+| `--shared PATH` | A file or a folder that each batch gets under `workspace/`. The worker reads it whole, so the estimate counts it. Repeatable. | none |
+| `--reference PATH` | A file or a folder that each batch gets under `workspace/`. The worker only searches it, so the estimate does not count it. Repeatable. | none |
 | `--prompt FILE` | The worker prompt. The harness copies it to `DIR/worker_prompt.md`. | none |
 | `--items-name NAME` | The file name of a batch's items under `workspace/`. | `items.md`, or `items.jsonl` for `jsonl` |
 | `--batch-tokens N` | The token budget of one batch. | half the worker model's window |
@@ -99,6 +100,9 @@ The estimate of a batch in tokens is:
 ceil((chars(spec) + chars(shared) + chars(items in the batch)) / R) + overhead + item_tokens * count
 ```
 
+`shared` is the `--shared` files. The `--reference` files are not in the estimate, because the worker
+reaches them only through search and slice reads.
+
 The harness takes the items in file order. It adds an item to the current batch while the estimate
 stays at or below the budget, and while the batch has fewer than `--max-items` items. Then it starts
 a new batch. An item that alone exceeds the budget gets a batch of its own, with `overBudget: true`.
@@ -114,6 +118,7 @@ DIR/
   b01/
     spec/task.md
     workspace/<shared files>
+    workspace/<reference files>
     workspace/<items-name>    (the items of this batch, in file order, with their original text)
     rollouts/                 (empty)
   b02/ ...
@@ -126,7 +131,7 @@ DIR/
   "budget": 32768, "budgetSource": "half-window",
   "window": 65536, "windowSource": "loaded",
   "charsPerToken": 3.6, "overheadTokens": 2000, "itemTokens": 0,
-  "split": "heading:^### TODO line (\\d+)$",
+  "split": "heading:^### TODO line (\\d+)$", "reference": ["CHANGELOG.md"],
   "batches": [
     {"name": "b01", "items": ["6857", "6858"], "estTokens": 29674, "overBudget": false}
   ]
