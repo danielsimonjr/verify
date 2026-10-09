@@ -28,15 +28,17 @@ from the environment (files, data, recomputable quantities).
 
 <table>
   <tr>
-    <td width="44%" valign="top"><img src="docs/overview.png" alt="N rollouts go to a disagreement resolver and a consensus challenger, run in parallel with environment evidence; adjudication selects or reconstructs the artifact" width="100%"></td>
+    <td width="44%" valign="top"><img src="docs/overview.png" alt="N rollouts from the Workers go to a disagreement Checker and a consensus Challenger, run in parallel with environment evidence; the Reviewer selects or reconstructs the artifact and the Fixer delivers it" width="100%"></td>
     <td width="56%" valign="top"><img src="docs/results.png" alt="Bar charts on five benchmarks: single rollout, the best prior LLM-as-a-verifier, and VeriHarness, with VeriHarness highest on each" width="100%"></td>
   </tr>
 </table>
 
-*Left:* the verifier is the generator's own model inside a harness. A
-disagreement resolver tests the claims on which the *N* rollouts differ, and a
-consensus challenger seeks evidence against the claims they share;
-adjudication combines their findings to select and revise the artifact.
+*Left:* the verifier is the generator's own model inside a harness. The
+Checker tests the claims on which the *N* rollouts differ, and the Challenger
+seeks evidence against the claims they share; the Reviewer combines their
+findings to select and revise the artifact, and the Fixer delivers it. (The
+figure uses the earlier names: "disagreement resolver" is the Checker,
+"consensus challenger" is the Challenger and "adjudication" is the Reviewer.)
 *Right:* with Gemini 3.5 Flash as both generator and verifier, VeriHarness
 against a single rollout and the best prior
 [LLM-as-a-Verifier](https://arxiv.org/abs/2607.05391) on the five benchmarks. Across the five benchmarks and two frontier models it achieves the
@@ -65,34 +67,45 @@ these numbers is released (see [Data](#data)).
 ## How it works
 
 <p align="center">
-  <img src="docs/method.png" alt="Worked example: three candidate rollouts report FY2025 revenue; the resolver settles which source applies (draft vs final report), the challenger tests the unit every rollout shared (USD vs EUR); adjudication reviews both records and delivers a corrected report with a verification record" width="900">
+  <img src="docs/method.png" alt="Worked example: three candidate rollouts report FY2025 revenue; the Checker settles which source applies (draft vs final report), the Challenger tests the unit every rollout shared (USD vs EUR); the Reviewer reviews both records and delivers a corrected report with a verification record" width="900">
 </p>
 
-Rollouts of one model either disagree on a claim or agree on it, and the two
-cases call for different checks:
+The harness has five roles:
 
-* **Disagreement → resolve.** The alternatives are already on the table. The
-  *resolver* picks the check that best separates them, runs it against the
+| Role | What it does | Name in the code and the files |
+|---|---|---|
+| **Worker** | Makes one try at the task. Its output is a *rollout*. | `rollouts/rNN/` |
+| **Checker** | Takes the claims on which the rollouts disagree, runs the check that best separates them, and removes the candidates the evidence contradicts. | `elim/`, `ledger_elim.json`, the `resolve-*` skills |
+| **Challenger** | Takes the claims on which all rollouts agree and tries to show that they are wrong. | `fals/`, `ledger_fals.json`, the `falsify-*` skills |
+| **Reviewer** | Reads the task, the rollouts and both records. Names a base rollout, a revision plan and the claims left open. | `ADJUDICATE` prompt, `finish.json` |
+| **Fixer** | Builds the final artifact from the plan. | `REPAIR` prompt, `repair.json`, the `repair-*` skills, `out/deliverables/` |
+
+The Worker is an agent that runs before the harness. The other four roles are
+turns of the verifier model. Rollouts of one model either disagree on a claim
+or agree on it, and the two cases call for different checks:
+
+* **Disagreement → check.** The alternatives are already on the table. The
+  *Checker* picks the check that best separates them, runs it against the
   environment, and eliminates the candidates the evidence contradicts.
 * **Consensus → challenge.** Agreement is not evidence: rollouts share a
-  model and therefore blind spots. The *challenger* looks for ways a shared
+  model and therefore blind spots. The *Challenger* looks for ways a shared
   value, a shared reading, or a shared omission could be wrong, and tests
   them.
 
 Each task runs four model turns in three mutually isolated sessions:
 
 ```
-materialized task ──► resolver    (own session) ──► ledger_elim.json
-                 └──► challenger  (own session) ──► ledger_fals.json
+materialized task ──► Checker     (own session) ──► ledger_elim.json
+                 └──► Challenger  (own session) ──► ledger_fals.json
                               │   (run concurrently; neither sees the other)
                               ▼
-                  adjudication (fresh session: both records + task + rollouts)
+                  Reviewer (fresh session: both records + task + rollouts)
                               │        └─► finish.json  {base, work[], open[]}
                               ▼
-                  delivery (same session) ──► out/deliverables/ + repair.json
+                  Fixer (same session) ──► out/deliverables/ + repair.json
 ```
 
-Adjudication names a **base** rollout, an evidence-backed **revision plan**
+The Reviewer names a **base** rollout, an evidence-backed **revision plan**
 (`work`), and the claims the evidence left **unresolved** (`open`). Selection,
 revision and reconstruction are one knob: an empty plan returns the base
 unchanged, a non-empty plan revises it, and `base: "none"` rebuilds the artifact
@@ -288,7 +301,7 @@ The driver writes the two investigation records (`elim/`, `fals/`,
 `ledger_*.json`), `finish.json`, `repair.json`, `driver.log`, the model
 transcripts under `session/` and the result under `out/deliverables/` into the
 task directory. `--contract pick-only` stops
-after adjudication (selection only), `--no-skills` runs with an empty skill
+after the Reviewer (selection only), `--no-skills` runs with an empty skill
 library, `--skill <dir>` (or `--skill=<dir>`, like every other option) swaps in another library, `--skills-mode auto` lets the
 verifier choose which skills to read (see "Skills"), and `--env none` runs without the jail (debugging only, and required with `--provider claude-code`).
 
@@ -391,7 +404,7 @@ the turn ends.
 ## Native environments (optional)
 
 By default every turn runs in the host jail. With `--env native` the
-adjudication and delivery turns run inside a fresh container of the
+Reviewer and Fixer turns run inside a fresh container of the
 benchmark's own task image, so the verifier revises the artifact with the
 interpreter, libraries and tools the rollouts were produced with; the two
 investigations stay in the jail. `--env native-full` runs the investigations
@@ -448,9 +461,9 @@ dependencies (`harness/env/derive.ts` adds it to WorkBuddy's task images).
 A skill is a short text (optionally with scripts) describing a reusable
 failure mode and how to check for it; skills never contain task-specific
 answers. They are organised by phase: `evidence-*` (tools for reading and comparing artifacts;
-every phase), `resolve-*` (what evidence settles a disagreement; resolver),
-`falsify-*` (how a consensus can be wrong; challenger) and `repair-*` (how to
-revise an artifact without breaking it; delivery). Adjudication receives only
+every phase), `resolve-*` (what evidence settles a disagreement; Checker),
+`falsify-*` (how a consensus can be wrong; Challenger) and `repair-*` (how to
+revise an artifact without breaking it; Fixer). The Reviewer receives only
 the `evidence-*` skills.
 
 `--skills-mode` (driver and runner) selects how skills reach a turn:

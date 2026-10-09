@@ -6,6 +6,9 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- README: the roles are named Worker, Checker, Challenger, Reviewer and Fixer, with a table that maps each name to its code and file names. The code, the prompts and the output files keep their names (`elim`, `fals`, `ADJUDICATE`, `REPAIR`). The two figures still show the earlier names; the README text says which is which.
+
 ## [0.2.0] - 2026-10-09
 
 ### Changed
