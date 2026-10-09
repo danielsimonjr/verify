@@ -29,11 +29,11 @@ import { harnessCommand, isMain } from "./runtime.js";
 import { renderViews } from "./views.js";
 
 /**
- * Tasks a lane runs at once. The Claude Code lanes default low: a subscription's usage limit is shared
- * with every other Claude Code session of the account, so they start at 2 and `--lane-max haiku=4` raises one.
+ * Tasks a lane runs at once. Every lane runs Claude Code, and a subscription's usage limit is shared with
+ * every other Claude Code session of the account, so the caps stay low: the two larger models start at 2,
+ * haiku and sonnet at 4. `--lane-max fable=3` changes one.
  */
-// Every lane draws on one Claude Code usage limit, so the caps stay low. The two larger models start lowest.
-const DEFAULT_LANE_MAX: Record<string, number> = { flash: 2, opus: 2, haiku: 4, sonnet: 4 };
+const DEFAULT_LANE_MAX: Record<string, number> = { fable: 2, opus: 2, haiku: 4, sonnet: 4 };
 const DEFAULT_CELL_CAP: Record<string, number> = {
   apex: 8,
   wb: 10,
@@ -120,8 +120,8 @@ interface RunnerArgs {
   runName: string;
   contract: string;
   lane?: string;
-  /** `--max-flash`, an alias of `--lane-max flash=N`. */
-  maxFlash?: number;
+  /** `--max-fable`, an alias of `--lane-max fable=N`. */
+  maxFable?: number;
   /** `--max-opus`, an alias of `--lane-max opus=N`. */
   maxOpus?: number;
   laneMax: Record<string, number>;
@@ -318,7 +318,7 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
         "run-name": { type: "string" },
         contract: { type: "string", default: "artifact" },
         lane: { type: "string" },
-        "max-flash": { type: "string" },
+        "max-fable": { type: "string" },
         "max-opus": { type: "string" },
         "lane-max": { type: "string", multiple: true },
         env: { type: "string" },
@@ -352,7 +352,7 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
       runName: String(values["run-name"]),
       contract: String(values.contract ?? "artifact"),
       lane: values.lane as string | undefined,
-      maxFlash: optionalPositive("max-flash", values["max-flash"]),
+      maxFable: optionalPositive("max-fable", values["max-fable"]),
       maxOpus: optionalPositive("max-opus", values["max-opus"]),
       laneMax: parseLaneMax((values["lane-max"] as string[] | undefined) ?? []),
       env: envOption(values.env as string | undefined),
@@ -454,14 +454,14 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
       process.stderr.write(`error: unknown bench '${bench}'\n`);
       return 2;
     }
-    if (!isLane(pool) && !args.lane) {
+    if (!isLane(pool) && !args.lane && !Object.hasOwn(config.POOL_LANES, pool)) {
       process.stderr.write(`error: pool '${pool}' names no lane; pass --lane\n`);
       return 2;
     }
   }
   const laneOf: Record<string, string> = {};
   for (const [, pool] of cells) {
-    laneOf[pool] = args.lane ?? pool;
+    laneOf[pool] = args.lane ?? (isLane(pool) ? pool : config.POOL_LANES[pool]!);
   }
   const driverArgs = ["--contract", args.contract];
   if (args.turnTimeout) driverArgs.push("--turn-timeout", String(args.turnTimeout));
@@ -525,7 +525,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
       DEFAULT_LANE_MAX[lane] ?? Math.max(...Object.values(DEFAULT_LANE_MAX)),
     ]),
   );
-  if (args.maxFlash !== undefined) laneMax.flash = args.maxFlash;
+  if (args.maxFable !== undefined) laneMax.fable = args.maxFable;
   if (args.maxOpus !== undefined) laneMax.opus = args.maxOpus;
   Object.assign(laneMax, args.laneMax);
 

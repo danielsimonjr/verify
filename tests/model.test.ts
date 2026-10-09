@@ -829,7 +829,7 @@ describe("preflight and pi registry", () => {
 
 describe("runner flag merge", () => {
   test("a local provider replaces the lane model and drops its thinking level", () => {
-    const flags = flagsForLane("flash", ["--contract", "artifact", "--provider", "ollama", "--model", "qwen"]);
+    const flags = flagsForLane("fable", ["--contract", "artifact", "--provider", "ollama", "--model", "qwen"]);
     expect(flags).toEqual(["--contract", "artifact", "--provider", "ollama", "--model", "qwen"]);
     expect(flagValue(flags, "--provider")).toBe("ollama");
     const opus = flagsForLane("opus", ["--contract", "artifact"]);

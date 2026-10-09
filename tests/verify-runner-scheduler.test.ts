@@ -77,7 +77,7 @@ describe("runner scheduling", () => {
     for (const k of keys) addTask(sb.dataDir, "sb2", "flash", k);
 
     const t0 = Date.now();
-    const code = await main(["--cells", "sb2:flash", "--run-name", "run", "--env", "none", "--lane-max", "flash=4"], {
+    const code = await main(["--cells", "sb2:flash", "--run-name", "run", "--env", "none", "--lane-max", "fable=4"], {
       dataDir: sb.dataDir,
       runsDir: sb.runsDir,
       driverCommand: stubDriver(1000),
@@ -108,7 +108,7 @@ describe("runner scheduling", () => {
 
   test("an explicit known --lane runs a pool that names no lane", async () => {
     addTask(sb.dataDir, "sb2", "mine", "t1");
-    const code = await main(["--cells", "sb2:mine", "--lane", "flash", "--run-name", "run", "--env", "none"], {
+    const code = await main(["--cells", "sb2:mine", "--lane", "fable", "--run-name", "run", "--env", "none"], {
       dataDir: sb.dataDir,
       runsDir: sb.runsDir,
       driverCommand: stubDriver(10),

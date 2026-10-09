@@ -6,7 +6,11 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-09
+
 ### Changed
+- The lane `flash` is renamed `fable`, after the model it runs (`claude-fable-5-1`). `--max-flash` becomes `--max-fable`, and `--lane-max flash=N` is an unknown-lane error.
+- New `POOL_LANES` in `harness/config.ts`: a pool whose name is not a lane takes its lane from it. The archived `flash` pools (Gemini 3.5 Flash rollouts) keep their name and run on the `fable` lane. `--lane` overrides this.
 - README: the roles are named Worker, Checker, Challenger, Reviewer and Fixer, with a table that maps each name to its code and file names. The code, the prompts and the output files keep their names (`elim`, `fals`, `ADJUDICATE`, `REPAIR`). The two figures still show the earlier names; the README text says which is which.
 
 ## [0.2.0] - 2026-10-09

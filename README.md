@@ -182,6 +182,9 @@ generated it. The four lanes are defined in
 `harness/config.ts` (`LANES`) and all run through Claude Code. Edit them or pass
 `--provider`/`--model` to the driver to use other models, for example
 `--provider anthropic --model claude-opus-4-8` with `ANTHROPIC_API_KEY` set.
+A pool whose name is not a lane takes its lane from `POOL_LANES`: the archived
+`flash` pools (Gemini 3.5 Flash rollouts) run on the `fable` lane. `--lane`
+overrides this.
 The two options below were the lanes of the paper. They stay available as
 driver options, but no lane uses them.
 
@@ -212,7 +215,7 @@ driver options, but no lane uses them.
   bun harness/cli.ts driver <task-dir> --provider llamacpp --model model.gguf --env none
   ```
 
-* **Claude Code** (all four lanes: `flash` is `claude-fable-5-1`, `opus` is `claude-opus-5-5`, `haiku` is `claude-haiku-5-5`, `sonnet` is `claude-sonnet-5-5`): the `claude` command-line program,
+* **Claude Code** (all four lanes: `fable` is `claude-fable-5-1`, `opus` is `claude-opus-5-5`, `haiku` is `claude-haiku-5-5`, `sonnet` is `claude-sonnet-5-5`): the `claude` command-line program,
   signed in on the host, runs each turn. No pi runtime and no API key are
   needed. See [Claude Code as the verifier](#claude-code-as-the-verifier).
 
@@ -269,7 +272,7 @@ bun harness/cli.ts runner --run-name demo --cells sb2:haiku --env none --lane-ma
 `model-check` prints the CLI version, the model and the credential source.
 
 * `--env none` is required. The jail replaces `$HOME`, so Claude Code finds no login in it, and the containers run pi only. `--env jail`, `native` and `native-full` stop with an error. Without the jail, the verifier's Bash tool runs on the host with the permissions of the user who starts the driver: run it on a host where that is acceptable.
-* The `flash` and `opus` lanes start at two concurrent drivers each and the `haiku` and `sonnet` lanes at four, because every Claude Code session of the account counts against one usage limit.
+* The `fable` and `opus` lanes start at two concurrent drivers each and the `haiku` and `sonnet` lanes at four, because every Claude Code session of the account counts against one usage limit.
 * When Claude Code reports a usage limit, the driver exits with code 75. The runner stops that lane and marks the queued tasks `lane-stopped`.
 * Windows is supported for this provider. Install Python 3 with `openpyxl` and `python-docx` for the repair turn.
 
@@ -440,7 +443,7 @@ dependencies (`harness/env/derive.ts` adds it to WorkBuddy's task images).
 * Concurrency: a driver holds up to two model sessions (the investigations run
   concurrently). Lane limits are a shared budget: a second runner on the same
   host must be given the same lane limits (`--lane-max <lane>=N`, repeatable;
-  `--max-flash` and `--max-opus` are aliases), since each counts the
+  `--max-fable` and `--max-opus` are aliases), since each counts the
   other's drivers.
 * Grading containers: `wb` and `wsb` grade in networked containers; churning
   more than about twenty short-lived ones at once destabilises the host's
@@ -453,8 +456,8 @@ dependencies (`harness/env/derive.ts` adds it to WorkBuddy's task images).
   the jail and says so in `driver.log`. Long-lived task containers scale to
   hundreds without trouble.
 * Budgets: `--turn-timeout` (1800 s) caps one model turn, `--task-timeout`
-  (3600 s) the whole task; the flash lane on spreadsheet tasks regularly uses
-  the full turn budget in an investigation.
+  (3600 s) the whole task; the Gemini 3.5 Flash verifier of the paper's runs regularly used
+  the full turn budget in an investigation on spreadsheet tasks.
 
 ## Skills
 

@@ -58,7 +58,7 @@ describe("runner flag merge matches the driver's parser", () => {
   for (const vector of vectors) {
     test(`flagValue and the driver read the same final values: ${vector.join(" ")}`, () => {
       const lane = ["--contract", "artifact", ...vector];
-      for (const flags of [lane, flagsForLane("opus", lane), flagsForLane("flash", lane)]) {
+      for (const flags of [lane, flagsForLane("opus", lane), flagsForLane("fable", lane)]) {
         const args = driverView(flags);
         const rawProvider = flagValue(flags, "--provider");
         expect(args.provider).toBe(canonicalLocalProvider(rawProvider) ?? rawProvider);

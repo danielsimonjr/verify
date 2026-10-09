@@ -77,7 +77,7 @@ function peak(cell: string, keys: string[]): number {
 
 describe("the Claude Code lanes", () => {
   test("every lane names a full model id, so a run does not move with an alias", () => {
-    expect(config.LANES.flash).toEqual(["--provider", "claude-code", "--model", "claude-fable-5-1"]);
+    expect(config.LANES.fable).toEqual(["--provider", "claude-code", "--model", "claude-fable-5-1"]);
     expect(config.LANES.opus).toEqual(["--provider", "claude-code", "--model", "claude-opus-5-5"]);
     expect(config.LANES.haiku).toEqual(["--provider", "claude-code", "--model", "claude-haiku-5-5"]);
     expect(config.LANES.sonnet).toEqual(["--provider", "claude-code", "--model", "claude-sonnet-5-5"]);
@@ -91,8 +91,8 @@ describe("the Claude Code lanes", () => {
     ]);
   });
 
-  test("the four lanes are flash, opus, haiku and sonnet, and each runs Claude Code", () => {
-    expect(Object.keys(config.LANES)).toEqual(["flash", "opus", "haiku", "sonnet"]);
+  test("the four lanes are fable, opus, haiku and sonnet, and each runs Claude Code", () => {
+    expect(Object.keys(config.LANES)).toEqual(["fable", "opus", "haiku", "sonnet"]);
     for (const flags of Object.values(config.LANES)) expect(flags.slice(0, 2)).toEqual(["--provider", "claude-code"]);
   });
 
@@ -109,10 +109,28 @@ describe("the Claude Code lanes", () => {
     expect(flags.slice(flags.indexOf("--env"), flags.indexOf("--env") + 2)).toEqual(["--env", "none"]);
   });
 
-  test("--env reaches the driver of the flash lane too", async () => {
+  test("--env reaches the driver of the fable lane too", async () => {
     await run("sb2:flash", ["t1"], ["--env", "none"]);
     const { flags } = launchOf("sb2_flash", "t1");
     expect(flags.slice(flags.indexOf("--env"), flags.indexOf("--env") + 2)).toEqual(["--env", "none"]);
+  });
+
+  test("an archived flash pool runs on the fable lane, and --lane overrides that", async () => {
+    const { code, stdout } = await run("sb2:flash", ["t1"], ["--env", "none"]);
+    expect(code).toBe(0);
+    const { flags } = launchOf("sb2_flash", "t1");
+    expect(flags.slice(flags.indexOf("--provider"), flags.indexOf("--provider") + 4)).toEqual([
+      "--provider",
+      "claude-code",
+      "--model",
+      "claude-fable-5-1",
+    ]);
+    expect(JSON.parse(readFileSync(join(sb.runsDir, "run", "sb2_flash", "run.json"), "utf8")).lane).toBe("fable");
+    expect(stdout).toContain("sb2/flash");
+    sb.cleanup();
+    sb = makeSandbox();
+    await run("sb2:flash", ["t1"], ["--env", "none", "--lane", "haiku"]);
+    expect(launchOf("sb2_flash", "t1").flags).toContain("claude-haiku-5-5");
   });
 
 });
@@ -120,14 +138,14 @@ describe("the Claude Code lanes", () => {
 describe("--env none applies to every cell, and the runner warns about the cells that lose the jail", () => {
   test("a pi cell next to a Claude Code cell is named in a warning", async () => {
     addTask(sb.dataDir, "sb2", "flash", "t1");
-    // No shipped lane runs pi, so the test makes the flash lane a pi lane for this one run.
-    const shipped = config.LANES.flash;
-    config.LANES.flash = ["--provider", "ollama", "--model", "qwen"];
+    // No shipped lane runs pi, so the test makes the fable lane (which checks the flash pool) a pi lane for this one run.
+    const shipped = config.LANES.fable;
+    config.LANES.fable = ["--provider", "ollama", "--model", "qwen"];
     let result;
     try {
       result = await run("sb2:haiku", ["t1"], ["--cells", "sb2:flash", "--env", "none"]);
     } finally {
-      config.LANES.flash = shipped;
+      config.LANES.fable = shipped;
     }
     const { code, stderr } = result;
     expect(code).toBe(0);
@@ -181,30 +199,30 @@ describe("a lane that runs Claude Code needs --env none, and the runner says so 
 });
 
 describe("concurrency caps", () => {
-  test("the defaults: haiku and sonnet start at 4, flash and opus at 2", async () => {
+  test("the defaults: haiku and sonnet start at 4, fable and opus at 2", async () => {
     const { stdout } = await run("sb2:haiku", ["t1"], ["--env", "none"]);
-    expect(laneMax(stdout)).toEqual({ flash: 2, opus: 2, haiku: 4, sonnet: 4 });
+    expect(laneMax(stdout)).toEqual({ fable: 2, opus: 2, haiku: 4, sonnet: 4 });
   });
 
   test("--lane-max raises one lane, takes a list, and may repeat", async () => {
     let r = await run("sb2:haiku", ["t1"], ["--env", "none", "--lane-max", "haiku=6"]);
-    expect(laneMax(r.stdout)).toMatchObject({ haiku: 6, sonnet: 4, flash: 2 });
+    expect(laneMax(r.stdout)).toMatchObject({ haiku: 6, sonnet: 4, fable: 2 });
     sb.cleanup();
     sb = makeSandbox();
     r = await run("sb2:haiku", ["t1"], ["--env", "none", "--lane-max", "haiku=3,sonnet=5", "--lane-max", "opus=7"]);
-    expect(laneMax(r.stdout)).toEqual({ flash: 2, opus: 7, haiku: 3, sonnet: 5 });
+    expect(laneMax(r.stdout)).toEqual({ fable: 2, opus: 7, haiku: 3, sonnet: 5 });
   });
 
-  test("--max-flash and --max-opus still work, and --lane-max wins over them", async () => {
-    const r = await run("sb2:flash", ["t1"], ["--env", "none", "--max-flash", "3", "--max-opus", "4"]);
-    expect(laneMax(r.stdout)).toMatchObject({ flash: 3, opus: 4 });
+  test("--max-fable and --max-opus work, and --lane-max wins over them", async () => {
+    const r = await run("sb2:flash", ["t1"], ["--env", "none", "--max-fable", "3", "--max-opus", "4"]);
+    expect(laneMax(r.stdout)).toMatchObject({ fable: 3, opus: 4 });
     sb.cleanup();
     sb = makeSandbox();
-    const w = await run("sb2:flash", ["t1"], ["--env", "none", "--max-flash", "3", "--lane-max", "flash=6"]);
-    expect(laneMax(w.stdout).flash).toBe(6);
+    const w = await run("sb2:flash", ["t1"], ["--env", "none", "--max-fable", "3", "--lane-max", "fable=6"]);
+    expect(laneMax(w.stdout).fable).toBe(6);
   });
 
-  for (const bad of ["fish=2", "haiku", "haiku=", "haiku=0", "haiku=-1", "haiku=2.5", "haiku=two", "=3", `haiku=${"9".repeat(400)}`, "haiku=9007199254740993"]) {
+  for (const bad of ["fish=2", "flash=2", "haiku", "haiku=", "haiku=0", "haiku=-1", "haiku=2.5", "haiku=two", "=3", `haiku=${"9".repeat(400)}`, "haiku=9007199254740993"]) {
     test(`--lane-max ${bad.slice(0, 30)} is an argument error`, async () => {
       const { code, stderr } = await run("sb2:haiku", ["t1"], ["--env", "none", "--lane-max", bad]);
       expect(code).toBe(2);

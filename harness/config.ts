@@ -97,11 +97,17 @@ export type Bench = (typeof BENCHES)[number];
 export const LANES: Record<string, string[]> = {
   // Every lane runs through Claude Code (docs/claude-code.md). Full model ids, not aliases,
   // so a run stays reproducible when an alias moves to a newer model.
-  flash: ["--provider", "claude-code", "--model", "claude-fable-5-1"],
+  fable: ["--provider", "claude-code", "--model", "claude-fable-5-1"],
   opus: ["--provider", "claude-code", "--model", "claude-opus-5-5"],
   haiku: ["--provider", "claude-code", "--model", "claude-haiku-5-5"],
   sonnet: ["--provider", "claude-code", "--model", "claude-sonnet-5-5"],
 };
+
+/**
+ * The lane that checks a pool whose name is not a lane. The archived `flash` pools hold Gemini 3.5 Flash
+ * rollouts; no lane runs Gemini, so the `fable` lane checks them. `--lane` overrides this.
+ */
+export const POOL_LANES: Record<string, string> = { flash: "fable" };
 
 /** The upstream benchmark checkout. Throws with instructions when unset. */
 export function benchRoot(): string {

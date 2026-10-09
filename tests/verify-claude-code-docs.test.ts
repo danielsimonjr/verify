@@ -106,7 +106,7 @@ describe("docs/claude-code.md says what the code does", () => {
   test("the tool names, the exit code and the lane models match the code", () => {
     for (const claude of new Set(Object.values(PI_TO_CLAUDE_TOOL))) expect(CLAUDE_DOC).toContain(claude);
     expect(CLAUDE_DOC).toContain(`code ${USAGE_LIMIT_EXIT}`);
-    for (const lane of ["flash", "opus", "haiku", "sonnet"]) expect(CLAUDE_DOC).toContain(config.LANES[lane]![3]!);
+    for (const lane of ["fable", "opus", "haiku", "sonnet"]) expect(CLAUDE_DOC).toContain(config.LANES[lane]![3]!);
     const backoff = /const RETRY_BACKOFF = \[([\d, ]+)\]/.exec(DRIVER);
     expect(backoff).not.toBeNull();
     const seconds = backoff![1]!.split(",").map((s) => s.trim());

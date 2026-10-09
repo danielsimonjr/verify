@@ -32,7 +32,7 @@ describe("runner --lane", () => {
     const hit = await runner(["--cells", "sb2:flash", "--run-name", "r", "--lane", "nope"]);
     expect(hit.code).toBe(2);
     expect(hit.stderr).toMatch(/unknown lane 'nope'/);
-    expect(hit.stderr).toContain("flash");
+    expect(hit.stderr).toContain("known: fable, opus, haiku, sonnet");
     expect(hit.runs).toEqual([]);
   });
 
@@ -98,7 +98,7 @@ describe("runner path segments", () => {
   for (const pool of ["..", "../x", "a/b", "a\b", ".hidden", "a:b", ""]) {
     test(`a cell pool ${JSON.stringify(pool)} is rejected`, async () => {
       addTask(sb.dataDir, "sb2", "x", "t1"); // <data>/sb2/../x/tasks resolves here
-      const hit = await runner(["--cells", `wb:${pool}`, "--lane", "flash", "--run-name", "r"]);
+      const hit = await runner(["--cells", `wb:${pool}`, "--lane", "fable", "--run-name", "r"]);
       expect(hit.code).toBe(2);
       expect(hit.stderr).toMatch(/pool/);
       expect(hit.runs).toEqual([]);
@@ -172,8 +172,8 @@ describe("runner numeric options", () => {
   // Number("abc") is NaN and every one of these then fails quietly: a lane max of NaN or 0 starts
   // no task, and a NaN --sample or --fraction means "no sampling": the whole task set runs.
   const bad: [string, string][] = [
-    ["--max-flash", "0"],
-    ["--max-flash", "abc"],
+    ["--max-fable", "0"],
+    ["--max-fable", "abc"],
     ["--max-opus", "-1"],
     ["--max-opus", "2.5"],
     ["--limit", "-1"],
@@ -207,7 +207,7 @@ describe("runner numeric options", () => {
         main(
           [
             "--cells", "sb2:flash", "--run-name", "r", "--env", "none",
-            "--max-flash", "3", "--max-opus", "4", "--limit", "5", "--sample", "0", "--fraction", "1",
+            "--max-fable", "3", "--max-opus", "4", "--limit", "5", "--sample", "0", "--fraction", "1",
             "--skip-inflight", "0", "--turn-timeout", "60", "--task-timeout", "600",
           ],
           { dataDir: sb.dataDir, runsDir: sb.runsDir, driverCommand: () => [process.execPath, "-e", ""] },
@@ -217,7 +217,7 @@ describe("runner numeric options", () => {
     );
     expect(result).toBe(1);
     const run = JSON.parse(readFileSync(join(sb.runsDir, "r", "sb2_flash", "run.json"), "utf8"));
-    expect(run.lane_max).toMatchObject({ flash: 3, opus: 4 });
+    expect(run.lane_max).toMatchObject({ fable: 3, opus: 4 });
     expect(run.driver_args).toEqual(expect.arrayContaining(["--turn-timeout", "60", "--task-timeout", "600"]));
   });
 });
