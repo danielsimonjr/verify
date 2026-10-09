@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-09
+
 ### Added
 - `docs/specs/batching-and-workers.md`: the spec for `--context-size auto`, `veriharness batch` and `veriharness workers`, and for the verify-mcp tools that wrap them.
 - `--context-size auto` on `driver`, `runner` and `model-check`, and `--role-context-size ROLE=auto`. `auto` uses the window the server reports: a loaded Ollama model (`/api/ps`), then `num_ctx`, then llama.cpp's `n_ctx`. A Claude Code model reads `CLAUDE_CODE_WINDOWS` in `harness/config.ts` (1,000,000 tokens for each lane model, from Anthropic's model overview). An explicit `auto` also overrides `VERIHARNESS_CONTEXT_SIZE`.
