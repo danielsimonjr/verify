@@ -9,7 +9,7 @@ All notable changes to this project are recorded here. The format follows
 ## [0.4.1] - 2026-10-09
 
 ### Added
-- `.github/workflows/publish.yml`: a published GitHub release publishes the package to npm, with provenance. `workflow_dispatch` with a `tag` input runs the same job again for a tag from v0.4.1 on. The release tag must name `package.json`'s version (`scripts/publish-version-guard.mjs`), and a version already on npm is skipped. The job needs the repository secret `NPM`.
+- `.github/workflows/publish.yml`: a pushed `v*` tag publishes the package to npm, with provenance. `workflow_dispatch` with a `tag` input runs the same job again for a tag from v0.4.1 on. The tag must name `package.json`'s version (`scripts/publish-version-guard.mjs`), and a version already on npm is skipped. The job needs the repository secret `NPM`.
 
 ## [0.4.0] - 2026-10-09
 
