@@ -20,10 +20,13 @@
 
 import { parseStream } from "../claude/stream.js";
 
+/** How the JSON sat in the last message: the whole text, one whole fence, or inside prose. */
 export type DeliverableForm = "pure" | "fenced" | "embedded";
 
+/** Why a rollout did not complete; null when it did. */
 export type WorkerError = "timeout" | "no-result" | "no-json" | "start-failed" | "usage-limit" | null;
 
+/** `trajectory/worker.json`: the numbers and the outcome of one rollout. */
 export interface WorkerRecord {
   rollout: string;
   exit: number | null;
@@ -36,6 +39,7 @@ export interface WorkerRecord {
   error: WorkerError;
 }
 
+/** What an event stream says about a session. */
 export interface StreamStats {
   /** The text of the last assistant message. */
   finalText: string;

@@ -19,6 +19,7 @@
 
 import type { Item } from "./split.js";
 
+/** The budget and the estimate parameters of one packing run. */
 export interface PackOptions {
   /** Tokens one batch may use. */
   budget: number;
@@ -32,6 +33,7 @@ export interface PackOptions {
   maxItems?: number;
 }
 
+/** One batch: its name, its items in file order and its estimate. */
 export interface PackedBatch {
   name: string;
   items: Item[];
@@ -62,6 +64,7 @@ export function batchName(index: number, count: number): string {
   return `b${String(index).padStart(width, "0")}`;
 }
 
+/** Pack `items` in file order into batches that each fit `o.budget`. Throws FixedOverBudget. */
 export function pack(items: readonly Item[], o: PackOptions): PackedBatch[] {
   const fixed = estimateTokens(o.fixedChars, 0, o);
   if (fixed > o.budget) throw new FixedOverBudget(fixed, o.budget);

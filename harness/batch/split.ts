@@ -26,17 +26,20 @@
 
 export type SplitRule = { kind: "jsonl" } | { kind: "heading"; regex: RegExp } | { kind: "blank-line" };
 
+/** One item of an items file: its id and its original text. */
 export interface Item {
   id: string;
   text: string;
 }
 
+/** The items of a file and the length of the text before the first one. */
 export interface SplitResult {
   items: Item[];
   /** Characters before the first item: the heading rule's preamble. Zero for the other rules. */
   preambleChars: number;
 }
 
+/** Parse `--split`: `jsonl`, `blank-line` or `heading:REGEX`. Throws on anything else. */
 export function parseSplitRule(raw: string): SplitRule {
   if (raw === "jsonl") return { kind: "jsonl" };
   if (raw === "blank-line") return { kind: "blank-line" };
@@ -52,6 +55,7 @@ export function parseSplitRule(raw: string): SplitRule {
   throw new Error(`--split '${raw}': expected jsonl, blank-line or heading:REGEX`);
 }
 
+/** Split `text` into items by `rule`. Throws on a duplicate id. */
 export function splitItems(text: string, rule: SplitRule): SplitResult {
   const normal = text.replace(/^﻿/, "").replace(/\r\n/g, "\n");
   const result =

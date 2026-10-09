@@ -37,6 +37,7 @@ const USAGE =
   "         [--count N] [--tools LIST] [--deliverable NAME] [--prompt FILE] [--only NAME]...\n" +
   "         [--timeout S] [--max-parallel N] [--env none] [--temperature T] [--thinking L] [--max-tokens N]\n";
 
+/** What a test replaces: the local server fetch and the worker runner. */
 export interface WorkersDeps extends BackendDeps {
   runWorker?: typeof runWorker;
 }
@@ -102,6 +103,7 @@ async function pool<T>(jobs: readonly T[], size: number, work: (job: T) => Promi
   await Promise.all(Array.from({ length: Math.min(size, jobs.length) }, lane));
 }
 
+/** Run `veriharness workers` on `argv`; returns 0, 1 when a rollout has an error, 2 on an input error, or 75 on a usage limit. */
 export async function main(argv: string[] = process.argv.slice(2), deps: WorkersDeps = {}): Promise<number> {
   let values;
   let positionals;

@@ -39,6 +39,7 @@ import {
   type WorkerRecord,
 } from "./record.js";
 
+/** The model of a worker and its pi tuning options. */
 export interface WorkerModel {
   provider: string;
   model: string;
@@ -49,6 +50,7 @@ export interface WorkerModel {
   maxTokens?: number;
 }
 
+/** One rollout to run: the batch, the rollout name, the prompt, the model and the limits. */
 export interface WorkerJob {
   batchDir: string;
   rollout: string;
@@ -64,6 +66,7 @@ export interface WorkerJob {
   command?: readonly string[];
 }
 
+/** What a test replaces: the process runner. */
 export interface WorkerDeps {
   run?: typeof run;
 }
@@ -136,6 +139,7 @@ function runError(r: RunResult, claude: boolean, finalText: string): WorkerError
   return null;
 }
 
+/** Run one worker in a temp copy of the batch and write its rollout. The copy is deleted in every case. */
 export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<WorkerRecord> {
   const claude = isClaudeCodeProvider(job.model.provider);
   const out = join(job.batchDir, "rollouts", job.rollout);

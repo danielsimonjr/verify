@@ -122,13 +122,16 @@ delivered bundle must contain every file of its base under the same name.
 
 ```
 harness/
-  cli.ts           command dispatcher (driver, runner, score, materialize, grade, env-derive)
+  cli.ts           command dispatcher (driver, runner, score, materialize, grade, env-derive,
+                   model-check, batch, workers)
   driver.ts        one task: the four turns above
   runner.ts        many tasks: global work pool with per-model and per-benchmark caps; resumable
   score.ts         score a run against the archived pool (selection and final scores)
   config.ts        locations and model lanes; all host specifics come from the environment
   model/           local backends (Ollama, llama.cpp): HTTP client, preflight, pi registry
   claude/          the Claude Code runtime: turn runner, stream parser, preflight, session environment
+  batch/           split an items file into task folders that fit a token budget
+  workers/         run worker rollouts on each task folder, in isolated copies
   views.ts         plain-text views rendered beside binary artifacts (.cells.tsv, .text.txt)
   prompts/         CHARTER (system prompt), MISSION, the two investigation playbooks and
                    record formats, ADJUDICATE, REPAIR
@@ -259,6 +262,17 @@ bun harness/cli.ts driver <task-dir> --provider ollama --model qwen2.5-coder:7b 
 
 llama-server -m model.gguf --host 127.0.0.1 --port 8080 --jinja -c 32768
 bun harness/cli.ts driver <task-dir> --provider llamacpp --model model.gguf --env none
+```
+
+## Batches and workers
+
+A large check splits into task folders that each fit a token budget. Workers then write the rollouts that the driver checks. `--context-size auto` resolves each model's window, and `driver.log` records it for each role. Details are in [docs/batching.md](docs/batching.md).
+
+```bash
+bun harness/cli.ts batch --items todo.md --split "heading:^### TODO line (\d+)$" --spec task.md \
+  --shared CHANGELOG.md --prompt worker_prompt.md --provider ollama --model qwen3.5:9b-64k --out work
+bun harness/cli.ts workers work --provider ollama --model qwen3.5:9b-64k --count 3
+bun harness/cli.ts driver work/b01 --provider ollama --model qwen3.6:latest --env none
 ```
 
 ## Claude Code as the verifier

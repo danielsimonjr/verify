@@ -75,6 +75,7 @@ function itemsText(items: readonly Item[], rule: SplitRule): string {
   return items.map((i) => i.text).join(sep) + "\n";
 }
 
+/** Run `veriharness batch` on `argv`; returns the exit code (0, 1 on a failed write, 2 on an input error). */
 export async function main(argv: string[] = process.argv.slice(2), deps: BackendDeps = {}): Promise<number> {
   let tmp: string | null = null;
   try {

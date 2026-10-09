@@ -24,13 +24,16 @@ import { CLAUDE_CODE_WINDOWS, claudeCodeWindow } from "../config.js";
 import { createBackend, resolveLocalConfig, type BackendDeps, type ContextSize } from "./config.js";
 import { enforceContext } from "./prepare.js";
 
+/** Where a window came from: an explicit number, the server (loaded, num_ctx, n_ctx) or the Claude table. */
 export type WindowSource = "explicit" | "loaded" | "num_ctx" | "n_ctx" | "table";
 
+/** A context window in tokens and its source. */
 export interface ResolvedWindow {
   window: number;
   source: WindowSource;
 }
 
+/** The model whose window resolveWindow finds. */
 export interface WindowModel {
   provider: string;
   model: string;
@@ -38,6 +41,7 @@ export interface WindowModel {
   contextSize?: ContextSize;
 }
 
+/** The window of `m`: the explicit size once the server confirms it fits, else what the server or the table reports. */
 export async function resolveWindow(m: WindowModel, deps: BackendDeps = {}): Promise<ResolvedWindow> {
   if (isClaudeCodeProvider(m.provider)) return tableWindow(m);
   const config = resolveLocalConfig({

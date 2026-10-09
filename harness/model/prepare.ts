@@ -87,6 +87,7 @@ export async function prepareLocalProvider(config: LocalModelConfig, deps: Prepa
   };
 }
 
+/** Throw when the server reports no window, a window too small for pi, or one smaller than the size asked for. */
 export function enforceContext(config: LocalModelConfig, probe: ProbeResult, warnings: string[]): void {
   const have = probe.capabilities.contextSize;
   const want = config.contextSize;
