@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { CLAUDE_CODE_WINDOWS, LANES } from "../harness/config.ts";
+import { main as modelCheckMain } from "../harness/model/check.ts";
 import { parseContextSize, resolveLocalConfig } from "../harness/model/config.ts";
 import { ModelError } from "../harness/model/types.ts";
 import { resolveWindow } from "../harness/model/window.ts";
@@ -80,6 +81,7 @@ describe("resolveWindow", () => {
     const got = await resolveWindow({ provider: "claude-code", model: "claude-haiku-5-5" });
     expect(got).toEqual({ window: CLAUDE_CODE_WINDOWS["claude-haiku-5-5"]!, source: "table" });
     await expect(resolveWindow({ provider: "claude-code", model: "claude-nope-9" })).rejects.toThrow(/claude-nope-9/);
+    await expect(resolveWindow({ provider: "claude-code", model: "constructor" })).rejects.toThrow(/constructor/);
   });
 
   test("explicit number", async () => {
@@ -126,4 +128,33 @@ test("every lane model has a window", () => {
     const model = flags[flags.indexOf("--model") + 1]!;
     expect(CLAUDE_CODE_WINDOWS[model]).toBeGreaterThan(0);
   }
+});
+
+describe("model-check reports the window of a local model", () => {
+  async function check(argv: string[], fetch: (input: string | URL) => Promise<Response>) {
+    const outReal = process.stdout.write.bind(process.stdout);
+    let stdout = "";
+    process.stdout.write = ((c: string | Uint8Array) => ((stdout += String(c)), true)) as typeof process.stdout.write;
+    try {
+      const code = await modelCheckMain(argv, { fetch, retryDelayMs: 0 });
+      return { code, out: JSON.parse(stdout || "{}") as Record<string, unknown> };
+    } finally {
+      process.stdout.write = outReal;
+    }
+  }
+  const common = ["--provider", "ollama", "--model", "qwen:latest", "--base-url", BASE];
+
+  test("auto reports the loaded window", async () => {
+    const r = await check([...common, "--context-size", "auto"], ollama("qwen:latest", { running: 65536, numCtx: 32768 }));
+    expect(r.code).toBe(0);
+    expect(r.out.window).toBe(65536);
+    expect(r.out.windowSource).toBe("loaded");
+  });
+
+  test("an explicit size is the window, with source explicit", async () => {
+    const r = await check([...common, "--context-size", "8192"], ollama("qwen:latest", { numCtx: 32768 }));
+    expect(r.code).toBe(0);
+    expect(r.out.window).toBe(8192);
+    expect(r.out.windowSource).toBe("explicit");
+  });
 });

@@ -58,6 +58,7 @@ import {
 } from "./claude/index.js";
 import { Native, imageFor } from "./env/index.js";
 import { canonicalLocalProvider, materializePiHome, prepareLocalProvider, resolveLocalConfig, secondsToMs } from "./model/index.js";
+import type { FetchLike } from "./model/http.js";
 import { ROLES, describeRoles, parseRoleOptions, resolveRoles, roleKey, sharedServerWarnings, type Role, type RoleModel } from "./roles.js";
 import { isBun, isMain, runWithBudget } from "./runtime.js";
 import { isView } from "./views.js";
@@ -1117,7 +1118,9 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
     if (typeof nudgeTimeout === "object") return nudgeTimeout;
     const taskTimeout = positiveSeconds("--task-timeout", values["task-timeout"] as string | undefined, 3600);
     if (typeof taskTimeout === "object") return taskTimeout;
-    const contextSize = optionalNumber("context-size", values["context-size"] as string | undefined);
+    // `auto` is the same as no --context-size: the server's own window.
+    const rawContext = values["context-size"] as string | undefined;
+    const contextSize = rawContext?.trim().toLowerCase() === "auto" ? undefined : optionalNumber("context-size", rawContext);
     if (contextSize && typeof contextSize === "object") return contextSize;
     const temperature = optionalNumber("temperature", values.temperature as string | undefined);
     if (temperature && typeof temperature === "object") return temperature;
@@ -1197,6 +1200,8 @@ export interface DriverDeps {
   backoff?: readonly number[];
   /** Replaces the wait between Claude Code retries. */
   sleep?: (ms: number) => Promise<void>;
+  /** The fetch the local-model preflight uses (default: the global fetch). */
+  fetch?: FetchLike;
 }
 
 /** The agent of each role in one task. */
@@ -1333,10 +1338,12 @@ interface PiRole {
   provider: string | undefined;
   model: string | undefined;
   piHome: string | null;
+  /** The window the role runs with and where it came from; absent for a pi provider that is not local. */
+  context?: { window: number; source: string; serverWindow: number; serverSource: string };
 }
 
 /** Probe the local server of a local role and write the pi home that names its model. */
-async function prepareLocalRole(ws: string, args: DriverArgs, m: RoleModel, home: string): Promise<PiRole> {
+async function prepareLocalRole(ws: string, args: DriverArgs, m: RoleModel, home: string, fetch?: FetchLike): Promise<PiRole> {
   const prepared = await prepareLocalProvider(
     resolveLocalConfig({
       provider: m.provider,
@@ -1348,6 +1355,7 @@ async function prepareLocalRole(ws: string, args: DriverArgs, m: RoleModel, home
       contextSize: m.contextSize,
       timeoutMs: args.requestTimeout === undefined ? undefined : secondsToMs(args.requestTimeout, "request timeout"),
     }),
+    { fetch },
   );
   materializePiHome(home, prepared.piProvider);
   for (const warning of prepared.warnings) log(ws, `local model: ${warning}`);
@@ -1356,7 +1364,40 @@ async function prepareLocalRole(ws: string, args: DriverArgs, m: RoleModel, home
     `local model ${prepared.config.provider} ${prepared.model} at ${prepared.config.baseUrl} ` +
       `tools=${String(prepared.probe.capabilities.tools)}`,
   );
-  return { provider: prepared.config.provider, model: prepared.model, piHome: home };
+  // prepareLocalProvider has checked the window, so the probe reports one and an explicit size fits it.
+  const caps = prepared.probe.capabilities;
+  const serverWindow = caps.contextSize!;
+  const serverSource = caps.contextSource ?? "unknown";
+  const explicit = prepared.config.contextSize;
+  const context =
+    explicit === undefined
+      ? { window: serverWindow, source: serverSource, serverWindow, serverSource }
+      : { window: explicit, source: "explicit", serverWindow, serverSource };
+  return { provider: prepared.config.provider, model: prepared.model, piHome: home, context };
+}
+
+/**
+ * One `context:` line per role: the window it runs with and where that number came from. A role that
+ * asks for a size other than the loaded model's gets a warning: the harness sends no num_ctx, but
+ * another client of the same server can, and Ollama then reloads the model at that client's size.
+ */
+function logContext(ws: string, roles: Record<Role, RoleModel>, kinds: Record<Role, RuntimeKind>, piRoles: Map<string, PiRole>): void {
+  for (const role of ROLES) {
+    const m = roles[role];
+    const pi = kinds[role] === "pi" ? piRoles.get(roleKey(m)) : undefined;
+    const model = pi?.model ?? m.model;
+    const label = `${role}=${m.provider ?? "default"}:${model ?? "default"}`;
+    if (pi?.context) {
+      const c = pi.context;
+      log(ws, `context: ${label} window=${c.window} source=${c.source}`);
+      if (c.source === "explicit" && c.serverSource === "loaded" && c.window !== c.serverWindow) {
+        log(ws, `context: ${role} asks ${c.window}, the server runs ${model} at ${c.serverWindow}; a client that sends num_ctx may reload it`);
+      }
+      continue;
+    }
+    const table = kinds[role] === "claude-code" && model !== undefined ? config.claudeCodeWindow(model) : undefined;
+    log(ws, table === undefined ? `context: ${label} window=unknown source=none` : `context: ${label} window=${table} source=table`);
+  }
 }
 
 /** Run one task workspace; returns the exit code. */
@@ -1366,11 +1407,11 @@ export async function main(argv: string[] = process.argv.slice(2), deps: DriverD
     if (parsed.error === "HELP") {
       process.stdout.write(
         "usage: veriharness driver <ws> [--contract artifact|pick-only] [--provider P] [--model M] " +
-          "[--thinking T] [--base-url URL] [--context-size N] [--temperature N] [--max-tokens N] [--top-p N] " +
+          "[--thinking T] [--base-url URL] [--context-size N|auto] [--temperature N] [--max-tokens N] [--top-p N] " +
           "[--request-timeout S] [--skill NAME]... [--no-skills] [--skills-mode mounted|auto] " +
           "[--env jail|none|native|native-full] [--turn-timeout S] [--nudge-timeout S] [--task-timeout S] " +
           "[--pi-bin PATH] [--claude-bin PATH] [--role ROLE=PROVIDER:MODEL]... [--role-base-url ROLE=URL]... " +
-          "[--role-context-size ROLE=N]...\n" +
+          "[--role-context-size ROLE=N|auto]...\n" +
           "local providers: --provider ollama (default http://127.0.0.1:11434) or --provider llamacpp " +
           "(default http://127.0.0.1:8080). Both need --model. No API key.\n" +
           "Claude Code: --provider claude-code --model <full model id> --env none. Uses the login Claude Code " +
@@ -1427,12 +1468,14 @@ export async function main(argv: string[] = process.argv.slice(2), deps: DriverD
     }
     homes++;
     try {
-      piRoles.set(key, await prepareLocalRole(ws, args, m, join(ws, homes === 1 ? ".pi" : `.pi-${homes}`)));
+      piRoles.set(key, await prepareLocalRole(ws, args, m, join(ws, homes === 1 ? ".pi" : `.pi-${homes}`), deps.fetch));
     } catch (err) {
       process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
       return 2;
     }
   }
+
+  logContext(ws, roles, kinds, piRoles);
 
   const usesPi = piRoles.size > 0;
   const useJail = usesPi && args.env !== "none";

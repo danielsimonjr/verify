@@ -197,3 +197,30 @@ describe("veriharness model-check --provider claude-code, the command line", () 
     expect(r.stdout).toContain("--provider claude-code --model ID [--claude-bin PATH]");
   });
 });
+
+describe("model-check reports the window of a Claude model", () => {
+  async function check(model: string): Promise<Record<string, unknown>> {
+    const outReal = process.stdout.write.bind(process.stdout);
+    let stdout = "";
+    process.stdout.write = ((c: string | Uint8Array) => ((stdout += String(c)), true)) as typeof process.stdout.write;
+    try {
+      const deps = { claudeCommand: [process.execPath, STUB], env: envWith([{ action: { result: { text: "OK" } } }]) };
+      expect(await modelCheckMain(["--provider", "claude-code", "--model", model], deps)).toBe(0);
+    } finally {
+      process.stdout.write = outReal;
+    }
+    return JSON.parse(stdout) as Record<string, unknown>;
+  }
+
+  test("a lane model reads the window table", async () => {
+    const out = await check("claude-haiku-5-5");
+    expect(out.window).toBe(1_000_000);
+    expect(out.windowSource).toBe("table");
+  });
+
+  test("a model outside the table reports no window", async () => {
+    const out = await check(MODEL);
+    expect(out.window).toBeNull();
+    expect(out.windowSource).toBeNull();
+  });
+});

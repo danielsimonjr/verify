@@ -115,6 +115,11 @@ export const CLAUDE_CODE_WINDOWS: Readonly<Record<string, number>> = {
   "claude-sonnet-5-5": 1_000_000,
 };
 
+/** The table window of a Claude model id, or undefined. Inherited keys such as `constructor` are not ids. */
+export function claudeCodeWindow(model: string): number | undefined {
+  return Object.hasOwn(CLAUDE_CODE_WINDOWS, model) ? CLAUDE_CODE_WINDOWS[model] : undefined;
+}
+
 /**
  * The lane that checks a pool whose name is not a lane. The archived `flash` pools hold Gemini 3.5 Flash
  * rollouts; no lane runs Gemini, so the `fable` lane checks them. `--lane` overrides this.

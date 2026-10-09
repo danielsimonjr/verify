@@ -92,6 +92,8 @@ export function parseRoleOptions(
     if ("error" in parsed) return parsed;
     const spec = localRoleSpec("--role-context-size", parsed.role, out);
     if ("error" in spec) return spec;
+    // `auto` is the same as no option: the server's own window. It leaves no number in the role.
+    if (parsed.value.trim().toLowerCase() === "auto") continue;
     const n = /^\d+$/.test(parsed.value) ? Number(parsed.value) : NaN;
     if (!Number.isSafeInteger(n) || n <= MIN_CONTEXT) {
       return { error: `--role-context-size ${parsed.role}: needs a whole number above ${MIN_CONTEXT}, got '${parsed.value}'` };

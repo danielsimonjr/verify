@@ -28,14 +28,15 @@ import {
   isClaudeCodeProvider,
   modelCheck,
 } from "../claude/index.js";
+import { claudeCodeWindow } from "../config.js";
 import { isMain } from "../runtime.js";
-import { resolveLocalConfig, secondsToMs } from "./config.js";
+import { resolveLocalConfig, secondsToMs, type BackendDeps, type ContextSize } from "./config.js";
 import { prepareLocalProvider } from "./prepare.js";
 import { ModelError } from "./types.js";
 
 const USAGE =
   "usage: veriharness model-check --provider ollama|llamacpp --model NAME " +
-  "[--base-url URL] [--context-size N] [--temperature N] [--max-tokens N] [--top-p N] [--request-timeout S]\n" +
+  "[--base-url URL] [--context-size N|auto] [--temperature N] [--max-tokens N] [--top-p N] [--request-timeout S]\n" +
   "       veriharness model-check --provider claude-code --model ID [--claude-bin PATH] [--request-timeout S]\n";
 
 function optionalNumber(name: string, raw: string | undefined): number | undefined {
@@ -45,8 +46,19 @@ function optionalNumber(name: string, raw: string | undefined): number | undefin
   return n;
 }
 
+/** What a test replaces: the local server's fetch, and the Claude Code command and environment. */
+export interface CheckDeps extends BackendDeps {
+  claudeCommand?: readonly string[];
+  env?: NodeJS.ProcessEnv;
+}
+
+/** `auto` in any case, or a number that resolveLocalConfig checks. */
+function contextOption(raw: string | undefined): ContextSize | undefined {
+  return raw?.trim().toLowerCase() === "auto" ? "auto" : optionalNumber("context-size", raw);
+}
+
 /** `model-check --provider claude-code`: one isolated turn, then what the CLI reports about itself. */
-async function claudeCheck(values: Record<string, unknown>): Promise<number> {
+async function claudeCheck(values: Record<string, unknown>, deps: CheckDeps): Promise<number> {
   const model = typeof values.model === "string" ? values.model.trim() : "";
   if (model === "") {
     process.stderr.write("error: --model is required for --provider claude-code (a full model id)\n");
@@ -61,12 +73,14 @@ async function claudeCheck(values: Record<string, unknown>): Promise<number> {
   const timeoutSec = optionalNumber("request-timeout", values["request-timeout"] as string | undefined);
   try {
     const report = await modelCheck({
-      command: claudeCommand(values["claude-bin"] as string | undefined),
+      command: deps.claudeCommand ?? claudeCommand(values["claude-bin"] as string | undefined),
       model,
-      env: process.env,
+      env: deps.env ?? process.env,
       timeoutMs: timeoutSec === undefined ? undefined : secondsToMs(timeoutSec, "request timeout"),
     });
-    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    const window = claudeCodeWindow(model) ?? null;
+    const windowed = { ...report, window, windowSource: window === null ? null : "table" };
+    process.stdout.write(JSON.stringify(windowed, null, 2) + "\n");
     return 0;
   } catch (err) {
     process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -75,7 +89,7 @@ async function claudeCheck(values: Record<string, unknown>): Promise<number> {
 }
 
 /** Run `model-check`; returns the exit code (0 ok, 1 the check failed, 2 wrong arguments). */
-export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+export async function main(argv: string[] = process.argv.slice(2), deps: CheckDeps = {}): Promise<number> {
   try {
     const { values } = parseArgs({
       args: argv,
@@ -98,27 +112,30 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
     if (isClaudeCodeProvider(values.provider as string | undefined)) {
       // `await`: a rejection must reach the catch below, which exits 2 for a bad argument.
-      return await claudeCheck(values as Record<string, unknown>);
+      return await claudeCheck(values as Record<string, unknown>, deps);
     }
     const timeoutSec = optionalNumber("request-timeout", values["request-timeout"] as string | undefined);
     const config = resolveLocalConfig({
       provider: values.provider as string | undefined,
       model: values.model as string | undefined,
       baseUrl: values["base-url"] as string | undefined,
-      contextSize: optionalNumber("context-size", values["context-size"] as string | undefined),
+      contextSize: contextOption(values["context-size"] as string | undefined),
       temperature: optionalNumber("temperature", values.temperature as string | undefined),
       maxTokens: optionalNumber("max-tokens", values["max-tokens"] as string | undefined),
       topP: optionalNumber("top-p", values["top-p"] as string | undefined),
       timeoutMs: timeoutSec === undefined ? undefined : secondsToMs(timeoutSec, "request timeout"),
     });
-    const prepared = await prepareLocalProvider(config);
+    const prepared = await prepareLocalProvider(config, deps);
+    const caps = prepared.probe.capabilities;
     process.stdout.write(
       JSON.stringify(
         {
           provider: config.provider,
           model: prepared.model,
           baseUrl: config.baseUrl,
-          capabilities: prepared.probe.capabilities,
+          capabilities: caps,
+          window: config.contextSize ?? caps.contextSize ?? null,
+          windowSource: config.contextSize !== undefined ? "explicit" : (caps.contextSource ?? null),
           models: prepared.probe.models,
           warnings: prepared.warnings,
           piProvider: prepared.piProvider.id,

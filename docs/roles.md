@@ -20,7 +20,7 @@ repeatable, one time for each role.
 |---|---|---|
 | `--role ROLE=PROVIDER:MODEL` | The provider and the model of the role. The model id can contain colons (`ollama:qwen3.5:9b`). | all providers |
 | `--role-base-url ROLE=URL` | The server of a local role. Refused for other providers. | `ollama`, `llamacpp` |
-| `--role-context-size ROLE=N` | The context window of a local role. N must be a whole number above 4096. Refused for other providers. | `ollama`, `llamacpp` |
+| `--role-context-size ROLE=N` | The context window of a local role. N must be `auto` or a whole number above 4096. `auto` uses the server's window. Refused for other providers. | `ollama`, `llamacpp` |
 
 ```bash
 # A local Checker and Challenger; Claude Opus 5.5 reviews and fixes.

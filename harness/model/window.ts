@@ -20,7 +20,7 @@
  */
 
 import { isClaudeCodeProvider } from "../claude/provider.js";
-import { CLAUDE_CODE_WINDOWS } from "../config.js";
+import { CLAUDE_CODE_WINDOWS, claudeCodeWindow } from "../config.js";
 import { createBackend, resolveLocalConfig, type BackendDeps, type ContextSize } from "./config.js";
 import { enforceContext } from "./prepare.js";
 
@@ -39,7 +39,7 @@ export interface WindowModel {
 }
 
 export async function resolveWindow(m: WindowModel, deps: BackendDeps = {}): Promise<ResolvedWindow> {
-  if (isClaudeCodeProvider(m.provider)) return claudeCodeWindow(m);
+  if (isClaudeCodeProvider(m.provider)) return tableWindow(m);
   const config = resolveLocalConfig({
     provider: m.provider,
     model: m.model,
@@ -53,8 +53,8 @@ export async function resolveWindow(m: WindowModel, deps: BackendDeps = {}): Pro
   return { window: probe.capabilities.contextSize!, source: probe.capabilities.contextSource! };
 }
 
-function claudeCodeWindow(m: WindowModel): ResolvedWindow {
-  const window = CLAUDE_CODE_WINDOWS[m.model];
+function tableWindow(m: WindowModel): ResolvedWindow {
+  const window = claudeCodeWindow(m.model);
   if (window === undefined) {
     const known = Object.keys(CLAUDE_CODE_WINDOWS).join(", ");
     throw new Error(`no context window is known for Claude model '${m.model}' (known: ${known}); pass a number`);

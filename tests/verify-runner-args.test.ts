@@ -215,6 +215,24 @@ describe("runner --role", () => {
   });
 });
 
+describe("runner --role-context-size ROLE=auto", () => {
+  test("auto passes the parser, reaches the driver, and records no number", async () => {
+    const { result } = await captureStderr(() =>
+      within(
+        main(
+          ["--cells", "sb2:flash", "--run-name", "r", "--env", "none", "--role", "checker=ollama:m", "--role-context-size", "checker=auto"],
+          { dataDir: sb.dataDir, runsDir: sb.runsDir, driverCommand: () => [process.execPath, "-e", ""] },
+        ),
+        5000,
+      ),
+    );
+    expect(result).toBe(1); // the empty driver writes no finish.json; the option was accepted
+    const run = JSON.parse(readFileSync(join(sb.runsDir, "r", "sb2_flash", "run.json"), "utf8"));
+    expect(run.driver_args).toEqual(expect.arrayContaining(["--role-context-size", "checker=auto"]));
+    expect(run.roles.checker).toEqual({ provider: "ollama", model: "m" });
+  });
+});
+
 describe("runner numeric options", () => {
   // Number("abc") is NaN and every one of these then fails quietly: a lane max of NaN or 0 starts
   // no task, and a NaN --sample or --fraction means "no sampling": the whole task set runs.

@@ -149,3 +149,49 @@ describe("the role options on the command line", () => {
     expect("error" in r && r.error).toMatch(/unknown role 'boss'/);
   });
 });
+
+describe("the context window of each role", () => {
+  /** An Ollama server with model `m` loaded at `running` tokens. */
+  function ollamaAt(running: number) {
+    return async (input: string | URL): Promise<Response> => {
+      const path = new URL(String(input)).pathname;
+      const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+      if (path === "/api/tags") return json({ models: [{ name: "m" }] });
+      if (path === "/api/show") return json({ capabilities: ["completion", "tools"], parameters: "num_ctx 32768" });
+      if (path === "/api/ps") return json({ models: [{ name: "m", context_length: running }] });
+      return new Response("not found", { status: 404 });
+    };
+  }
+  const LOCAL = ["--role", "checker=ollama:m", "--role", "challenger=ollama:m"];
+  const driverLog = () => readFileSync(join(rig.ws, "driver.log"), "utf8");
+
+  test("--context-size auto and --role-context-size ROLE=auto parse", () => {
+    const main = parseDriverArgv(["ws", "--provider", "ollama", "--model", "m", "--context-size", "auto"]);
+    expect("error" in main).toBe(false);
+    const role = parseDriverArgv(["ws", ...ARGS, ...LOCAL, "--role-context-size", "checker=auto"]);
+    expect("error" in role).toBe(false);
+  });
+
+  test("auto writes one context line per role, with the window and its source", async () => {
+    rig.script([...happyRules(rig.ws).slice(0, 2), ...piHappyRules(rig.ws).slice(2)]);
+    const deps = { piCommand: [process.execPath, STUB_PI], fetch: ollamaAt(65536) };
+    const code = await rig.run([...ARGS, ...LOCAL, "--role-context-size", "checker=auto"], {}, deps);
+    expect(code).toBe(0);
+    const text = driverLog();
+    expect(text).toContain("context: checker=ollama:m window=65536 source=loaded");
+    expect(text).toContain("context: challenger=ollama:m window=65536 source=loaded");
+    expect(text).toContain(`context: reviewer=claude-code:${SONNET} window=1000000 source=table`);
+    expect(text).toContain(`context: fixer=claude-code:${SONNET} window=1000000 source=table`);
+  });
+
+  test("an explicit size under the loaded window warns, and the run continues", async () => {
+    rig.script([...happyRules(rig.ws).slice(0, 2), ...piHappyRules(rig.ws).slice(2)]);
+    const deps = { piCommand: [process.execPath, STUB_PI], fetch: ollamaAt(65536) };
+    const sizes = ["--role-context-size", "checker=8192", "--role-context-size", "challenger=8192"];
+    const code = await rig.run([...ARGS, ...LOCAL, ...sizes], {}, deps);
+    expect(code).toBe(0);
+    const text = driverLog();
+    expect(text).toContain("context: checker=ollama:m window=8192 source=explicit");
+    expect(text).toContain("context: checker asks 8192, the server runs m at 65536; a client that sends num_ctx may reload it");
+  });
+});
