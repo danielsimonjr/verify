@@ -32,7 +32,8 @@ import { renderViews } from "./views.js";
  * Tasks a lane runs at once. The Claude Code lanes default low: a subscription's usage limit is shared
  * with every other Claude Code session of the account, so they start at 2 and `--lane-max haiku=4` raises one.
  */
-const DEFAULT_LANE_MAX: Record<string, number> = { flash: 25, opus: 45, haiku: 2, sonnet: 2 };
+// Every lane draws on one Claude Code usage limit, so the caps stay low. The two larger models start lowest.
+const DEFAULT_LANE_MAX: Record<string, number> = { flash: 2, opus: 2, haiku: 4, sonnet: 4 };
 const DEFAULT_CELL_CAP: Record<string, number> = {
   apex: 8,
   wb: 10,

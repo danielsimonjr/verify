@@ -76,23 +76,24 @@ function peak(cell: string, keys: string[]): number {
 }
 
 describe("the Claude Code lanes", () => {
-  test("haiku and sonnet name a full model id each, so a run does not move with an alias", () => {
-    expect(config.LANES.haiku).toEqual(["--provider", "claude-code", "--model", "claude-haiku-4-5-20251001"]);
+  test("every lane names a full model id, so a run does not move with an alias", () => {
+    expect(config.LANES.flash).toEqual(["--provider", "claude-code", "--model", "claude-fable-5-1"]);
+    expect(config.LANES.opus).toEqual(["--provider", "claude-code", "--model", "claude-opus-5-5"]);
+    expect(config.LANES.haiku).toEqual(["--provider", "claude-code", "--model", "claude-haiku-5-5"]);
     expect(config.LANES.sonnet).toEqual(["--provider", "claude-code", "--model", "claude-sonnet-5-5"]);
     expect(flagsForLane("haiku", ["--contract", "artifact"])).toEqual([
       "--provider",
       "claude-code",
       "--model",
-      "claude-haiku-4-5-20251001",
+      "claude-haiku-5-5",
       "--contract",
       "artifact",
     ]);
   });
 
-  test("the existing lanes are as they were", () => {
-    expect(Object.keys(config.LANES)).toEqual(expect.arrayContaining(["flash", "opus", "haiku", "sonnet"]));
-    expect(config.LANES.flash).not.toContain("claude-code");
-    expect(config.LANES.opus).not.toContain("claude-code");
+  test("the four lanes are flash, opus, haiku and sonnet, and each runs Claude Code", () => {
+    expect(Object.keys(config.LANES)).toEqual(["flash", "opus", "haiku", "sonnet"]);
+    for (const flags of Object.values(config.LANES)) expect(flags.slice(0, 2)).toEqual(["--provider", "claude-code"]);
   });
 
   test("a cell on the haiku lane gives its driver the provider, the model and --env none", async () => {
@@ -103,27 +104,32 @@ describe("the Claude Code lanes", () => {
       "--provider",
       "claude-code",
       "--model",
-      "claude-haiku-4-5-20251001",
+      "claude-haiku-5-5",
     ]);
     expect(flags.slice(flags.indexOf("--env"), flags.indexOf("--env") + 2)).toEqual(["--env", "none"]);
   });
 
-  test("--env reaches the driver of the hosted lanes too", async () => {
+  test("--env reaches the driver of the flash lane too", async () => {
     await run("sb2:flash", ["t1"], ["--env", "none"]);
     const { flags } = launchOf("sb2_flash", "t1");
     expect(flags.slice(flags.indexOf("--env"), flags.indexOf("--env") + 2)).toEqual(["--env", "none"]);
   });
 
-  test("without --env the hosted lanes get no --env flag, so the driver keeps its jail default", async () => {
-    await run("sb2:flash", ["t1"], []);
-    expect(launchOf("sb2_flash", "t1").flags).not.toContain("--env");
-  });
 });
 
 describe("--env none applies to every cell, and the runner warns about the cells that lose the jail", () => {
   test("a pi cell next to a Claude Code cell is named in a warning", async () => {
     addTask(sb.dataDir, "sb2", "flash", "t1");
-    const { code, stderr } = await run("sb2:haiku", ["t1"], ["--cells", "sb2:flash", "--env", "none"]);
+    // No shipped lane runs pi, so the test makes the flash lane a pi lane for this one run.
+    const shipped = config.LANES.flash;
+    config.LANES.flash = ["--provider", "ollama", "--model", "qwen"];
+    let result;
+    try {
+      result = await run("sb2:haiku", ["t1"], ["--cells", "sb2:flash", "--env", "none"]);
+    } finally {
+      config.LANES.flash = shipped;
+    }
+    const { code, stderr } = result;
     expect(code).toBe(0);
     const warning = stderr.split(String.fromCharCode(10)).filter((l) => l.includes("WARNING"));
     expect(warning).toHaveLength(1);
@@ -175,26 +181,26 @@ describe("a lane that runs Claude Code needs --env none, and the runner says so 
 });
 
 describe("concurrency caps", () => {
-  test("the defaults: haiku and sonnet start at 2, the hosted lanes keep theirs", async () => {
+  test("the defaults: haiku and sonnet start at 4, flash and opus at 2", async () => {
     const { stdout } = await run("sb2:haiku", ["t1"], ["--env", "none"]);
-    expect(laneMax(stdout)).toEqual({ flash: 25, opus: 45, haiku: 2, sonnet: 2 });
+    expect(laneMax(stdout)).toEqual({ flash: 2, opus: 2, haiku: 4, sonnet: 4 });
   });
 
   test("--lane-max raises one lane, takes a list, and may repeat", async () => {
-    let r = await run("sb2:haiku", ["t1"], ["--env", "none", "--lane-max", "haiku=4"]);
-    expect(laneMax(r.stdout)).toMatchObject({ haiku: 4, sonnet: 2, flash: 25 });
+    let r = await run("sb2:haiku", ["t1"], ["--env", "none", "--lane-max", "haiku=6"]);
+    expect(laneMax(r.stdout)).toMatchObject({ haiku: 6, sonnet: 4, flash: 2 });
     sb.cleanup();
     sb = makeSandbox();
     r = await run("sb2:haiku", ["t1"], ["--env", "none", "--lane-max", "haiku=3,sonnet=5", "--lane-max", "opus=7"]);
-    expect(laneMax(r.stdout)).toEqual({ flash: 25, opus: 7, haiku: 3, sonnet: 5 });
+    expect(laneMax(r.stdout)).toEqual({ flash: 2, opus: 7, haiku: 3, sonnet: 5 });
   });
 
   test("--max-flash and --max-opus still work, and --lane-max wins over them", async () => {
-    const r = await run("sb2:flash", ["t1"], ["--max-flash", "3", "--max-opus", "4"]);
+    const r = await run("sb2:flash", ["t1"], ["--env", "none", "--max-flash", "3", "--max-opus", "4"]);
     expect(laneMax(r.stdout)).toMatchObject({ flash: 3, opus: 4 });
     sb.cleanup();
     sb = makeSandbox();
-    const w = await run("sb2:flash", ["t1"], ["--max-flash", "3", "--lane-max", "flash=6"]);
+    const w = await run("sb2:flash", ["t1"], ["--env", "none", "--max-flash", "3", "--lane-max", "flash=6"]);
     expect(laneMax(w.stdout).flash).toBe(6);
   });
 
@@ -206,18 +212,18 @@ describe("concurrency caps", () => {
     });
   }
 
-  test("the cap holds: five drivers on the haiku lane never run more than two at once", async () => {
+  test("the cap holds: five drivers on the haiku lane never run more than four at once", async () => {
     const keys = ["t1", "t2", "t3", "t4", "t5"];
     const { code } = await run("sb2:haiku", keys, ["--env", "none", "--cell-cap", "sb2=8"], { sleepMs: 500 });
     expect(code).toBe(0);
-    expect(peak("sb2_haiku", keys)).toBe(2);
+    expect(peak("sb2_haiku", keys)).toBe(4);
   }, 30_000);
 
-  test("--lane-max haiku=4 lets four run at once", async () => {
+  test("--lane-max haiku=2 holds the lane to two at once", async () => {
     const keys = ["t1", "t2", "t3", "t4", "t5"];
-    const { code } = await run("sb2:haiku", keys, ["--env", "none", "--lane-max", "haiku=4", "--cell-cap", "sb2=8"], { sleepMs: 500 });
+    const { code } = await run("sb2:haiku", keys, ["--env", "none", "--lane-max", "haiku=2", "--cell-cap", "sb2=8"], { sleepMs: 500 });
     expect(code).toBe(0);
-    expect(peak("sb2_haiku", keys)).toBe(4);
+    expect(peak("sb2_haiku", keys)).toBe(2);
   }, 30_000);
 });
 

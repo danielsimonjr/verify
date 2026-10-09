@@ -833,8 +833,8 @@ describe("runner flag merge", () => {
     expect(flags).toEqual(["--contract", "artifact", "--provider", "ollama", "--model", "qwen"]);
     expect(flagValue(flags, "--provider")).toBe("ollama");
     const opus = flagsForLane("opus", ["--contract", "artifact"]);
-    expect(flagValue(opus, "--provider")).toBe("vertex-litellm");
-    expect(opus).toContain("--thinking");
+    expect(flagValue(opus, "--provider")).toBe("claude-code");
+    expect(opus).not.toContain("--thinking");
     const kept = withModelOverride(
       ["--provider", "ollama", "--model", "a", "--thinking", "low"],
       ["--model", "b", "--thinking", "high"],

@@ -23,18 +23,18 @@ function driverView(flags: string[]) {
 }
 
 describe("runner flag merge matches the driver's parser", () => {
-  test("an equals-form local provider on the opus lane replaces the hosted lane and starts no proxy", () => {
+  test("an equals-form local provider on the opus lane replaces the Claude Code lane and starts no proxy", () => {
     const driverArgs = ["--contract", "artifact", ...withModelOverride([], ["--provider=ollama", "--model=qwen"])];
     const merged = flagsForLane("opus", driverArgs);
     expect(merged).toEqual(["--contract", "artifact", "--provider", "ollama", "--model", "qwen"]);
     expect(merged.join(" ")).not.toContain("vertex-litellm");
     expect(merged).not.toContain("--thinking");
     expect(startsHostedProxy("opus", driverArgs)).toBe(false);
-    expect(startsHostedProxy("opus", ["--contract", "artifact"])).toBe(true);
+    expect(startsHostedProxy("opus", ["--contract", "artifact"])).toBe(false);
   });
 
-  test("a hosted override keeps the lane's thinking level, and an explicit one survives a local switch", () => {
-    expect(flagsForLane("opus", ["--provider=google-vertex", "--model=m"])).toContain("--thinking");
+  test("a Claude Code lane has no thinking level, and an explicit one survives a local switch", () => {
+    expect(flagsForLane("opus", ["--contract", "artifact"])).not.toContain("--thinking");
     const merged = flagsForLane("opus", ["--provider=ollama", "--model=q", "--thinking=low"]);
     expect(flagValue(merged, "--thinking")).toBe("low");
     expect(merged.filter((arg) => arg === "--thinking")).toHaveLength(1);

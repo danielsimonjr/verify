@@ -165,16 +165,18 @@ coding-agent runtime and works with any model provider pi supports (Anthropic,
 OpenAI, Google AI Studio, Vertex AI, OpenAI-compatible endpoints and others);
 no Google account or service is required. A *lane*
 is the verifier model; by default a pool is verified by the model that
-generated it. The two lanes used in the paper are defined in
-`harness/config.ts` (`LANES`); edit them or pass `--provider`/`--model` to the
-driver to use other models, for example
+generated it. The four lanes are defined in
+`harness/config.ts` (`LANES`) and all run through Claude Code. Edit them or pass
+`--provider`/`--model` to the driver to use other models, for example
 `--provider anthropic --model claude-opus-4-8` with `ANTHROPIC_API_KEY` set.
+The two options below were the lanes of the paper. They stay available as
+driver options, but no lane uses them.
 
-* **Gemini on Vertex AI** (`flash` lane): pi's `google-vertex` provider with
+* **Gemini on Vertex AI**: pi's `google-vertex` provider with
   application-default credentials (`gcloud auth application-default login`)
   and `GOOGLE_CLOUD_PROJECT` set. The jail exposes `~/.config/gcloud`
   read-only for this purpose.
-* **Claude on Vertex AI** (`opus` lane): served through a local
+* **Claude on Vertex AI**: served through a local
   [litellm](https://github.com/BerriAI/litellm) proxy that the runner starts
   on demand (`harness/scripts/litellm_up.sh`, port 4180; the registry entry
   is `vertex-litellm` in `harness/pi-home/models.json`):
@@ -197,7 +199,7 @@ driver to use other models, for example
   bun harness/cli.ts driver <task-dir> --provider llamacpp --model model.gguf --env none
   ```
 
-* **Claude Code** (`haiku` and `sonnet` lanes): the `claude` command-line program,
+* **Claude Code** (all four lanes: `flash` is `claude-fable-5-1`, `opus` is `claude-opus-5-5`, `haiku` is `claude-haiku-5-5`, `sonnet` is `claude-sonnet-5-5`): the `claude` command-line program,
   signed in on the host, runs each turn. No pi runtime and no API key are
   needed. See [Claude Code as the verifier](#claude-code-as-the-verifier).
 
@@ -243,18 +245,18 @@ bun harness/cli.ts driver <task-dir> --provider llamacpp --model model.gguf --en
 
 ## Claude Code as the verifier
 
-Claude Haiku and Claude Sonnet can run as the verifier through the `claude` command-line program. The harness uses the login that Claude Code already holds. It sets no credential. Details, including the isolation flags, the session files and the usage-limit behavior, are in [docs/claude-code.md](docs/claude-code.md).
+Claude Fable, Claude Opus, Claude Sonnet and Claude Haiku run as the verifier through the `claude` command-line program. The harness uses the login that Claude Code already holds. It sets no credential. Details, including the isolation flags, the session files and the usage-limit behavior, are in [docs/claude-code.md](docs/claude-code.md).
 
 ```bash
-bun harness/cli.ts model-check --provider claude-code --model claude-haiku-4-5-20251001
-bun harness/cli.ts driver <task-dir> --provider claude-code --model claude-haiku-4-5-20251001 --env none
+bun harness/cli.ts model-check --provider claude-code --model claude-haiku-5-5
+bun harness/cli.ts driver <task-dir> --provider claude-code --model claude-haiku-5-5 --env none
 bun harness/cli.ts runner --run-name demo --cells sb2:haiku --env none --lane-max haiku=4
 ```
 
 `model-check` prints the CLI version, the model and the credential source.
 
 * `--env none` is required. The jail replaces `$HOME`, so Claude Code finds no login in it, and the containers run pi only. `--env jail`, `native` and `native-full` stop with an error. Without the jail, the verifier's Bash tool runs on the host with the permissions of the user who starts the driver: run it on a host where that is acceptable.
-* The `haiku` and `sonnet` lanes start at two concurrent drivers each, because every Claude Code session of the account counts against one usage limit.
+* The `flash` and `opus` lanes start at two concurrent drivers each and the `haiku` and `sonnet` lanes at four, because every Claude Code session of the account counts against one usage limit.
 * When Claude Code reports a usage limit, the driver exits with code 75. The runner stops that lane and marks the queued tasks `lane-stopped`.
 * Windows is supported for this provider. Install Python 3 with `openpyxl` and `python-docx` for the repair turn.
 

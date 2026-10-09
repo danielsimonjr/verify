@@ -15,16 +15,16 @@ The agent loop is Claude Code's. The four verifier turns, the records and the de
 
 ```bash
 # Check the CLI and the login. Prints the CLI version, the model and the credential source.
-bun harness/cli.ts model-check --provider claude-code --model claude-haiku-4-5-20251001
+bun harness/cli.ts model-check --provider claude-code --model claude-haiku-5-5
 
 # One task.
-bun harness/cli.ts driver <task-dir> --provider claude-code --model claude-haiku-4-5-20251001 --env none
+bun harness/cli.ts driver <task-dir> --provider claude-code --model claude-haiku-5-5 --env none
 
 # A benchmark cell on the haiku lane, with four concurrent drivers.
 bun harness/cli.ts runner --run-name demo --cells sb2:haiku --env none --lane-max haiku=4
 ```
 
-`--model` is required and is a full model id. The lanes `haiku` (`claude-haiku-4-5-20251001`) and `sonnet` (`claude-sonnet-5-5`) are in `harness/config.ts`. A lane applies to a runner cell the same way as `flash` and `opus`.
+`--model` is required and is a full model id. All four lanes run Claude Code and are in `harness/config.ts`: `flash` (`claude-fable-5-1`), `opus` (`claude-opus-5-5`), `haiku` (`claude-haiku-5-5`) and `sonnet` (`claude-sonnet-5-5`). Every lane needs `--env none`. The default caps are 2 for `flash` and `opus` and 4 for `haiku` and `sonnet`, because all lanes share one usage limit.
 
 `model-check` runs one isolated turn with no tools and no saved session. It prints a JSON report with the fields `provider`, `requestedModel`, `model` (the model Claude Code reports), `cliVersion`, `keySource` (as Claude Code reports it; `none` with a subscription login), `tools`, `warnings`, `builtinPlugins` and `reply`. It exits with 1 when the CLI does not start or the turn fails, and the error says which. It exits with 2 when the arguments are wrong.
 
@@ -103,7 +103,7 @@ The runner treats exit code 75 as the status `usage-limit`. It stops the lane th
 
 ## Concurrency
 
-Every Claude Code session of the account counts against one usage limit, and the user's own sessions count too. The `haiku` and `sonnet` lanes therefore start at 2 concurrent drivers each. `--lane-max haiku=4` raises one lane, and the option can repeat or take a comma list (`--lane-max haiku=4,sonnet=2`). `--max-flash` and `--max-opus` stay as aliases for `--lane-max flash=N` and `--lane-max opus=N`. The order of precedence is the lane default, then the alias, then `--lane-max`.
+Every Claude Code session of the account counts against one usage limit, and the user's own sessions count too. The `flash` and `opus` lanes therefore start at 2 concurrent drivers each, and the `haiku` and `sonnet` lanes start at 4. `--lane-max haiku=6` raises one lane, and the option can repeat or take a comma list (`--lane-max haiku=4,sonnet=2`). `--max-flash` and `--max-opus` stay as aliases for `--lane-max flash=N` and `--lane-max opus=N`. The order of precedence is the lane default, then the alias, then `--lane-max`.
 
 The runner also counts the drivers that other runners started on the same host. It finds them with `pgrep`, so those runners must use the same limits. Windows has no `pgrep`. A runner on Windows counts only its own drivers, so give each runner a limit that leaves room for the others.
 

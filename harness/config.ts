@@ -95,30 +95,13 @@ export type Bench = (typeof BENCHES)[number];
  * generated it (the same-model setting), so lanes and pools share names.
  */
 export const LANES: Record<string, string[]> = {
-  flash: [
-    "--provider",
-    "google-vertex",
-    "--model",
-    "gemini-3.5-flash",
-    "--thinking",
-    "high",
-  ],
-  opus: [
-    "--provider",
-    "vertex-litellm",
-    "--model",
-    "claude-opus-4-8",
-    "--thinking",
-    "high",
-  ],
-  // The Claude Code verifier (docs/claude-code.md). Full model ids, not the `haiku` / `sonnet` aliases,
+  // Every lane runs through Claude Code (docs/claude-code.md). Full model ids, not aliases,
   // so a run stays reproducible when an alias moves to a newer model.
-  haiku: ["--provider", "claude-code", "--model", "claude-haiku-4-5-20251001"],
+  flash: ["--provider", "claude-code", "--model", "claude-fable-5-1"],
+  opus: ["--provider", "claude-code", "--model", "claude-opus-5-5"],
+  haiku: ["--provider", "claude-code", "--model", "claude-haiku-5-5"],
   sonnet: ["--provider", "claude-code", "--model", "claude-sonnet-5-5"],
 };
-
-/** Lanes served through the local litellm proxy (scripts/litellm_up.sh). */
-export const PROXIED_LANES = ["opus"] as const;
 
 /** The upstream benchmark checkout. Throws with instructions when unset. */
 export function benchRoot(): string {

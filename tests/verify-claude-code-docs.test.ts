@@ -79,7 +79,7 @@ describe("README", () => {
       expect(README).toContain(part);
     }
     expect(README).toContain(`${USAGE_LIMIT_EXIT}`);
-    expect(config.LANES.haiku).toContain("claude-haiku-4-5-20251001");
+    expect(config.LANES.haiku).toContain("claude-haiku-5-5");
     expect(README).toMatch(/^ {2}claude\/ +the Claude Code runtime/m);
     expect(existsSync(join(ROOT, "harness", "claude", "turn.ts"))).toBe(true);
   });
@@ -106,8 +106,7 @@ describe("docs/claude-code.md says what the code does", () => {
   test("the tool names, the exit code and the lane models match the code", () => {
     for (const claude of new Set(Object.values(PI_TO_CLAUDE_TOOL))) expect(CLAUDE_DOC).toContain(claude);
     expect(CLAUDE_DOC).toContain(`code ${USAGE_LIMIT_EXIT}`);
-    expect(CLAUDE_DOC).toContain(config.LANES.haiku![3]!);
-    expect(CLAUDE_DOC).toContain(config.LANES.sonnet![3]!);
+    for (const lane of ["flash", "opus", "haiku", "sonnet"]) expect(CLAUDE_DOC).toContain(config.LANES[lane]![3]!);
     const backoff = /const RETRY_BACKOFF = \[([\d, ]+)\]/.exec(DRIVER);
     expect(backoff).not.toBeNull();
     const seconds = backoff![1]!.split(",").map((s) => s.trim());

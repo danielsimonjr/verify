@@ -56,7 +56,7 @@ describe("runner scheduling", () => {
     await writeXlsx(join(dir, "workspace", "book.xlsx"));
     await writeXlsx(join(dir, "rollouts", "r01", "result.xlsx"));
 
-    const code = await main(["--cells", "sb2:flash", "--run-name", "run"], {
+    const code = await main(["--cells", "sb2:flash", "--run-name", "run", "--env", "none"], {
       dataDir: sb.dataDir,
       runsDir: sb.runsDir,
       driverCommand: stubDriver(50),
@@ -77,7 +77,7 @@ describe("runner scheduling", () => {
     for (const k of keys) addTask(sb.dataDir, "sb2", "flash", k);
 
     const t0 = Date.now();
-    const code = await main(["--cells", "sb2:flash", "--run-name", "run"], {
+    const code = await main(["--cells", "sb2:flash", "--run-name", "run", "--env", "none", "--lane-max", "flash=4"], {
       dataDir: sb.dataDir,
       runsDir: sb.runsDir,
       driverCommand: stubDriver(1000),
@@ -94,7 +94,7 @@ describe("runner scheduling", () => {
     const keys = ["t1", "t2", "t3", "t4", "t5", "t6"];
     for (const k of keys) addTask(sb.dataDir, "sb2", "flash", k);
 
-    const code = await main(["--cells", "sb2:flash", "--run-name", "run", "--cell-cap", "sb2=2"], {
+    const code = await main(["--cells", "sb2:flash", "--run-name", "run", "--env", "none", "--cell-cap", "sb2=2"], {
       dataDir: sb.dataDir,
       runsDir: sb.runsDir,
       driverCommand: stubDriver(300),
@@ -108,7 +108,7 @@ describe("runner scheduling", () => {
 
   test("an explicit known --lane runs a pool that names no lane", async () => {
     addTask(sb.dataDir, "sb2", "mine", "t1");
-    const code = await main(["--cells", "sb2:mine", "--lane", "flash", "--run-name", "run"], {
+    const code = await main(["--cells", "sb2:mine", "--lane", "flash", "--run-name", "run", "--env", "none"], {
       dataDir: sb.dataDir,
       runsDir: sb.runsDir,
       driverCommand: stubDriver(10),
@@ -119,7 +119,7 @@ describe("runner scheduling", () => {
 
   test("a driver that never writes finish.json is reported, not hidden", async () => {
     addTask(sb.dataDir, "sb2", "flash", "t1");
-    const code = await main(["--cells", "sb2:flash", "--run-name", "run"], {
+    const code = await main(["--cells", "sb2:flash", "--run-name", "run", "--env", "none"], {
       dataDir: sb.dataDir,
       runsDir: sb.runsDir,
       driverCommand: (ws) => [process.execPath, "-e", "process.exit(3)", ws],

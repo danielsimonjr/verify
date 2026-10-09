@@ -109,7 +109,7 @@ describe("runner path segments", () => {
     for (const ok of ["run1", "Run-2026.10.04_a", "0", "a.b"]) {
       const { result } = await captureStderr(() =>
         within(
-          main(["--cells", "sb2:flash", "--run-name", ok], {
+          main(["--cells", "sb2:flash", "--run-name", ok, "--env", "none"], {
             dataDir: sb.dataDir,
             runsDir: sb.runsDir,
             driverCommand: () => [process.execPath, "-e", ""],
@@ -154,7 +154,7 @@ describe("runner --cell-cap", () => {
   test("accepts bench keys and default, with spaces and a trailing comma", async () => {
     const { result } = await captureStderr(() =>
       within(
-        main(["--cells", "sb2:flash", "--run-name", "r", "--cell-cap", "sb2=2, default=3,"], {
+        main(["--cells", "sb2:flash", "--run-name", "r", "--env", "none", "--cell-cap", "sb2=2, default=3,"], {
           dataDir: sb.dataDir,
           runsDir: sb.runsDir,
           driverCommand: () => [process.execPath, "-e", ""],
@@ -206,7 +206,7 @@ describe("runner numeric options", () => {
       within(
         main(
           [
-            "--cells", "sb2:flash", "--run-name", "r",
+            "--cells", "sb2:flash", "--run-name", "r", "--env", "none",
             "--max-flash", "3", "--max-opus", "4", "--limit", "5", "--sample", "0", "--fraction", "1",
             "--skip-inflight", "0", "--turn-timeout", "60", "--task-timeout", "600",
           ],

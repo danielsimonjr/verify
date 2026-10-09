@@ -15,7 +15,7 @@ describe("config", () => {
   test("repo contains harness/", () => {
     expect(existsSync(join(REPO, "harness"))).toBe(true);
     expect(BENCHES).toContain("sb2");
-    expect(LANES.flash.join(" ")).toContain("gemini-3.5-flash");
+    expect(LANES.flash.join(" ")).toContain("claude-fable-5-1");
   });
   test("benchRoot throws when unset", () => {
     const prev = process.env.VERIHARNESS_BENCH_ROOT;

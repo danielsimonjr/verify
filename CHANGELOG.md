@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-09
+
+### Changed
+- All four lanes run through Claude Code: `flash` is `claude-fable-5-1`, `opus` is `claude-opus-5-5`, `haiku` is `claude-haiku-5-5` and `sonnet` is `claude-sonnet-5-5`. The lanes `flash` and `opus` no longer use Vertex AI or the litellm proxy, and no lane sets a thinking level. `PROXIED_LANES` is removed from `harness/config.ts`.
+- Every lane now needs `--env none`. The runner refuses a run without it, as it did for `haiku` and `sonnet`.
+- The default concurrency caps are 2 for `flash` and `opus` and 4 for `haiku` and `sonnet`. All lanes share one Claude Code usage limit.
+- The pi providers `google-vertex` and `vertex-litellm` stay available through `--provider`, but no lane uses them.
+
 ## [0.1.0] - 2026-10-06
 
 First release, published to npm as `@danielsimonjr/verify`.

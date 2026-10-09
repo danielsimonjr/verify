@@ -89,7 +89,7 @@ describe("runner selection", () => {
     for (const row of fx.select) {
       test(`n=${row.n} seed=${row.seed} sample=${row.sample} fraction=${row.fraction}`, async () => {
         for (let i = 0; i < row.n; i++) addTask(sb.dataDir, "sb2", "flash", `t${String(i).padStart(2, "0")}`);
-        const argv = ["--cells", "sb2:flash", "--run-name", "run", "--seed", String(row.seed)];
+        const argv = ["--cells", "sb2:flash", "--run-name", "run", "--env", "none", "--seed", String(row.seed)];
         if (row.sample) argv.push("--sample", String(row.sample));
         if (row.fraction) argv.push("--fraction", String(row.fraction));
 
