@@ -168,6 +168,53 @@ describe("runner --cell-cap", () => {
   });
 });
 
+describe("runner --role", () => {
+  test("a bad --role exits 2 and schedules nothing", async () => {
+    const hit = await runner(["--cells", "sb2:flash", "--run-name", "r", "--env", "none", "--role", "boss=ollama:m"]);
+    expect(hit.code).toBe(2);
+    expect(hit.stderr).toMatch(/unknown role 'boss'/);
+    expect(hit.runs).toEqual([]);
+  });
+
+  test("a role option the driver refuses is refused before any task starts", async () => {
+    const hit = await runner([
+      "--cells", "sb2:flash", "--run-name", "r", "--env", "none",
+      "--role", "reviewer=claude-code:claude-opus-5-5", "--role-context-size", "reviewer=8192",
+    ]);
+    expect(hit.code).toBe(2);
+    expect(hit.stderr).toMatch(/--role-context-size reviewer: not supported with claude-code/);
+    expect(hit.runs).toEqual([]);
+  });
+
+  test("the role options reach every driver and the roles are recorded in run.json", async () => {
+    const { result } = await captureStderr(() =>
+      within(
+        main(
+          [
+            "--cells", "sb2:flash", "--run-name", "r", "--env", "none",
+            "--role", "checker=ollama:qwen3.5:9b", "--role-base-url", "checker=http://h:11434",
+            "--role-context-size", "checker=32768", "--role", "reviewer=claude-code:claude-opus-5-5",
+          ],
+          { dataDir: sb.dataDir, runsDir: sb.runsDir, driverCommand: () => [process.execPath, "-e", ""] },
+        ),
+        5000,
+      ),
+    );
+    expect(result).toBe(1); // the empty driver writes no finish.json; the roles were accepted
+    const run = JSON.parse(readFileSync(join(sb.runsDir, "r", "sb2_flash", "run.json"), "utf8"));
+    expect(run.driver_args).toEqual(
+      expect.arrayContaining([
+        "--role", "checker=ollama:qwen3.5:9b", "--role-base-url", "checker=http://h:11434",
+        "--role-context-size", "checker=32768", "--role", "reviewer=claude-code:claude-opus-5-5",
+      ]),
+    );
+    expect(run.roles).toEqual({
+      checker: { provider: "ollama", model: "qwen3.5:9b", baseUrl: "http://h:11434", contextSize: 32768 },
+      reviewer: { provider: "claude-code", model: "claude-opus-5-5" },
+    });
+  });
+});
+
 describe("runner numeric options", () => {
   // Number("abc") is NaN and every one of these then fails quietly: a lane max of NaN or 0 starts
   // no task, and a NaN --sample or --fraction means "no sampling": the whole task set runs.

@@ -82,6 +82,10 @@ bun harness/cli.ts runner --run-name local --cells sb2:flash \
   --provider ollama --model qwen2.5-coder:7b --temperature 0.2
 ```
 
+## A local model for some roles
+
+A local model can take some roles while a hosted model takes the others, for example a local Checker and Challenger and a Claude Code Reviewer. Use `--role ROLE=ollama:MODEL`, `--role-base-url` and `--role-context-size`. Each local role gets its own preflight. See [roles.md](roles.md).
+
 ## llama.cpp
 
 Use `llama-server` from a current llama.cpp build. The harness speaks its OpenAI-compatible HTTP API. The default address is `http://127.0.0.1:8080`.

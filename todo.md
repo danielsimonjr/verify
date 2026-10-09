@@ -8,6 +8,7 @@ Open work for this repository. Check an item off when it lands, in the same comm
 - [ ] Containment for `--env none`: a timed-out turn kills the process group and the visible descendants, so a descendant that calls `setsid` and loses its parent can outlive the turn (the jail's PID namespace has no such gap). Options: a Windows job object, or a Linux cgroup.
 - [ ] Single-result verification: a task with one rollout gets a pass/fail verdict with evidence. Today the method compares two or more rollouts, and the materializers skip a task with fewer than two.
 - [ ] Bring-your-own task: a documented way to build a task workspace (`spec/task.md`, `workspace/`, `rollouts/rNN/`) from local files, without a benchmark adapter.
+- [x] A model for each role: `--role ROLE=PROVIDER:MODEL`, `--role-base-url` and `--role-context-size` on the driver and the runner; a fixer on another model than the reviewer gets a new session; one usage limit for all Claude Code roles; `docs/roles.md`. Done in 0.4.0.
 - [x] `run()` in `harness/grade/proc.ts`: the stdout cap kills the process tree but does not run the stop hook, so an SB2 recalc whose output passes 256 MiB leaves its container running. The grandchild-kill test races process start-up against a 2.5 s timer and fails on a loaded host. Done in #17 (one stop path for the timeout and the cap; hook `onKill`).
 
 ## Quality gates

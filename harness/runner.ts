@@ -18,10 +18,11 @@ import { closeSync, cpSync, mkdirSync, openSync, readdirSync, writeSync } from "
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
-import { USAGE_LIMIT_EXIT, UNSUPPORTED_WITH_CLAUDE_CODE, isClaudeCodeProvider } from "./claude/index.js";
+import { USAGE_LIMIT_EXIT, isClaudeCodeProvider } from "./claude/index.js";
 import * as config from "./config.js";
 import { parseCount } from "./count.js";
-import { claudeCodeRefusal } from "./driver.js";
+import { parseDriverArgv } from "./driver.js";
+import { parseRoleOptions, type Role, type RoleModel } from "./roles.js";
 import { exists, isDir, mtime, readText, rmrf, walkFiles, writeJson } from "./fsutil.js";
 import { flagValue, withModelOverride } from "./model/flags.js";
 import { PyRandom, pyRound } from "./pyrandom.js";
@@ -149,6 +150,9 @@ interface RunnerArgs {
   maxTokens?: string;
   topP?: string;
   requestTimeout?: string;
+  /** The roles `--role` gave their own model; `roleFlags` passes them to every driver as given. */
+  roles: Partial<Record<Role, RoleModel>>;
+  roleFlags: string[];
 }
 
 /** Lane flags, then driver flags, with later copies of the same option winning. */
@@ -341,8 +345,18 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
         "max-tokens": { type: "string" },
         "top-p": { type: "string" },
         "request-timeout": { type: "string" },
+        role: { type: "string", multiple: true },
+        "role-base-url": { type: "string", multiple: true },
+        "role-context-size": { type: "string", multiple: true },
       },
     });
+    const roleOptions = {
+      role: (values.role as string[] | undefined) ?? [],
+      "role-base-url": (values["role-base-url"] as string[] | undefined) ?? [],
+      "role-context-size": (values["role-context-size"] as string[] | undefined) ?? [],
+    };
+    const roles = parseRoleOptions(roleOptions.role, roleOptions["role-base-url"], roleOptions["role-context-size"]);
+    if ("error" in roles) return roles;
     const cells = (values.cells as string[] | undefined) ?? [];
     if (!cells.length || !values["run-name"]) {
       return { error: "--cells and --run-name are required" };
@@ -378,6 +392,8 @@ function parseRunnerArgv(argv: string[]): RunnerArgs | { error: string } {
       maxTokens: values["max-tokens"] as string | undefined,
       topP: values["top-p"] as string | undefined,
       requestTimeout: values["request-timeout"] as string | undefined,
+      roles,
+      roleFlags: Object.entries(roleOptions).flatMap(([flag, entries]) => entries.flatMap((e) => [`--${flag}`, e])),
     };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
@@ -484,6 +500,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
     if (value) modelFlags.push(flag, value);
   }
   driverArgs.push(...withModelOverride(modelFlags, args.driverArg));
+  driverArgs.push(...args.roleFlags);
 
   if (
     Object.values(laneOf).some((lane) => flagValue(flagsForLane(lane, driverArgs), "--provider") === "vertex-litellm")
@@ -494,14 +511,12 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
     }
   }
 
-  // A lane that runs Claude Code fails every task at its start unless it runs with --env none: say so now.
+  // Arguments the driver refuses fail every task at its start (a Claude Code role without --env none, a
+  // role option on the wrong provider): check each lane's driver command line with the driver's parser now.
   for (const lane of new Set(Object.values(laneOf))) {
-    const flags = flagsForLane(lane, driverArgs);
-    if (!isClaudeCodeProvider(flagValue(flags, "--provider"))) continue;
-    const given = Object.fromEntries(UNSUPPORTED_WITH_CLAUDE_CODE.map((n) => [n, flagValue(flags, `--${n}`)]));
-    const refusal = claudeCodeRefusal(args.env ?? "jail", flagValue(flags, "--model"), given);
-    if (refusal !== null) {
-      process.stderr.write(`error: lane ${lane}: ${refusal}\n`);
+    const check = parseDriverArgv(["<ws>", ...flagsForLane(lane, driverArgs)]);
+    if ("error" in check) {
+      process.stderr.write(`error: lane ${lane}: ${check.error}\n`);
       return 2;
     }
   }
@@ -553,6 +568,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: RunnerD
       cell_cap: cellCap[ck],
       lane_max: laneMax,
       driver_args: driverArgs,
+      roles: args.roles,
       keys,
     });
     plan.push(keys.map((k) => [bench, pool, cellDir, k]));

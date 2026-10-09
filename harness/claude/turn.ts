@@ -148,6 +148,13 @@ export interface ClaudeRuntimeOptions {
   log: (message: string) => void;
   /** Replaced by tests so a retry does not wait. */
   sleep?: (ms: number) => Promise<void>;
+  /** The usage-limit state, shared by the runtimes of one task (default: this runtime's own). */
+  limit?: UsageLimitState;
+}
+
+/** Whether a usage limit stopped the task. The limit is the account's, so every runtime of a task shares one. */
+export interface UsageLimitState {
+  message: string | null;
 }
 
 /** A session directory under `<ws>/session` and the session ids created in it. */
@@ -162,12 +169,22 @@ interface Created {
  */
 export class ClaudeRuntime {
   readonly created: Created[] = [];
-  /** The CLI's message when a turn failed on a usage limit; null otherwise. */
-  usageLimit: string | null = null;
+  private readonly limit: UsageLimitState;
   private finished = false;
   private announced = false;
 
-  constructor(readonly options: ClaudeRuntimeOptions) {}
+  constructor(readonly options: ClaudeRuntimeOptions) {
+    this.limit = options.limit ?? { message: null };
+  }
+
+  /** The CLI's message when a turn of any runtime sharing this state failed on a usage limit; null otherwise. */
+  get usageLimit(): string | null {
+    return this.limit.message;
+  }
+
+  set usageLimit(message: string | null) {
+    this.limit.message = message;
+  }
 
   /** The session of the adjudication and repair phases; the investigations take `withSession`. */
   session(name: string): ClaudeSession {

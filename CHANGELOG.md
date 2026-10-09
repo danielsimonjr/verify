@@ -6,6 +6,22 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-09
+
+### Added
+- A model for each role. `--role ROLE=PROVIDER:MODEL` gives the Checker, the Challenger, the Reviewer or the Fixer its own provider and model. `--role-base-url ROLE=URL` and `--role-context-size ROLE=N` set the server and the context window of a local role. The driver and the runner accept the three options; each option can repeat. See `docs/roles.md`.
+- A role without `--role` uses the main model. A Fixer without `--role` uses the Reviewer's model and continues its session. A Fixer on another model starts a new session that is told to read `finish.json`, the ledgers, `MISSION.md` and the named rollouts.
+- `driver.log` has a `roles:` line. The runner writes the roles to `run.json` (`roles`).
+- A warning in `driver.log` when the Checker and the Challenger use two models on one local server.
+
+### Changed
+- The Claude Code runtimes of one task share one usage-limit state: a limit in one role stops every Claude Code role, and the driver exits with code 75.
+- A Claude Code role needs `--env none` also when the main provider is not Claude Code. `--thinking`, `--temperature`, `--max-tokens`, `--top-p` and `--request-timeout` are refused only when no role runs pi.
+- The runner checks each lane's driver options with the driver's own parser before it starts a task, in place of a separate Claude Code check.
+
+### Fixed
+- `docs/claude-code.md` named the `flash` lane in its cap sentence; the lane is `fable`.
+
 ## [0.3.0] - 2026-10-09
 
 ### Changed

@@ -55,6 +55,7 @@ these numbers is released (see [Data](#data)).
 - [Setup](#setup)
 - [Local models](#local-models)
 - [Claude Code as the verifier](#claude-code-as-the-verifier)
+- [A model for each role](#a-model-for-each-role)
 - [Usage](#usage)
 - [Benchmarks and grading](#benchmarks-and-grading)
 - [Data](#data)
@@ -81,7 +82,8 @@ The harness has five roles:
 | **Fixer** | Builds the final artifact from the plan. | `REPAIR` prompt, `repair.json`, the `repair-*` skills, `out/deliverables/` |
 
 The Worker is an agent that runs before the harness. The other four roles are
-turns of the verifier model. Rollouts of one model either disagree on a claim
+turns of the verifier model (one model by default; see
+[A model for each role](#a-model-for-each-role)). Rollouts of one model either disagree on a claim
 or agree on it, and the two cases call for different checks:
 
 * **Disagreement → check.** The alternatives are already on the table. The
@@ -102,7 +104,7 @@ materialized task ──► Checker     (own session) ──► ledger_elim.json
                   Reviewer (fresh session: both records + task + rollouts)
                               │        └─► finish.json  {base, work[], open[]}
                               ▼
-                  Fixer (same session) ──► out/deliverables/ + repair.json
+                  Fixer (same session; a new one on another model) ──► out/deliverables/ + repair.json
 ```
 
 The Reviewer names a **base** rollout, an evidence-backed **revision plan**
@@ -275,6 +277,15 @@ bun harness/cli.ts runner --run-name demo --cells sb2:haiku --env none --lane-ma
 * The `fable` and `opus` lanes start at two concurrent drivers each and the `haiku` and `sonnet` lanes at four, because every Claude Code session of the account counts against one usage limit.
 * When Claude Code reports a usage limit, the driver exits with code 75. The runner stops that lane and marks the queued tasks `lane-stopped`.
 * Windows is supported for this provider. Install Python 3 with `openpyxl` and `python-docx` for the repair turn.
+
+## A model for each role
+
+The Checker, the Challenger, the Reviewer and the Fixer can each use a different provider and model. A role without `--role` uses `--provider` and `--model`. A Fixer without `--role` uses the Reviewer's model and continues its session. Details, including local servers and the session rules, are in [docs/roles.md](docs/roles.md).
+
+```bash
+bun harness/cli.ts driver <task-dir> --provider claude-code --model claude-opus-5-5 --env none \
+  --role checker=ollama:qwen3.5:9b --role challenger=ollama:qwen3.5:9b
+```
 
 ## Usage
 

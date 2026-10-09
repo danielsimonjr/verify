@@ -24,7 +24,7 @@ bun harness/cli.ts driver <task-dir> --provider claude-code --model claude-haiku
 bun harness/cli.ts runner --run-name demo --cells sb2:haiku --env none --lane-max haiku=4
 ```
 
-`--model` is required and is a full model id. All four lanes run Claude Code and are in `harness/config.ts`: `fable` (`claude-fable-5-1`), `opus` (`claude-opus-5-5`), `haiku` (`claude-haiku-5-5`) and `sonnet` (`claude-sonnet-5-5`). Every lane needs `--env none`. The default caps are 2 for `flash` and `opus` and 4 for `haiku` and `sonnet`, because all lanes share one usage limit.
+`--model` is required and is a full model id. All four lanes run Claude Code and are in `harness/config.ts`: `fable` (`claude-fable-5-1`), `opus` (`claude-opus-5-5`), `haiku` (`claude-haiku-5-5`) and `sonnet` (`claude-sonnet-5-5`). Every lane needs `--env none`. The default caps are 2 for `fable` and `opus` and 4 for `haiku` and `sonnet`, because all lanes share one usage limit.
 
 `model-check` runs one isolated turn with no tools and no saved session. It prints a JSON report with the fields `provider`, `requestedModel`, `model` (the model Claude Code reports), `cliVersion`, `keySource` (as Claude Code reports it; `none` with a subscription login), `tools`, `warnings`, `builtinPlugins` and `reply`. It exits with 1 when the CLI does not start or the turn fails, and the error says which. It exits with 2 when the arguments are wrong.
 
@@ -100,6 +100,8 @@ When the task ends, the driver moves the saved copy of each session it created t
 A usage limit that stops a task before `finish.json` exists leaves a task that the runner stages again on the next run. A usage limit during the repair turn happens after the adjudication chose a base. The driver then writes `"error": "usage-limit"` into the `repair` block of `finish.json`. The runner counts a task with a `finish.json` as finished and skips it. Scoring treats the missing delivery as a delivery that failed the bundle contract, as it does for any repair turn that wrote no valid bundle. Delete the task directory to run the task again.
 
 The runner treats exit code 75 as the status `usage-limit`. It stops the lane that hit the limit and does not start its queued tasks. It counts them as `lane-stopped`. Other lanes continue.
+
+The roles of one task can use different Claude models (`--role`, see [roles.md](roles.md)). They share one usage limit: a limit in one role stops the Claude Code roles of the task, and the driver exits with code 75.
 
 ## Concurrency
 

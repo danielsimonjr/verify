@@ -29,4 +29,4 @@ export {
 export { claudeOwnRecord, parseStream, splitPlugins } from "./stream.js";
 export type { StreamInit, StreamResult } from "./stream.js";
 export { ClaudeRuntime, ClaudeSession, claudeArgs } from "./turn.js";
-export type { ClaudeArgsInput, ClaudeRuntimeOptions } from "./turn.js";
+export type { ClaudeArgsInput, ClaudeRuntimeOptions, UsageLimitState } from "./turn.js";

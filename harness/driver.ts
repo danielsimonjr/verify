@@ -47,6 +47,7 @@ import {
 import {
   CLAUDE_CODE_PROVIDER,
   ClaudeRuntime,
+  type UsageLimitState,
   UNSUPPORTED_WITH_CLAUDE_CODE,
   USAGE_LIMIT_EXIT,
   claudeCommand,
@@ -57,6 +58,7 @@ import {
 } from "./claude/index.js";
 import { Native, imageFor } from "./env/index.js";
 import { canonicalLocalProvider, materializePiHome, prepareLocalProvider, resolveLocalConfig, secondsToMs } from "./model/index.js";
+import { ROLES, describeRoles, parseRoleOptions, resolveRoles, roleKey, sharedServerWarnings, type Role, type RoleModel } from "./roles.js";
 import { isBun, isMain, runWithBudget } from "./runtime.js";
 import { isView } from "./views.js";
 
@@ -755,11 +757,20 @@ export interface DriverArgs {
   topP?: number;
   /** HTTP timeout for local-model preflight, in seconds. */
   requestTimeout?: number;
+  /** The roles that `--role` gave their own model; the others use `provider` and `model`. */
+  roles: Partial<Record<Role, RoleModel>>;
 }
 
-/** The runtime a task runs on, as `renderSkills` names it. */
-function runtimeOf(args: DriverArgs): "pi" | "claude-code" {
-  return args.provider === CLAUDE_CODE_PROVIDER ? "claude-code" : "pi";
+/** The runtime a role runs on, as `renderSkills` names it. */
+type RuntimeKind = "pi" | "claude-code";
+
+function kindOf(m: RoleModel): RuntimeKind {
+  return m.provider === CLAUDE_CODE_PROVIDER ? "claude-code" : "pi";
+}
+
+/** The model the roles fall back to: the driver's own `--provider`, `--model`, `--base-url` and `--context-size`. */
+function mainModel(args: DriverArgs): RoleModel {
+  return { provider: args.provider, model: args.model, baseUrl: args.baseUrl, contextSize: args.contextSize };
 }
 
 async function investigate(
@@ -768,6 +779,7 @@ async function investigate(
   mission: string,
   skills: string[],
   spec: [string, string, string, string],
+  kind: RuntimeKind,
 ): Promise<boolean> {
   const [name, playbook, ledgerDoc, record] = spec;
   const ws = agent.ws;
@@ -781,7 +793,7 @@ async function investigate(
     mission +
     "\n\n" +
     readFileSync(join(config.PROMPTS_DIR, playbook), "utf8") +
-    renderSkills(skills, ws, name, args.skillsMode, runtimeOf(args));
+    renderSkills(skills, ws, name, args.skillsMode, kind);
   const tag = `[${name}] `;
   log(ws, `${tag}investigation: ${playbook}`);
   const session = agent.withSession(name);
@@ -871,11 +883,16 @@ function restoreRecords(ws: string): void {
   }
 }
 
-async function adjudicate(agent: Agent, args: DriverArgs, skills: string[]): Promise<Record<string, unknown> | null> {
+async function adjudicate(
+  agent: Agent,
+  args: DriverArgs,
+  skills: string[],
+  kind: RuntimeKind,
+): Promise<Record<string, unknown> | null> {
   log(agent.ws, "adjudication: ADJUDICATE.md (fresh session)");
   const message =
     readFileSync(join(config.PROMPTS_DIR, "ADJUDICATE.md"), "utf8") +
-    renderSkills(skills, agent.ws, "adjudicate", args.skillsMode, runtimeOf(args));
+    renderSkills(skills, agent.ws, "adjudicate", args.skillsMode, kind);
   return turnUntil(
     agent,
     message,
@@ -913,11 +930,19 @@ function settleBundle(ws: string, base: string): Record<string, unknown> {
   }
 }
 
+/** What a fixer in a fresh session is told first: the adjudication it did not see. */
+const FRESH_FIXER_BRIEF =
+  "The adjudication ran in another session, on another model. You did not see it. `finish.json` is its " +
+  "result. Before you start, read `finish.json`, the two investigation records (`ledger_elim.json` and " +
+  "`ledger_fals.json`), `MISSION.md` and the rollouts that `finish.json` names.\n\n";
+
 async function deliver(
   agent: Agent,
   args: DriverArgs,
   finish: Record<string, unknown>,
   skills: string[],
+  kind: RuntimeKind,
+  fresh: boolean,
 ): Promise<void> {
   const ws = agent.ws;
   const base = baseOf(finish);
@@ -927,9 +952,10 @@ async function deliver(
       : "\n\nThe adjudication found no candidate worth starting from (base none): " +
         "build the deliverable from the inputs.\n";
   const message =
+    (fresh ? FRESH_FIXER_BRIEF : "") +
     readFileSync(join(config.PROMPTS_DIR, "REPAIR.md"), "utf8") +
     baseLine +
-    renderSkills(skills, ws, "repair", args.skillsMode, runtimeOf(args));
+    renderSkills(skills, ws, "repair", args.skillsMode, kind);
   // The earlier turns can plant a link under out/, and ensureDir would follow it and create the
   // bundle directory on the host. They can also leave a file at out/deliverables, and ensureDir
   // then throws. The checks after the repair refuse such a bundle, so the repair runs either way.
@@ -940,14 +966,19 @@ async function deliver(
       log(ws, `delivery: out/deliverables not created: ${(e as Error).message}`);
     }
   }
-  log(ws, "delivery: REPAIR.md (continuing adjudication session)");
+  log(
+    ws,
+    fresh
+      ? "delivery: REPAIR.md (fresh session: the fixer's model is not the reviewer's)"
+      : "delivery: REPAIR.md (continuing adjudication session)",
+  );
   const repair = await turnUntil(
     agent,
     message,
     NUDGE_REPAIR,
     join(ws, "repair.json"),
     [args.turnTimeout, args.nudgeTimeout],
-    true,
+    !fresh,
   );
   const repairBlock = {
     written: repair !== null,
@@ -1057,6 +1088,9 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
         "max-tokens": { type: "string" },
         "top-p": { type: "string" },
         "request-timeout": { type: "string" },
+        role: { type: "string", multiple: true },
+        "role-base-url": { type: "string", multiple: true },
+        "role-context-size": { type: "string", multiple: true },
       },
     });
     if (values.help) {
@@ -1097,9 +1131,31 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
     const provider = isClaudeCodeProvider(rawProvider)
       ? CLAUDE_CODE_PROVIDER
       : (canonicalLocalProvider(rawProvider) ?? rawProvider);
-    if (provider === CLAUDE_CODE_PROVIDER) {
-      const refusal = claudeCodeRefusal(env, values.model as string | undefined, values as Record<string, unknown>);
-      if (refusal !== null) return { error: refusal };
+    const roleSet = parseRoleOptions(
+      (values.role as string[] | undefined) ?? [],
+      (values["role-base-url"] as string[] | undefined) ?? [],
+      (values["role-context-size"] as string[] | undefined) ?? [],
+    );
+    if ("error" in roleSet) return roleSet;
+    const roles = resolveRoles(
+      {
+        provider,
+        model: values.model as string | undefined,
+        baseUrl: values["base-url"] as string | undefined,
+        contextSize: contextSize as number | undefined,
+      },
+      roleSet,
+    );
+    // The pi tuning options apply to the roles that run pi; with none, they are refused as before.
+    // --base-url and --context-size describe the main model, so a Claude Code main model refuses them.
+    const anyPi = ROLES.some((role) => roles[role].provider !== CLAUDE_CODE_PROVIDER);
+    const given = values as Record<string, unknown>;
+    const mainOnly = provider === CLAUDE_CODE_PROVIDER ? { "base-url": given["base-url"], "context-size": given["context-size"] } : {};
+    for (const role of ROLES) {
+      if (roles[role].provider !== CLAUDE_CODE_PROVIDER) continue;
+      const own = roleSet[role] !== undefined;
+      const refusal = claudeCodeRefusal(env, roles[role].model, anyPi ? mainOnly : given);
+      if (refusal !== null) return { error: own ? `--role ${role}: ${refusal}` : refusal };
     }
     return {
       ws: positionals[0]!,
@@ -1123,6 +1179,7 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
         maxTokens: maxTokens as number | undefined,
         topP: topP as number | undefined,
         requestTimeout: requestTimeout as number | undefined,
+        roles: roleSet,
       },
     };
   } catch (e) {
@@ -1142,30 +1199,36 @@ export interface DriverDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
+/** The agent of each role in one task. */
+interface Cast {
+  checker: Agent;
+  challenger: Agent;
+  /** Called once the investigations have left their records, so a runtime can change where it runs. */
+  reviewer: () => Agent;
+  /** A fresh session for a fixer on another model than the reviewer's; null continues the reviewer's session. */
+  fixer: (() => Agent) | null;
+  kinds: Record<Role, RuntimeKind>;
+}
+
 /**
  * The phases every runtime shares: the two investigations in parallel, the adjudication, then, on the
- * artifact contract, the repair. `adjudicator` is called once the investigations have left their
- * records, so a runtime can change where it runs between the phases. Resolves to the exit code.
+ * artifact contract, the repair. Resolves to the exit code.
  */
-async function runPhases(
-  investigator: Agent,
-  adjudicator: () => Agent,
-  args: DriverArgs,
-  mission: string,
-  skills: string[],
-): Promise<number> {
-  const ws = investigator.ws;
-  const ok = await Promise.all(
-    INVESTIGATIONS.map((spec) => investigate(investigator, args, mission, skills, spec)),
-  );
+async function runPhases(cast: Cast, args: DriverArgs, mission: string, skills: string[]): Promise<number> {
+  const ws = cast.checker.ws;
+  const [elim, fals] = INVESTIGATIONS as [[string, string, string, string], [string, string, string, string]];
+  const ok = await Promise.all([
+    investigate(cast.checker, args, mission, skills, elim, cast.kinds.checker),
+    investigate(cast.challenger, args, mission, skills, fals, cast.kinds.challenger),
+  ]);
   restoreRecords(ws);
   if (!ok.every(Boolean)) {
     log(ws, "an investigation left no record; recording no-output");
     return 1;
   }
 
-  const agent = adjudicator();
-  const finish = await adjudicate(agent, args, skills);
+  const reviewer = cast.reviewer();
+  const finish = await adjudicate(reviewer, args, skills, cast.kinds.reviewer);
   if (finish === null) {
     log(ws, "no finish.json after nudge; recording no-output");
     return 1;
@@ -1177,7 +1240,8 @@ async function runPhases(
   );
 
   if (args.contract === "artifact") {
-    await deliver(agent, args, finish, skills);
+    const fixer = cast.fixer === null ? reviewer : cast.fixer();
+    await deliver(fixer, args, finish, skills, cast.kinds.fixer, cast.fixer !== null);
   }
   return 0;
 }
@@ -1197,22 +1261,45 @@ export function skillRoots(skills: readonly string[], skillsDir: string = config
   return [...roots];
 }
 
-/** One task through Claude Code. The records, the phases and the scoring are the same as for pi. */
-async function runClaudeCode(
+type ClaudeBase = Omit<ConstructorParameters<typeof ClaudeRuntime>[0], "model" | "limit">;
+
+/** The Claude Code runtime of each model a task uses. All of them share one usage-limit state. */
+class ClaudeFleet {
+  readonly limit: UsageLimitState = { message: null };
+  private readonly runtimes = new Map<string, ClaudeRuntime>();
+
+  constructor(private readonly base: ClaudeBase) {}
+
+  runtime(model: string): ClaudeRuntime {
+    let r = this.runtimes.get(model);
+    if (!r) {
+      r = new ClaudeRuntime({ ...this.base, model, limit: this.limit });
+      this.runtimes.set(model, r);
+    }
+    return r;
+  }
+
+  /** Give back the saved copies of every session. Idempotent. */
+  finish(): void {
+    for (const r of this.runtimes.values()) r.finish();
+  }
+}
+
+/** Start the Claude Code side of a task: the command check, the warnings and the charter file. Null on failure. */
+function startClaudeFleet(
   ws: string,
   args: DriverArgs,
   deps: DriverDeps,
   charter: string,
-  mission: string,
   skills: string[],
-): Promise<number> {
+): ClaudeFleet | null {
   // A verifier started from inside a Claude Code session must not inherit that session's identity.
   const env = claudeSessionEnv(agentEnv(process.env));
   const command = deps.claudeCommand ?? claudeCommand(args.claudeBin, process.env);
   const started = startCheck(command, env);
   if (!started.ok) {
     process.stderr.write(`error: ${started.error}\n`);
-    return 2;
+    return null;
   }
   log(ws, "no isolation (--env none): the verifier's Bash tool runs directly on the host");
   log(
@@ -1227,10 +1314,9 @@ async function runClaudeCode(
   ensureDir(dirname(charterFile));
   writeFileSync(charterFile, charter, "utf8");
 
-  const runtime = new ClaudeRuntime({
+  return new ClaudeFleet({
     ws,
     command,
-    model: args.model!,
     tools: claudeTools(TOOLS[args.contract]!),
     charterFile,
     addDirs: skillRoots(skills),
@@ -1240,26 +1326,37 @@ async function runClaudeCode(
     log: (message) => log(ws, message),
     sleep: deps.sleep,
   });
-  // A driver that is killed still gives the saved copies back.
-  const onExit = (): void => runtime.finish();
-  process.once("exit", onExit);
-  try {
-    let code = await runPhases(runtime.session(""), () => runtime.session("adjudicate"), args, mission, skills);
-    if (runtime.usageLimit !== null) {
-      // The limit is the account's, not the task's: say so in the record, and let the runner stop the lane.
-      const finish = readJsonFs<Record<string, unknown>>(join(ws, "finish.json"));
-      if (finish !== null) {
-        finish.repair = { ...(finish.repair as object | undefined), error: "usage-limit" };
-        writeJsonFs(join(ws, "finish.json"), finish);
-      }
-      log(ws, `usage-limit: ${runtime.usageLimit}`);
-      code = USAGE_LIMIT_EXIT;
-    }
-    return code;
-  } finally {
-    runtime.finish();
-    process.removeListener("exit", onExit);
-  }
+}
+
+/** A pi role, once its local server (if any) is ready: the provider and the model pi gets, and its pi home. */
+interface PiRole {
+  provider: string | undefined;
+  model: string | undefined;
+  piHome: string | null;
+}
+
+/** Probe the local server of a local role and write the pi home that names its model. */
+async function prepareLocalRole(ws: string, args: DriverArgs, m: RoleModel, home: string): Promise<PiRole> {
+  const prepared = await prepareLocalProvider(
+    resolveLocalConfig({
+      provider: m.provider,
+      model: m.model,
+      baseUrl: m.baseUrl,
+      temperature: args.temperature,
+      topP: args.topP,
+      maxTokens: args.maxTokens,
+      contextSize: m.contextSize,
+      timeoutMs: args.requestTimeout === undefined ? undefined : secondsToMs(args.requestTimeout, "request timeout"),
+    }),
+  );
+  materializePiHome(home, prepared.piProvider);
+  for (const warning of prepared.warnings) log(ws, `local model: ${warning}`);
+  log(
+    ws,
+    `local model ${prepared.config.provider} ${prepared.model} at ${prepared.config.baseUrl} ` +
+      `tools=${String(prepared.probe.capabilities.tools)}`,
+  );
+  return { provider: prepared.config.provider, model: prepared.model, piHome: home };
 }
 
 /** Run one task workspace; returns the exit code. */
@@ -1272,11 +1369,14 @@ export async function main(argv: string[] = process.argv.slice(2), deps: DriverD
           "[--thinking T] [--base-url URL] [--context-size N] [--temperature N] [--max-tokens N] [--top-p N] " +
           "[--request-timeout S] [--skill NAME]... [--no-skills] [--skills-mode mounted|auto] " +
           "[--env jail|none|native|native-full] [--turn-timeout S] [--nudge-timeout S] [--task-timeout S] " +
-          "[--pi-bin PATH] [--claude-bin PATH]\n" +
+          "[--pi-bin PATH] [--claude-bin PATH] [--role ROLE=PROVIDER:MODEL]... [--role-base-url ROLE=URL]... " +
+          "[--role-context-size ROLE=N]...\n" +
           "local providers: --provider ollama (default http://127.0.0.1:11434) or --provider llamacpp " +
           "(default http://127.0.0.1:8080). Both need --model. No API key.\n" +
           "Claude Code: --provider claude-code --model <full model id> --env none. Uses the login Claude Code " +
-          "holds (or ANTHROPIC_API_KEY). See docs/claude-code.md.\n",
+          "holds (or ANTHROPIC_API_KEY). See docs/claude-code.md.\n" +
+          `roles: ${ROLES.join(", ")}. A role with no --role uses --provider and --model; a fixer with no ` +
+          "--role uses the reviewer's model. See docs/roles.md.\n",
       );
       return 0;
     }
@@ -1302,39 +1402,60 @@ export async function main(argv: string[] = process.argv.slice(2), deps: DriverD
     .replace("{{OUTPUT_CONTRACT}}", CONTRACTS[args.contract]!);
   writeFileSync(join(ws, "MISSION.md"), mission, "utf8");
 
-  let localPiHome: string | null = null;
-  if (canonicalLocalProvider(args.provider)) {
+  const roles = resolveRoles(mainModel(args), args.roles);
+  const kinds = Object.fromEntries(ROLES.map((role) => [role, kindOf(roles[role])])) as Record<Role, RuntimeKind>;
+
+  log(
+    ws,
+    `task=${basename(ws)} N=${nRollouts} contract=${args.contract} skills=${skills.length} skills_mode=${args.skillsMode} ` +
+      `timeouts(turn/nudge/task)=${args.turnTimeout}/${args.nudgeTimeout}/${args.taskTimeout}s`,
+  );
+  log(ws, `roles: ${describeRoles(roles)}`);
+  for (const warning of sharedServerWarnings(roles)) log(ws, `WARNING: ${warning}`);
+
+  // The pi side: one prepared provider per distinct pi role, so each local server is probed once.
+  // Each distinct local role gets its own pi home: `.pi` for the first, then `.pi-2`, `.pi-3`.
+  const piRoles = new Map<string, PiRole>();
+  let homes = 0;
+  for (const role of ROLES) {
+    const m = roles[role];
+    const key = roleKey(m);
+    if (kinds[role] !== "pi" || piRoles.has(key)) continue;
+    if (!canonicalLocalProvider(m.provider)) {
+      piRoles.set(key, { provider: m.provider, model: m.model, piHome: null });
+      continue;
+    }
+    homes++;
     try {
-      const prepared = await prepareLocalProvider(
-        resolveLocalConfig({
-          provider: args.provider,
-          model: args.model,
-          baseUrl: args.baseUrl,
-          temperature: args.temperature,
-          topP: args.topP,
-          maxTokens: args.maxTokens,
-          contextSize: args.contextSize,
-          timeoutMs: args.requestTimeout === undefined ? undefined : secondsToMs(args.requestTimeout, "request timeout"),
-        }),
-      );
-      args.provider = prepared.config.provider;
-      args.model = prepared.model;
-      localPiHome = join(ws, ".pi");
-      materializePiHome(localPiHome, prepared.piProvider);
-      for (const warning of prepared.warnings) log(ws, `local model: ${warning}`);
-      log(
-        ws,
-        `local model ${prepared.config.provider} ${prepared.model} at ${prepared.config.baseUrl} ` +
-          `tools=${String(prepared.probe.capabilities.tools)}`,
-      );
+      piRoles.set(key, await prepareLocalRole(ws, args, m, join(ws, homes === 1 ? ".pi" : `.pi-${homes}`)));
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`error: ${message}\n`);
+      process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
       return 2;
     }
   }
 
-  const flags = [
+  const usesPi = piRoles.size > 0;
+  const useJail = usesPi && args.env !== "none";
+  if (useJail) {
+    const why = jailUnavailable();
+    if (why) {
+      process.stderr.write(
+        `error: the jail cannot run here (${why}); pass --env none to run without isolation ` +
+          `(the data root's archived scores are then reachable from a session)\n`,
+      );
+      return 2;
+    }
+  } else if (usesPi) {
+    log(ws, "no isolation (--env none): sessions run directly on the host");
+  }
+
+  const wantsNative = usesPi && (args.env === "native" || args.env === "native-full");
+  const nativeImage = wantsNative ? imageFor(ws) : null;
+  if (wantsNative && !nativeImage) {
+    log(ws, "no usable native image for this task (docker or image missing); every turn stays in the jail");
+  }
+
+  const baseFlags = [
     "--no-context-files",
     "--no-extensions",
     "--no-prompt-templates",
@@ -1347,71 +1468,97 @@ export async function main(argv: string[] = process.argv.slice(2), deps: DriverD
     charter,
   ];
   for (const skill of skills) {
-    flags.push("--skill", skill);
+    baseFlags.push("--skill", skill);
   }
-  for (const opt of ["provider", "model", "thinking"] as const) {
-    const v = args[opt];
-    if (v) flags.push(`--${opt}`, v);
-  }
-
-  log(
-    ws,
-    `task=${basename(ws)} N=${nRollouts} contract=${args.contract} skills=${skills.length} skills_mode=${args.skillsMode} ` +
-      `timeouts(turn/nudge/task)=${args.turnTimeout}/${args.nudgeTimeout}/${args.taskTimeout}s`,
-  );
-
-  if (args.provider === CLAUDE_CODE_PROVIDER) {
-    return runClaudeCode(ws, args, deps, charter, mission, skills);
-  }
-
-  const useJail = args.env !== "none";
-  if (useJail) {
-    const why = jailUnavailable();
-    if (why) {
-      process.stderr.write(
-        `error: the jail cannot run here (${why}); pass --env none to run without isolation ` +
-          `(the data root's archived scores are then reachable from a session)\n`,
+  const deadline = Date.now() / 1000 + args.taskTimeout;
+  const pis = new Map<string, Pi>();
+  const piFor = (m: RoleModel): Pi => {
+    const key = roleKey(m);
+    let pi = pis.get(key);
+    if (!pi) {
+      const p = piRoles.get(key)!;
+      const flags = [...baseFlags];
+      for (const [opt, v] of [["provider", p.provider], ["model", p.model], ["thinking", args.thinking]] as const) {
+        if (v) flags.push(`--${opt}`, v);
+      }
+      pi = new Pi(
+        ws,
+        deps.piCommand ?? piCommandFor(args.piBin),
+        flags,
+        useJail,
+        deadline,
+        null,
+        p.piHome,
+        deps.backoff ?? RETRY_BACKOFF,
       );
-      return 2;
+      pis.set(key, pi);
     }
-  } else {
-    log(ws, "no isolation (--env none): sessions run directly on the host");
-  }
+    return pi;
+  };
 
-  const pi = new Pi(
-    ws,
-    deps.piCommand ?? piCommandFor(args.piBin),
-    flags,
-    useJail,
-    Date.now() / 1000 + args.taskTimeout,
-    null,
-    localPiHome,
-    deps.backoff ?? RETRY_BACKOFF,
-  );
+  // The Claude Code side: one runtime per model, one shared usage limit.
+  const fleet = ROLES.some((role) => kinds[role] === "claude-code")
+    ? startClaudeFleet(ws, args, deps, charter, skills)
+    : undefined;
+  if (fleet === null) return 2;
 
-  const nativeImage =
-    args.env === "native" || args.env === "native-full" ? imageFor(ws) : null;
-  if ((args.env === "native" || args.env === "native-full") && !nativeImage) {
-    log(ws, "no usable native image for this task (docker or image missing); every turn stays in the jail");
-  }
-
-  let investigator = pi;
-  if (nativeImage && args.env === "native-full") {
-    investigator = pi.inNative(new Native(ws, nativeImage));
+  /** The agent of an investigation: in the native image only with native-full. */
+  const early = (m: RoleModel): Agent => {
+    if (kindOf(m) === "claude-code") return fleet!.runtime(m.model!).session("");
+    const pi = piFor(m);
+    return nativeImage && args.env === "native-full" ? pi.inNative(new Native(ws, nativeImage)) : pi;
+  };
+  if (nativeImage && args.env === "native-full" && (kinds.checker === "pi" || kinds.challenger === "pi")) {
     log(ws, `native environment for the investigations: ${nativeImage}`);
   }
+  let nativeLogged = false;
+  /** The agent of a role that runs after the investigations: in the native image when there is one. */
+  const late = (m: RoleModel, claudeSession: string): Agent => {
+    if (kindOf(m) === "claude-code") return fleet!.runtime(m.model!).session(claudeSession);
+    const pi = piFor(m);
+    if (!nativeImage) return pi;
+    if (!nativeLogged) log(ws, `native environment for adjudication and delivery: ${nativeImage}`);
+    nativeLogged = true;
+    return pi.inNative(new Native(ws, nativeImage));
+  };
 
-  return runPhases(
-    investigator,
-    () => {
-      if (!nativeImage) return pi;
-      log(ws, `native environment for adjudication and delivery: ${nativeImage}`);
-      return pi.inNative(new Native(ws, nativeImage));
-    },
-    args,
-    mission,
-    skills,
-  );
+  const cast: Cast = {
+    checker: early(roles.checker),
+    challenger: early(roles.challenger),
+    reviewer: () => late(roles.reviewer, "adjudicate"),
+    // A pi fixer takes its own session directory; a Claude Code fixer has one from its session name.
+    fixer:
+      roleKey(roles.fixer) === roleKey(roles.reviewer)
+        ? null
+        : () => {
+            const agent = late(roles.fixer, "repair");
+            return kinds.fixer === "pi" ? agent.withSession("repair") : agent;
+          },
+    kinds,
+  };
+
+  if (!fleet) return runPhases(cast, args, mission, skills);
+
+  // A driver that is killed still gives the saved copies back.
+  const onExit = (): void => fleet.finish();
+  process.once("exit", onExit);
+  try {
+    let code = await runPhases(cast, args, mission, skills);
+    if (fleet.limit.message !== null) {
+      // The limit is the account's, not the task's: say so in the record, and let the runner stop the lane.
+      const finish = readJsonFs<Record<string, unknown>>(join(ws, "finish.json"));
+      if (finish !== null) {
+        finish.repair = { ...(finish.repair as object | undefined), error: "usage-limit" };
+        writeJsonFs(join(ws, "finish.json"), finish);
+      }
+      log(ws, `usage-limit: ${fleet.limit.message}`);
+      code = USAGE_LIMIT_EXIT;
+    }
+    return code;
+  } finally {
+    fleet.finish();
+    process.removeListener("exit", onExit);
+  }
 }
 
 if (isMain(import.meta.url)) {
