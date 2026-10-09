@@ -170,7 +170,12 @@ export class LlamaCppBackend implements ModelBackend {
     this.model = match.id;
     const props = await this.readProps(this.model);
     const contextSize = props.status < 400 ? parseLlamaContext(props.json) : undefined;
-    const capabilities: Capabilities = { tools: "unknown", json: "unknown", contextSize };
+    const capabilities: Capabilities = {
+      tools: "unknown",
+      json: "unknown",
+      contextSize,
+      contextSource: contextSize !== undefined ? "n_ctx" : undefined,
+    };
     this.capabilities = capabilities;
     return { model: this.model, capabilities, models: listed.map((m) => m.id) };
   }

@@ -104,6 +104,18 @@ export const LANES: Record<string, string[]> = {
 };
 
 /**
+ * Context window, in tokens, of each Claude model a lane runs. Claude Code reports no window before a
+ * run, so `--context-size auto` reads this table. Source: Anthropic's model overview,
+ * https://platform.claude.com/docs/en/about-claude/models/overview
+ */
+export const CLAUDE_CODE_WINDOWS: Readonly<Record<string, number>> = {
+  "claude-fable-5-1": 1_000_000,
+  "claude-opus-5-5": 1_000_000,
+  "claude-haiku-5-5": 1_000_000,
+  "claude-sonnet-5-5": 1_000_000,
+};
+
+/**
  * The lane that checks a pool whose name is not a lane. The archived `flash` pools hold Gemini 3.5 Flash
  * rollouts; no lane runs Gemini, so the `fable` lane checks them. `--lane` overrides this.
  */

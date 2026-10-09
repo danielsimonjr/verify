@@ -87,7 +87,7 @@ export async function prepareLocalProvider(config: LocalModelConfig, deps: Prepa
   };
 }
 
-function enforceContext(config: LocalModelConfig, probe: ProbeResult, warnings: string[]): void {
+export function enforceContext(config: LocalModelConfig, probe: ProbeResult, warnings: string[]): void {
   const have = probe.capabilities.contextSize;
   const want = config.contextSize;
   if (have === undefined) {

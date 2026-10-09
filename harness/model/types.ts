@@ -104,6 +104,8 @@ export interface Capabilities {
   json: boolean | "unknown";
   /** Context the server is actually configured with, when it reports one. */
   contextSize?: number;
+  /** Where `contextSize` came from: a loaded Ollama model, Ollama's `num_ctx`, or llama.cpp's `n_ctx`. */
+  contextSource?: "loaded" | "num_ctx" | "n_ctx";
 }
 
 export interface ProbeResult {

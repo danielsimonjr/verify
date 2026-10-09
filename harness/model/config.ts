@@ -14,6 +14,7 @@
 
 import type { FetchLike } from "./http.js";
 import { LlamaCppBackend } from "./llamacpp.js";
+import { PI_CONTEXT_RESERVE } from "./messages.js";
 import { OllamaBackend } from "./ollama.js";
 import type { LocalProviderId, ModelBackend } from "./types.js";
 import { normalizeBaseUrl } from "./url.js";
@@ -45,10 +46,28 @@ export interface LocalModelInput {
   temperature?: number;
   topP?: number;
   maxTokens?: number;
-  contextSize?: number;
+  /** `auto` is the same as omitted: the server decides. */
+  contextSize?: ContextSize;
   timeoutMs?: number;
   retries?: number;
   env?: NodeJS.ProcessEnv;
+}
+
+/** A context window in tokens, or `auto` for the window the server or the table reports. */
+export type ContextSize = number | "auto";
+
+/**
+ * Parse a `--context-size` value. `auto` in any case returns `"auto"`. A number must be a whole number
+ * above PI_CONTEXT_RESERVE (4096): pi withholds that many tokens, so a smaller window holds no prompt.
+ */
+export function parseContextSize(raw: string | undefined, name: string): ContextSize | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (raw.trim().toLowerCase() === "auto") return "auto";
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= PI_CONTEXT_RESERVE) {
+    throw new Error(`${name} must be 'auto' or a whole number above ${PI_CONTEXT_RESERVE}, not '${raw}'`);
+  }
+  return n;
 }
 
 export interface BackendDeps {
@@ -90,7 +109,9 @@ export function resolveLocalConfig(input: LocalModelInput): LocalModelConfig {
       "max tokens",
     ),
     contextSize: positiveInteger(
-      input.contextSize ?? optionalNumber(env.VERIHARNESS_CONTEXT_SIZE, "VERIHARNESS_CONTEXT_SIZE"),
+      input.contextSize === "auto"
+        ? undefined
+        : (input.contextSize ?? optionalNumber(env.VERIHARNESS_CONTEXT_SIZE, "VERIHARNESS_CONTEXT_SIZE")),
       "context size",
     ),
     timeoutMs: input.timeoutMs === undefined ? timeoutFromEnv(env) : positiveTimeout(input.timeoutMs),

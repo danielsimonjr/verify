@@ -345,6 +345,7 @@ export class OllamaBackend implements ModelBackend {
       tools,
       json: true,
       contextSize: running ?? numCtx,
+      contextSource: running !== undefined ? "loaded" : numCtx !== undefined ? "num_ctx" : undefined,
     };
     this.capabilities = capabilities;
     return { model: this.model, capabilities, models: names };
