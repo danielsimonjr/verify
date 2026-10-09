@@ -132,9 +132,12 @@ export function ensureDir(path: string): void {
   mkdirSync(resolve(path), { recursive: true });
 }
 
-/** Remove a file or a directory tree. A missing path is not an error. */
+/**
+ * Remove a file or a directory tree. A missing path is not an error. A busy file (EBUSY, EPERM) is
+ * tried again a few times, because on Windows a killed process can hold its handles for a moment.
+ */
 export function rmrf(path: string): void {
-  rmSync(path, { recursive: true, force: true });
+  rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 /** True when `path` is a directory, following a symlink. False when it does not exist. */

@@ -166,6 +166,44 @@ describe("veriharness workers", () => {
     expect(f.calls).toHaveLength(1);
   });
 
+  test("a usage limit stops the workers that are still running", async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    const runWorker = async (job: WorkerJob): Promise<WorkerRecord> => {
+      signals.push(job.signal);
+      if (job.rollout === "r01") return ok(job, "usage-limit");
+      // A running worker ends early only when its signal fires.
+      await new Promise<void>((done) => {
+        const t = setTimeout(done, 5000);
+        job.signal?.addEventListener("abort", () => (clearTimeout(t), done()));
+      });
+      return ok(job, job.signal?.aborted ? "stopped" : null);
+    };
+    const started = Date.now();
+    const f = { ...fake(), runWorker };
+    const r = await workers([batchRoot(["b01"]), ...HAIKU, "--count", "3", "--max-parallel", "3"], f);
+    expect(r.code).toBe(75);
+    expect(Date.now() - started).toBeLessThan(4000);
+    expect(signals.every((s) => s?.aborted)).toBe(true);
+    expect(r.lines.filter((l) => l.error === "stopped")).toHaveLength(2);
+  });
+
+  test("--context-size and --base-url need a local provider", async () => {
+    const f = fake();
+    const r = await workers([batchRoot(["b01"]), "--provider", "openrouter", "--model", "m", "--context-size", "65536"], f);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("--context-size");
+    expect(f.calls).toHaveLength(0);
+  });
+
+  test("a tool with no Claude Code match is an input error before any worker", async () => {
+    for (const tools of ["constructor", "read,teleport"]) {
+      const f = fake();
+      const r = await workers([batchRoot(["b01"]), ...HAIKU, "--tools", tools], f);
+      expect(r.code).toBe(2);
+      expect(f.calls).toHaveLength(0);
+    }
+  });
+
   test("claude needs env none", async () => {
     const f = fake();
     const r = await workers([batchRoot(["b01"]), "--provider", "claude-code", "--model", "claude-haiku-5-5"], f);

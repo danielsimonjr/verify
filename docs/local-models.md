@@ -63,7 +63,7 @@ bun harness/cli.ts model-check --provider ollama --model qwen2.5-coder-32k
 
 Ollama's OpenAI endpoint, which is what pi calls, uses that configured context rather than a per-request field. `--context-size` is accepted only when the advertised window is at least that large. The window registered with pi is the requested size when you pass one, and the advertised window otherwise. A window of 4096 or less is an error. A window above 4096 and below 8192 still runs, with a warning: verifier tasks are long.
 
-`--context-size auto` is the same as no option: the server's window is used. The driver writes one line for each role to `driver.log`:
+`--context-size auto` uses the server's window. It also overrides `VERIHARNESS_CONTEXT_SIZE`; with no option, the variable applies. The driver writes one line for each role to `driver.log`:
 
 ```
 context: checker=ollama:qwen3.5:9b-64k window=65536 source=loaded
@@ -86,7 +86,7 @@ context: checker asks 8192, the server runs qwen3.5:9b-64k at 65536; a client th
 | `--temperature` | `VERIHARNESS_TEMPERATURE` | Sampling temperature. Omitted unless set, so the model's own default stands. `0.2` is a reasonable verifier setting. |
 | `--top-p` | `VERIHARNESS_TOP_P` | Nucleus sampling. |
 | `--max-tokens` | `VERIHARNESS_MAX_TOKENS` | Maximum tokens pi may generate in one reply. Default ceiling 8192, capped by the context window. |
-| `--context-size` | `VERIHARNESS_CONTEXT_SIZE` | Context to register with pi. `auto`, or a positive integer no larger than the window the server advertises, and greater than 4096. `auto` uses the server's window. |
+| `--context-size` | `VERIHARNESS_CONTEXT_SIZE` | Context to register with pi. `auto`, or a positive integer no larger than the window the server advertises, and greater than 4096. `auto` uses the server's window, also when the variable is set. |
 | `--request-timeout` | `VERIHARNESS_MODEL_TIMEOUT` | Seconds for the preflight HTTP calls. Default 180. |
 
 `model-check` prints the probed capabilities as JSON. `bun harness/cli.ts runner` accepts the same flags and applies them to every cell, in place of that lane's hosted provider. Example:

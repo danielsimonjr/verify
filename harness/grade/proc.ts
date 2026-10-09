@@ -37,6 +37,8 @@ export type RunOptions = {
   onKill?: () => Promise<unknown>;
   /** How long a kill waits for the tree kill and onKill before run() returns anyway (default 10 s). */
   stopWaitMs?: number;
+  /** Stops the run as the timeout does, and sets `aborted`. A signal that is already aborted stops it at once. */
+  signal?: AbortSignal;
 };
 
 /**
@@ -53,6 +55,8 @@ export type RunResult = {
   error?: Error;
   timedOut: boolean;
   truncated: boolean;
+  /** Set when `signal` stopped the run. */
+  aborted?: boolean;
   timeoutMs: number;
 };
 
@@ -151,6 +155,7 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
     let errBytes = 0;
     let timedOut = false;
     let truncated = false;
+    let aborted = false;
     let error: Error | undefined;
     let finished = false;
     let timer: NodeJS.Timeout | undefined;
@@ -164,6 +169,7 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
       finished = true;
       clearTimeout(timer);
       clearTimeout(stopTimer);
+      opts.signal?.removeEventListener("abort", onAbort);
       if (child) untrack(child);
       const result: RunResult = {
         status,
@@ -173,6 +179,7 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
         error,
         timedOut,
         truncated,
+        ...(aborted ? { aborted } : {}),
         timeoutMs: opts.timeoutMs,
       };
       if (stopping) void stopping.then(() => resolve(result));
@@ -208,6 +215,12 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
       // A process that survives the kill must not hold the caller for ever.
       stopTimer = setTimeout(() => finish(null, "SIGKILL"), stopWaitMs);
     };
+    // A function declaration, so finish() can name it before the child starts.
+    function onAbort(): void {
+      if (finished) return;
+      aborted = true;
+      stop();
+    }
 
     c.stdout!.on("data", (b: Buffer) => {
       if (truncated) return;
@@ -238,6 +251,8 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
       timedOut = true;
       stop();
     }, timerDelay(opts.timeoutMs));
+    if (opts.signal?.aborted) onAbort();
+    else opts.signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

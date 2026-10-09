@@ -24,7 +24,7 @@ import { parseStream } from "../claude/stream.js";
 export type DeliverableForm = "pure" | "fenced" | "embedded";
 
 /** Why a rollout did not complete; null when it did. */
-export type WorkerError = "timeout" | "no-result" | "no-json" | "start-failed" | "usage-limit" | null;
+export type WorkerError = "timeout" | "no-result" | "no-json" | "start-failed" | "usage-limit" | "truncated" | "stopped" | null;
 
 /** `trajectory/worker.json`: the numbers and the outcome of one rollout. */
 export interface WorkerRecord {

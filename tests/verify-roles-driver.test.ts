@@ -184,6 +184,20 @@ describe("the context window of each role", () => {
     expect(text).toContain(`context: fixer=claude-code:${SONNET} window=1000000 source=table`);
   });
 
+  test("an explicit auto beats VERIHARNESS_CONTEXT_SIZE, as on batch and workers", async () => {
+    rig.script([...happyRules(rig.ws).slice(0, 2), ...piHappyRules(rig.ws).slice(2)]);
+    const deps = { piCommand: [process.execPath, STUB_PI], fetch: ollamaAt(65536) };
+    const argv = [...ARGS, ...LOCAL, "--role-context-size", "checker=auto"];
+    const code = await rig.run(argv, { VERIHARNESS_CONTEXT_SIZE: "32768" }, deps);
+    expect(code).toBe(0);
+    const text = driverLog();
+    expect(text).toContain("context: checker=ollama:m window=65536 source=loaded");
+    // The challenger names no size, so the variable still applies to it.
+    expect(text).toContain("context: challenger=ollama:m window=32768 source=explicit");
+    const main = parseDriverArgv(["ws", "--provider", "ollama", "--model", "m", "--context-size", "auto"]);
+    expect("error" in main ? undefined : main.args.contextSize).toBe("auto");
+  });
+
   test("an explicit size under the loaded window warns, and the run continues", async () => {
     rig.script([...happyRules(rig.ws).slice(0, 2), ...piHappyRules(rig.ws).slice(2)]);
     const deps = { piCommand: [process.execPath, STUB_PI], fetch: ollamaAt(65536) };

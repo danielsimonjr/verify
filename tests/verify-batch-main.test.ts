@@ -140,6 +140,15 @@ describe("veriharness batch", () => {
     expect(readFileSync(join(f.out, "worker_prompt.md"), "utf8")).toBe("Do the work.\n");
   });
 
+  test("a missing prompt file is an input error, and nothing is written", async () => {
+    const f = files();
+    const r = await batch([...base(f), ...withShared(f, FIT_TWO), "--prompt", join(root, "absent.md")]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("absent.md");
+    expect(existsSync(f.out)).toBe(false);
+    expect(readdirSync(root).filter((n) => n.includes(".tmp-"))).toEqual([]);
+  });
+
   test("jsonl items-name default", async () => {
     const f = files('{"id":"a"}\n{"id":"b"}\n');
     const argv = ["--items", f.itemsPath, "--split", "jsonl", "--spec", f.specPath, "--out", f.out, "--batch-tokens", "5000"];

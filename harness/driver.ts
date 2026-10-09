@@ -58,6 +58,7 @@ import {
 } from "./claude/index.js";
 import { Native, imageFor } from "./env/index.js";
 import { canonicalLocalProvider, materializePiHome, prepareLocalProvider, resolveLocalConfig, secondsToMs } from "./model/index.js";
+import type { ContextSize } from "./model/config.js";
 import type { FetchLike } from "./model/http.js";
 import { ROLES, describeRoles, parseRoleOptions, resolveRoles, roleKey, sharedServerWarnings, type Role, type RoleModel } from "./roles.js";
 import { isBun, isMain, runWithBudget } from "./runtime.js";
@@ -752,7 +753,8 @@ export interface DriverArgs {
   nudgeTimeout: number;
   taskTimeout: number;
   baseUrl?: string;
-  contextSize?: number;
+  /** A size, or `auto` for the server's window. Unset falls back to VERIHARNESS_CONTEXT_SIZE. */
+  contextSize?: ContextSize;
   temperature?: number;
   maxTokens?: number;
   topP?: number;
@@ -1118,9 +1120,9 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
     if (typeof nudgeTimeout === "object") return nudgeTimeout;
     const taskTimeout = positiveSeconds("--task-timeout", values["task-timeout"] as string | undefined, 3600);
     if (typeof taskTimeout === "object") return taskTimeout;
-    // `auto` is the same as no --context-size: the server's own window.
+    // `auto` is the server's own window. It is kept, so it also beats VERIHARNESS_CONTEXT_SIZE.
     const rawContext = values["context-size"] as string | undefined;
-    const contextSize = rawContext?.trim().toLowerCase() === "auto" ? undefined : optionalNumber("context-size", rawContext);
+    const contextSize = rawContext?.trim().toLowerCase() === "auto" ? "auto" : optionalNumber("context-size", rawContext);
     if (contextSize && typeof contextSize === "object") return contextSize;
     const temperature = optionalNumber("temperature", values.temperature as string | undefined);
     if (temperature && typeof temperature === "object") return temperature;
@@ -1145,7 +1147,7 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
         provider,
         model: values.model as string | undefined,
         baseUrl: values["base-url"] as string | undefined,
-        contextSize: contextSize as number | undefined,
+        contextSize: contextSize as ContextSize | undefined,
       },
       roleSet,
     );
@@ -1177,7 +1179,7 @@ export function parseDriverArgv(argv: string[]): { ws: string; args: DriverArgs 
         nudgeTimeout,
         taskTimeout,
         baseUrl: values["base-url"] as string | undefined,
-        contextSize: contextSize as number | undefined,
+        contextSize: contextSize as ContextSize | undefined,
         temperature: temperature as number | undefined,
         maxTokens: maxTokens as number | undefined,
         topP: topP as number | undefined,

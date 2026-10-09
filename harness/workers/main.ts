@@ -23,7 +23,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { USAGE_LIMIT_EXIT, isClaudeCodeProvider } from "../claude/provider.js";
+import { USAGE_LIMIT_EXIT, claudeTools, isClaudeCodeProvider } from "../claude/provider.js";
 import { DEFAULT_LANE_MAX, LANES, claudeCodeWindow } from "../config.js";
 import { canonicalLocalProvider, parseContextSize, resolveLocalConfig, type BackendDeps } from "../model/config.js";
 import { prepareLocalProvider } from "../model/prepare.js";
@@ -43,6 +43,8 @@ export interface WorkersDeps extends BackendDeps {
 }
 
 class UsageError extends Error {}
+
+const DEFAULT_TOOLS = "read,grep,find,ls";
 
 interface Batch {
   name: string;
@@ -157,6 +159,12 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
       if (values.env !== "none") throw new UsageError("a claude-code worker needs --env none, as on the driver");
       const piOnly = ["temperature", "thinking", "max-tokens", "base-url", "context-size"].filter((n) => values[n as keyof typeof values] !== undefined);
       if (piOnly.length) throw new UsageError(`${piOnly.map((n) => "--" + n).join(", ")} not supported with --provider claude-code`);
+      // Each worker maps the tools again; a bad name must stop the run here, not fail every rollout.
+      claudeTools(values.tools ?? DEFAULT_TOOLS);
+    } else if (!local) {
+      // Only a local server has a window to size and a URL to call; pi's own providers have neither.
+      const serverOnly = ["base-url", "context-size"].filter((n) => values[n as keyof typeof values] !== undefined);
+      if (serverOnly.length) throw new UsageError(`${serverOnly.map((n) => "--" + n).join(", ")} needs --provider ollama or llamacpp`);
     }
 
     let batches = findBatches(dir);
@@ -213,7 +221,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
           rollout,
           prompt,
           model: workerModel,
-          tools: values.tools ?? "read,grep,find,ls",
+          tools: values.tools ?? DEFAULT_TOOLS,
           deliverable: values.deliverable ?? "report.json",
           timeoutSec,
           piProvider,
@@ -230,10 +238,12 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
   let complete = 0;
   let errors = 0;
   let limited = false;
+  // A usage limit stops the workers still running too: each one would only meet the same limit.
+  const stopAll = new AbortController();
   const work = async ({ batch, job }: { batch: Batch; job: WorkerJob }): Promise<void> => {
     let record: WorkerRecord;
     try {
-      record = await start(job);
+      record = await start({ ...job, signal: stopAll.signal });
     } catch (err) {
       process.stderr.write(`error: ${batch.name}/${job.rollout}: ${err instanceof Error ? err.message : String(err)}\n`);
       errors++;
@@ -242,7 +252,10 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
     process.stdout.write(JSON.stringify({ batch: batch.name, ...record }) + "\n");
     if (record.error === null) complete++;
     else errors++;
-    if (record.error === "usage-limit") limited = true;
+    if (record.error === "usage-limit" && !limited) {
+      limited = true;
+      stopAll.abort();
+    }
   };
   const stop = () => limited;
   const tagged = jobsByBatch.map(({ batch, jobs }) => jobs.map((job) => ({ batch, job })));

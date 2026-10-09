@@ -23,7 +23,7 @@ import type { Item } from "./split.js";
 export interface PackOptions {
   /** Tokens one batch may use. */
   budget: number;
-  /** Characters every batch carries: the spec, the shared files and the prompt. */
+  /** Characters every batch carries: the spec and the shared files. The prompt is not counted. */
   fixedChars: number;
   charsPerToken: number;
   /** Tokens every batch costs beyond its text: the system prompt and the tool definitions. */

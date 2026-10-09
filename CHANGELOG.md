@@ -8,13 +8,18 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 - `docs/specs/batching-and-workers.md`: the spec for `--context-size auto`, `veriharness batch` and `veriharness workers`, and for the verify-mcp tools that wrap them.
-- `--context-size auto` on `driver`, `runner` and `model-check`, and `--role-context-size ROLE=auto`. `auto` uses the window the server reports: a loaded Ollama model (`/api/ps`), then `num_ctx`, then llama.cpp's `n_ctx`. A Claude Code model reads `CLAUDE_CODE_WINDOWS` in `harness/config.ts` (1,000,000 tokens for each lane model, from Anthropic's model overview).
+- `--context-size auto` on `driver`, `runner` and `model-check`, and `--role-context-size ROLE=auto`. `auto` uses the window the server reports: a loaded Ollama model (`/api/ps`), then `num_ctx`, then llama.cpp's `n_ctx`. A Claude Code model reads `CLAUDE_CODE_WINDOWS` in `harness/config.ts` (1,000,000 tokens for each lane model, from Anthropic's model overview). An explicit `auto` also overrides `VERIHARNESS_CONTEXT_SIZE`.
 - `driver.log` has one `context: ROLE=PROVIDER:MODEL window=N source=S` line for each role, and a warning when an explicit size differs from the window the model is loaded with. `model-check` reports `window` and `windowSource`.
 - `veriharness batch`: splits an items file (`jsonl`, `heading:REGEX` or `blank-line`) into task folders that each fit a token budget, by default half the worker model's window. `manifest.json` records the budget, the window and the estimate of each batch. See `docs/batching.md`.
-- `veriharness workers`: runs N worker rollouts on each batch, each in a temp copy of the batch. Each rollout gets `trajectory/agent.jsonl`, `trajectory/worker.json` (turns, tool calls, peak context, output tokens, deliverable form, error) and its deliverable. A second call skips the complete rollouts. A local model runs one batch at a time; Claude Code runs up to the lane cap of the model.
+- `veriharness workers`: runs N worker rollouts on each batch, each in a temp copy of the batch. Each rollout gets `trajectory/agent.jsonl`, `trajectory/worker.json` (turns, tool calls, peak context, output tokens, deliverable form, error) and its deliverable. A second call skips the complete rollouts. A local model runs one batch at a time; Claude Code runs up to the lane cap of the model. A usage limit stops the running workers too (`error: stopped`). A Claude Code worker that exits with a code other than 0, or ends on an error result, records `no-result`. A bad `--tools` name, and `--base-url` or `--context-size` for a provider that is not local, are input errors (exit 2).
 
 ### Changed
+- `run()` in `harness/grade/proc.ts` takes an abort `signal`; an aborted run stops its process tree and sets `aborted`.
+- `rmrf` tries a busy file again (5 times, 100 ms apart), for handles a killed process holds on Windows.
 - The lane caps (`fable` 2, `opus` 2, `haiku` 4, `sonnet` 4) move from `harness/runner.ts` to `DEFAULT_LANE_MAX` in `harness/config.ts`, so `runner` and `workers` read one table.
+
+### Fixed
+- `claudeTools` reads only its own table keys: a pi tool named `constructor` or `__proto__` is an error, not an `Object.prototype` value.
 
 ## [0.4.1] - 2026-10-09
 

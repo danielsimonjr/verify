@@ -125,7 +125,17 @@ A text with no JSON goes to `deliverables/report.json.txt`, with the error `no-j
 ```
 
 `peakContext` is the largest prompt of one turn: input plus cache read plus cache write tokens.
-`error` is `timeout`, `no-result`, `no-json`, `start-failed`, `usage-limit` or null.
+`error` is null when the rollout is complete. Otherwise it is one of these values:
+
+| `error` | Cause |
+|---|---|
+| `start-failed` | The process did not start. |
+| `timeout` | The worker ran past `--timeout`. |
+| `truncated` | The event stream went past the 256 MiB cap. |
+| `stopped` | A usage limit in another worker stopped this worker. |
+| `usage-limit` | The Claude Code account hit its usage limit. |
+| `no-result` | No final answer. For Claude Code, also an exit code that is not 0 or an error result. |
+| `no-json` | A `.json` deliverable, and the final text holds no JSON. |
 
 ## Resume
 
@@ -141,9 +151,11 @@ others again. A rollout that has a deliverable but no `worker.json` runs again.
 - `claude-code`: up to the lane cap of the model (haiku 4, sonnet 4, opus 2, fable 2) across batches.
 - `--max-parallel N` replaces the default.
 
-A usage limit stops the start of new workers. The command then exits with code 75.
+A usage limit stops the start of new workers and stops the workers that are running. Their records
+say `stopped`, so a later call runs them again. The command then exits with code 75.
 
 ## Isolation
 
 Each worker runs in a temp copy of its batch's `spec/` and `workspace/`. A worker cannot read another
-worker's files. The harness deletes the copy when the worker stops, also after an error.
+worker's files. The harness deletes the copy when the worker stops, also after an error. If the delete fails, the
+harness writes a warning and keeps the record.

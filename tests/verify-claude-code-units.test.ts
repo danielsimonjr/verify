@@ -50,6 +50,8 @@ describe("the provider and its tools", () => {
 
   test("a pi tool with no Claude Code counterpart is an error, not a silent drop", () => {
     expect(() => claudeTools("read,webfetch")).toThrow(/no Claude Code tool for the pi tool 'webfetch'/);
+    expect(() => claudeTools("constructor")).toThrow(/no Claude Code tool for the pi tool 'constructor'/);
+    expect(() => claudeTools("__proto__")).toThrow(/no Claude Code tool for the pi tool '__proto__'/);
   });
 
   test("every tool a pi contract can name has a mapping", () => {

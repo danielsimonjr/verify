@@ -152,6 +152,57 @@ describe("runWorker", () => {
     expect(rec.error).toBe("usage-limit");
   });
 
+  test("a claude error result is no result, even when text came before it", async () => {
+    const failed = CLAUDE_STREAM.replace('"is_error": false', '"is_error": true').replace('"result": "{\\"rows\\": []}"', '"result": "API Error: 500"');
+    expect(failed).not.toBe(CLAUDE_STREAM);
+    const j = job({ model: { provider: "claude-code", model: "claude-haiku-5-5" }, piProvider: undefined, deliverable: "report.md" });
+    const rec = await runWorker(j, { run: fakeRun(failed, { status: 1 }).run });
+    expect(rec.error).toBe("no-result");
+    expect(existsSync(rollout("deliverables", "report.md"))).toBe(false);
+  });
+
+  test("a claude exit that is not 0 is no result, even with a good result event", async () => {
+    const j = job({ model: { provider: "claude-code", model: "claude-haiku-5-5" }, piProvider: undefined });
+    expect((await runWorker(j, { run: fakeRun(CLAUDE_STREAM, { status: 1 }).run })).error).toBe("no-result");
+  });
+
+  test("output over the cap", async () => {
+    const rec = await runWorker(job(), { run: fakeRun(PI_STREAM, { status: null, truncated: true }).run });
+    expect(rec.error).toBe("truncated");
+  });
+
+  test("a stopped worker", async () => {
+    const rec = await runWorker(job(), { run: fakeRun(PI_STREAM, { status: null, aborted: true }).run });
+    expect(rec.error).toBe("stopped");
+  });
+
+  test("the signal of the job reaches the process runner", async () => {
+    const fake = fakeRun(PI_STREAM);
+    const ac = new AbortController();
+    await runWorker(job({ signal: ac.signal }), { run: fake.run });
+    expect(fake.seen[0]!.opts.signal).toBe(ac.signal);
+  });
+
+  test("a temp folder that cannot be deleted does not lose the record", async () => {
+    const real = process.stderr.write.bind(process.stderr);
+    let stderr = "";
+    process.stderr.write = ((c: string | Uint8Array) => ((stderr += String(c)), true)) as typeof process.stderr.write;
+    try {
+      const rmrf = (p: string) => {
+        if (p.includes("vh-worker-")) throw Object.assign(new Error("EBUSY: resource busy"), { code: "EBUSY" });
+        rmSync(p, { recursive: true, force: true });
+      };
+      const fake = fakeRun(PI_STREAM);
+      const rec = await runWorker(job(), { run: fake.run, rmrf });
+      rmSync(join(fake.seen[0]!.opts.cwd!, ".."), { recursive: true, force: true });
+      expect(rec.error).toBeNull();
+      expect(record()).toEqual(rec);
+      expect(stderr).toContain("EBUSY");
+    } finally {
+      process.stderr.write = real;
+    }
+  });
+
   test("temp folder removed", async () => {
     const ok = fakeRun(PI_STREAM);
     await runWorker(job(), { run: ok.run });

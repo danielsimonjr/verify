@@ -45,7 +45,8 @@ export function claudeTools(piTools: string): string {
   for (const raw of piTools.split(",")) {
     const pi = raw.trim();
     if (pi === "") continue;
-    const tool = PI_TO_CLAUDE_TOOL[pi];
+    // Own keys only: 'constructor' or '__proto__' must not reach Object.prototype.
+    const tool = Object.hasOwn(PI_TO_CLAUDE_TOOL, pi) ? PI_TO_CLAUDE_TOOL[pi] : undefined;
     if (tool === undefined) {
       throw new Error(`no Claude Code tool for the pi tool '${pi}' (known: ${Object.keys(PI_TO_CLAUDE_TOOL).join(", ")})`);
     }

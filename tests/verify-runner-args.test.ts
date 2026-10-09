@@ -216,7 +216,7 @@ describe("runner --role", () => {
 });
 
 describe("runner --role-context-size ROLE=auto", () => {
-  test("auto passes the parser, reaches the driver, and records no number", async () => {
+  test("auto passes the parser, reaches the driver, and is recorded as auto", async () => {
     const { result } = await captureStderr(() =>
       within(
         main(
@@ -229,7 +229,7 @@ describe("runner --role-context-size ROLE=auto", () => {
     expect(result).toBe(1); // the empty driver writes no finish.json; the option was accepted
     const run = JSON.parse(readFileSync(join(sb.runsDir, "r", "sb2_flash", "run.json"), "utf8"));
     expect(run.driver_args).toEqual(expect.arrayContaining(["--role-context-size", "checker=auto"]));
-    expect(run.roles.checker).toEqual({ provider: "ollama", model: "m" });
+    expect(run.roles.checker).toEqual({ provider: "ollama", model: "m", contextSize: "auto" });
   });
 });
 

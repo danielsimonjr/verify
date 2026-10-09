@@ -12,7 +12,7 @@
  */
 
 import { CLAUDE_CODE_PROVIDER, isClaudeCodeProvider } from "./claude/provider.js";
-import { DEFAULT_LLAMACPP_BASE_URL, DEFAULT_OLLAMA_BASE_URL } from "./model/config.js";
+import { DEFAULT_LLAMACPP_BASE_URL, DEFAULT_OLLAMA_BASE_URL, type ContextSize } from "./model/config.js";
 import { canonicalLocalProvider } from "./model/index.js";
 
 /** The verifier roles, in the order of their phases. */
@@ -25,7 +25,7 @@ export interface RoleModel {
   provider: string | undefined;
   model: string | undefined;
   baseUrl?: string;
-  contextSize?: number;
+  contextSize?: ContextSize;
 }
 
 /** pi needs more than its 4096-token reserve to generate (docs/local-models.md, "Context length"). */
@@ -92,8 +92,11 @@ export function parseRoleOptions(
     if ("error" in parsed) return parsed;
     const spec = localRoleSpec("--role-context-size", parsed.role, out);
     if ("error" in spec) return spec;
-    // `auto` is the same as no option: the server's own window. It leaves no number in the role.
-    if (parsed.value.trim().toLowerCase() === "auto") continue;
+    // `auto` is the server's own window. It is kept, not dropped, so it also beats VERIHARNESS_CONTEXT_SIZE.
+    if (parsed.value.trim().toLowerCase() === "auto") {
+      spec.contextSize = "auto";
+      continue;
+    }
     const n = /^\d+$/.test(parsed.value) ? Number(parsed.value) : NaN;
     if (!Number.isSafeInteger(n) || n <= MIN_CONTEXT) {
       return { error: `--role-context-size ${parsed.role}: needs a whole number above ${MIN_CONTEXT}, got '${parsed.value}'` };

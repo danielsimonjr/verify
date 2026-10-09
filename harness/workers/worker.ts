@@ -64,11 +64,14 @@ export interface WorkerJob {
   piProvider?: PiProviderRecord;
   /** The command that starts pi or Claude Code (default: the vendored pi, or `claude`). */
   command?: readonly string[];
+  /** Stops the session; its record then says `stopped`. */
+  signal?: AbortSignal;
 }
 
-/** What a test replaces: the process runner. */
+/** What a test replaces: the process runner and the delete of the temp copy. */
 export interface WorkerDeps {
   run?: typeof run;
+  rmrf?: (path: string) => void;
 }
 
 /** The command, stdin and environment of one worker. `home` is the pi home of a local model. */
@@ -129,11 +132,16 @@ export function workerArgs(job: WorkerJob, home: string): { cmd: string[]; input
 /** The error of a finished session, before its deliverable is read. */
 function runError(r: RunResult, claude: boolean, finalText: string): WorkerError {
   if (r.error) return "start-failed";
+  if (r.aborted) return "stopped";
   if (r.timedOut) return "timeout";
-  if (claude && r.status !== 0) {
+  if (r.truncated) return "truncated";
+  if (claude) {
     // A limit is reported in the result event, which is an error result, so finalText does not hold it.
-    const resultText = parseStream(r.stdout).result?.text ?? "";
-    if (classifyFailure(`${resultText}\n${r.stderr}`) === "usage-limit") return "usage-limit";
+    const result = parseStream(r.stdout).result;
+    if (r.status !== 0 && classifyFailure(`${result?.text ?? ""}\n${r.stderr}`) === "usage-limit") return "usage-limit";
+    // As for a verifier turn: only exit 0 with a result that is not an error is an answer. Text from
+    // before an error result is a stray sentence, not a deliverable.
+    if (r.status !== 0 || !result || result.isError) return "no-result";
   }
   if (finalText.trim() === "") return "no-result";
   return null;
@@ -157,7 +165,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
 
     const { cmd, input, env } = workerArgs(job, home);
     const started = Date.now();
-    const r = await (deps.run ?? run)(cmd[0]!, cmd.slice(1), { input, timeoutMs: job.timeoutSec * 1000, cwd, env });
+    const r = await (deps.run ?? run)(cmd[0]!, cmd.slice(1), { input, timeoutMs: job.timeoutSec * 1000, cwd, env, signal: job.signal });
     const seconds = Math.round((Date.now() - started) / 1000);
     writeFileSync(join(out, "trajectory", "agent.jsonl"), r.stdout, "utf8");
 
@@ -193,6 +201,11 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     writeFileSync(join(out, "trajectory", "worker.json"), JSON.stringify(record) + "\n", "utf8");
     return record;
   } finally {
-    rmrf(temp);
+    // The record is already on disk: a temp copy that will not go must not turn it into an error.
+    try {
+      (deps.rmrf ?? rmrf)(temp);
+    } catch (err) {
+      process.stderr.write(`workers: could not delete ${temp}: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
   }
 }

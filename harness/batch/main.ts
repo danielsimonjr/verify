@@ -116,6 +116,10 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Backend
     const clash = sharedNames.find((n, i) => sharedNames.indexOf(n) !== i || n === itemsName);
     if (clash) throw new UsageError(`two files would land at workspace/${clash}`);
     if (existsSync(out) && readdirSync(out).length > 0) throw new UsageError(`--out ${out} is not empty`);
+    // Checked before the first write, as the other inputs are: a missing prompt is an input error.
+    if (values.prompt !== undefined && !(existsSync(values.prompt) && statSync(values.prompt).isFile())) {
+      throw new UsageError(`--prompt ${values.prompt} is not a file`);
+    }
 
     const { items, preambleChars } = splitItems(readFileSync(itemsPath, "utf8"), rule);
     if (items.length === 0) throw new UsageError(`no items: --split ${splitRaw} matched nothing in ${itemsPath}`);

@@ -27,6 +27,24 @@ const alive = (pid: number): boolean => {
 };
 
 describe("run", () => {
+  test("an abort signal stops the process and sets aborted", async () => {
+    const ac = new AbortController();
+    const started = Date.now();
+    const pending = sh("setTimeout(() => {}, 60000)", { signal: ac.signal });
+    setTimeout(() => ac.abort(), 200);
+    const r = await pending;
+    expect(r.aborted).toBe(true);
+    expect(r.timedOut).toBe(false);
+    expect(Date.now() - started).toBeLessThan(15_000);
+  }, 30_000);
+
+  test("a signal that is already aborted stops the process at once", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const r = await sh("setTimeout(() => {}, 60000)", { signal: ac.signal });
+    expect(r.aborted).toBe(true);
+  }, 30_000);
+
   test("captures stdout, stderr and the exit status", async () => {
     const r = await sh("process.stdout.write('out'); process.stderr.write('err'); process.exit(3)");
     expect([r.status, r.stdout, r.stderr, r.timedOut, r.truncated]).toEqual([3, "out", "err", false, false]);
