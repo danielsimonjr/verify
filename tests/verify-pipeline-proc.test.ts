@@ -38,6 +38,15 @@ describe("run", () => {
     expect(Date.now() - started).toBeLessThan(15_000);
   }, 30_000);
 
+  test("onStdout sees every stdout byte as it arrives", async () => {
+    const chunks: Buffer[] = [];
+    const r = await sh("process.stdout.write('a\\n'); setTimeout(() => process.stdout.write('b\\n'), 50)", {
+      onStdout: (b: Buffer) => chunks.push(b),
+    });
+    expect(Buffer.concat(chunks).toString("utf8")).toBe("a\nb\n");
+    expect(r.stdout).toBe("a\nb\n");
+  }, 30_000);
+
   test("a signal that is already aborted stops the process at once", async () => {
     const ac = new AbortController();
     ac.abort();

@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-09
+
+### Added
+- `veriharness workers --max-turns N`: a worker that passes N assistant turns stops, with the error
+  `max-turns`. pi and `claude -p` have no turn cap, so the harness counts turns in the live event
+  stream (`turnCounter`, the same rule as the stream stats) and stops the session through its signal.
+  A looping qwen3.5:9b worker ran 77 to 106 turns to the timeout; complete ones needed 7 to 12 tool calls.
+- `run()` takes `onStdout`, which gets each stdout chunk as it arrives.
+
 ## [0.5.0] - 2026-10-09
 
 ### Added

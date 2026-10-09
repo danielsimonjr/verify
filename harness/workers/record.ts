@@ -18,13 +18,23 @@
  * JSON and gets a fenced block has a format error, even though the value parses.
  */
 
+import { StringDecoder } from "node:string_decoder";
 import { parseStream } from "../claude/stream.js";
 
 /** How the JSON sat in the last message: the whole text, one whole fence, or inside prose. */
 export type DeliverableForm = "pure" | "fenced" | "embedded";
 
 /** Why a rollout did not complete; null when it did. */
-export type WorkerError = "timeout" | "no-result" | "no-json" | "start-failed" | "usage-limit" | "truncated" | "stopped" | null;
+export type WorkerError =
+  | "timeout"
+  | "no-result"
+  | "no-json"
+  | "start-failed"
+  | "usage-limit"
+  | "truncated"
+  | "stopped"
+  | "max-turns"
+  | null;
 
 /** `trajectory/worker.json`: the numbers and the outcome of one rollout. */
 export interface WorkerRecord {
@@ -128,14 +138,51 @@ function textOf(content: unknown): string {
     .join("");
 }
 
+/** The message of a pi event that ends one assistant turn, else undefined. */
+function piTurn(e: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (e.type !== "message_end") return undefined;
+  const m = (e.message ?? {}) as Record<string, unknown>;
+  return m.role === "assistant" ? m : undefined;
+}
+
+/** The turn of a Claude Code `assistant` event: its message id, else a name made from `seen`. Undefined for other events. */
+function claudeTurnId(e: Record<string, unknown>, seen: number): string | undefined {
+  if (e.type !== "assistant") return undefined;
+  const m = (e.message ?? {}) as Record<string, unknown>;
+  return typeof m.id === "string" ? m.id : `#${seen}`;
+}
+
+/**
+ * Counts the assistant turns of a live event stream, chunk by chunk, by the rule of piStreamStats or
+ * claudeStreamStats. Each call returns the total so far. A line counts once its newline arrives.
+ */
+export function turnCounter(claude: boolean): (chunk: Buffer) => number {
+  const decoder = new StringDecoder("utf8");
+  const ids = new Set<string>();
+  let partial = "";
+  let turns = 0;
+  return (chunk) => {
+    const lines = (partial + decoder.write(chunk)).split("\n");
+    partial = lines.pop()!;
+    for (const e of events(lines.join("\n"))) {
+      if (!claude) {
+        if (piTurn(e)) turns++;
+        continue;
+      }
+      const id = claudeTurnId(e, ids.size);
+      if (id !== undefined) ids.add(id);
+    }
+    return claude ? ids.size : turns;
+  };
+}
+
 /** pi `--mode json`: assistant `message_end` events carry the usage; `tool_execution_end` is one tool call. */
 export function piStreamStats(text: string): StreamStats {
   const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0 };
   for (const e of events(text)) {
     if (e.type === "tool_execution_end") stats.tools++;
-    if (e.type !== "message_end") continue;
-    const m = (e.message ?? {}) as Record<string, unknown>;
-    if (m.role !== "assistant") continue;
+    const m = piTurn(e);
+    if (!m) continue;
     const u = (m.usage ?? {}) as Record<string, unknown>;
     stats.turns++;
     stats.peakContext = Math.max(stats.peakContext, num(u.input) + num(u.cacheRead) + num(u.cacheWrite));
@@ -156,9 +203,9 @@ export function claudeStreamStats(text: string): StreamStats {
   let resultUsage: Record<string, unknown> | undefined;
   for (const e of events(text)) {
     if (e.type === "result") resultUsage = (e.usage ?? undefined) as Record<string, unknown> | undefined;
-    if (e.type !== "assistant") continue;
+    const id = claudeTurnId(e, output.size);
+    if (id === undefined) continue;
     const m = (e.message ?? {}) as Record<string, unknown>;
-    const id = typeof m.id === "string" ? m.id : `#${output.size}`;
     const u = (m.usage ?? {}) as Record<string, unknown>;
     output.set(id, num(u.output_tokens));
     const context = num(u.input_tokens) + num(u.cache_read_input_tokens) + num(u.cache_creation_input_tokens);

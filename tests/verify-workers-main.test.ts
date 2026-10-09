@@ -93,6 +93,27 @@ describe("veriharness workers", () => {
     expect(f.calls[0]!.piProvider?.id).toBeDefined();
   });
 
+  test("--max-turns reaches every job; no cap without it", async () => {
+    const dir = batchRoot(["b01"]);
+    const f = fake();
+    expect((await workers([dir, ...OLLAMA, "--count", "2", "--max-turns", "15"], f)).code).toBe(0);
+    expect(f.calls.map((c) => c.maxTurns)).toEqual([15, 15]);
+    const g = fake();
+    expect((await workers([dir, ...OLLAMA, "--count", "1"], g)).code).toBe(0);
+    expect(g.calls[0]!.maxTurns).toBeUndefined();
+  });
+
+  test("--max-turns must be a positive whole number", async () => {
+    for (const bad of ["0", "-3", "2.5", "x"]) {
+      const f = fake();
+      // The = form: parseArgs refuses a separate value that starts with a dash before main() sees it.
+      const r = await workers([batchRoot(["b01"]), ...OLLAMA, `--max-turns=${bad}`], f);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain(`--max-turns must be a positive whole number, not '${bad}'`);
+      expect(f.calls).toHaveLength(0);
+    }
+  });
+
   test("one task workspace", async () => {
     const dir = join(root, "task");
     makeBatch(dir);

@@ -2,10 +2,38 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { claudeStreamStats, parseJsonDeliverable, piStreamStats } from "../harness/workers/record.ts";
+import { claudeStreamStats, parseJsonDeliverable, piStreamStats, turnCounter } from "../harness/workers/record.ts";
 
 const FIXTURES = join(import.meta.dir, "fixtures", "workers");
 const FENCE = "```";
+
+describe("turnCounter", () => {
+  /** Feed `text` in chunks of `size` bytes, so lines and UTF-8 characters split across chunks. */
+  const countIn = (claude: boolean, text: string, size: number): number => {
+    const bytes = Buffer.from(text, "utf8");
+    const count = turnCounter(claude);
+    let turns = 0;
+    for (let i = 0; i < bytes.length; i += size) turns = count(bytes.subarray(i, i + size));
+    return turns;
+  };
+
+  test("counts pi turns as piStreamStats does, whatever the chunk size", () => {
+    const stream = readFileSync(join(FIXTURES, "pi-stream.jsonl"), "utf8");
+    for (const size of [1, 7, 4096]) expect(countIn(false, stream, size)).toBe(piStreamStats(stream).turns);
+  });
+
+  test("counts claude turns as claudeStreamStats does, whatever the chunk size", () => {
+    const stream = readFileSync(join(FIXTURES, "claude-stream.jsonl"), "utf8");
+    for (const size of [1, 7, 4096]) expect(countIn(true, stream, size)).toBe(claudeStreamStats(stream).turns);
+  });
+
+  test("a line counts only once it is complete", () => {
+    const count = turnCounter(false);
+    const line = '{"type":"message_end","message":{"role":"assistant","content":[]}}';
+    expect(count(Buffer.from(line))).toBe(0);
+    expect(count(Buffer.from("\n"))).toBe(1);
+  });
+});
 
 describe("parseJsonDeliverable", () => {
   test("pure", () => {

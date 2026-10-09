@@ -34,6 +34,7 @@ import {
   claudeStreamStats,
   parseJsonDeliverable,
   piStreamStats,
+  turnCounter,
   type DeliverableForm,
   type WorkerError,
   type WorkerRecord,
@@ -66,6 +67,8 @@ export interface WorkerJob {
   command?: readonly string[];
   /** Stops the session; its record then says `stopped`. */
   signal?: AbortSignal;
+  /** Most assistant turns: a session that passes it is stopped and its record says `max-turns`. */
+  maxTurns?: number;
 }
 
 /** What a test replaces: the process runner and the delete of the temp copy. */
@@ -129,10 +132,10 @@ export function workerArgs(job: WorkerJob, home: string): { cmd: string[]; input
   return { cmd: plan.cmd, input: plan.input, env };
 }
 
-/** The error of a finished session, before its deliverable is read. */
-function runError(r: RunResult, claude: boolean, finalText: string): WorkerError {
+/** The error of a finished session, before its deliverable is read. `overTurns`: the turn cap stopped it. */
+function runError(r: RunResult, claude: boolean, finalText: string, overTurns: boolean): WorkerError {
   if (r.error) return "start-failed";
-  if (r.aborted) return "stopped";
+  if (r.aborted) return overTurns ? "max-turns" : "stopped";
   if (r.timedOut) return "timeout";
   if (r.truncated) return "truncated";
   if (claude) {
@@ -164,13 +167,30 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     if (job.piProvider && !claude) materializePiHome(home, job.piProvider);
 
     const { cmd, input, env } = workerArgs(job, home);
+    // Neither pi nor `claude -p` has a turn cap, so the worker counts turns in the live stream and stops
+    // the session through its own signal, which the job's signal also trips.
+    let overTurns = false;
+    let signal = job.signal;
+    let onStdout: ((chunk: Buffer) => void) | undefined;
+    if (job.maxTurns !== undefined) {
+      const cap = new AbortController();
+      const maxTurns = job.maxTurns;
+      const count = turnCounter(claude);
+      signal = job.signal ? AbortSignal.any([job.signal, cap.signal]) : cap.signal;
+      onStdout = (chunk) => {
+        if (!overTurns && count(chunk) > maxTurns) {
+          overTurns = true;
+          cap.abort();
+        }
+      };
+    }
     const started = Date.now();
-    const r = await (deps.run ?? run)(cmd[0]!, cmd.slice(1), { input, timeoutMs: job.timeoutSec * 1000, cwd, env, signal: job.signal });
+    const r = await (deps.run ?? run)(cmd[0]!, cmd.slice(1), { input, timeoutMs: job.timeoutSec * 1000, cwd, env, signal, onStdout });
     const seconds = Math.round((Date.now() - started) / 1000);
     writeFileSync(join(out, "trajectory", "agent.jsonl"), r.stdout, "utf8");
 
     const stats = claude ? claudeStreamStats(r.stdout) : piStreamStats(r.stdout);
-    let error = runError(r, claude, stats.finalText);
+    let error = runError(r, claude, stats.finalText, overTurns);
     let form: DeliverableForm | null = null;
     if (error === null) {
       const target = join(out, "deliverables", job.deliverable);

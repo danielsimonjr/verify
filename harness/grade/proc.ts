@@ -39,6 +39,8 @@ export type RunOptions = {
   stopWaitMs?: number;
   /** Stops the run as the timeout does, and sets `aborted`. A signal that is already aborted stops it at once. */
   signal?: AbortSignal;
+  /** Gets each stdout chunk as it arrives, before the result: a caller can watch a long run and stop it through `signal`. */
+  onStdout?: (chunk: Buffer) => void;
 };
 
 /**
@@ -226,6 +228,7 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
       if (truncated) return;
       out.push(b);
       outBytes += b.length;
+      opts.onStdout?.(b);
       if (outBytes > maxStdout) {
         truncated = true;
         stop();

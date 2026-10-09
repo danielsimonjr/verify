@@ -35,7 +35,7 @@ import { runWorker, type WorkerJob, type WorkerModel } from "./worker.js";
 const USAGE =
   "usage: veriharness workers DIR --provider P --model M [--base-url U] [--context-size N|auto]\n" +
   "         [--count N] [--tools LIST] [--deliverable NAME] [--prompt FILE] [--only NAME]...\n" +
-  "         [--timeout S] [--max-parallel N] [--env none] [--temperature T] [--thinking L] [--max-tokens N]\n";
+  "         [--timeout S] [--max-turns N] [--max-parallel N] [--env none] [--temperature T] [--thinking L] [--max-tokens N]\n";
 
 /** What a test replaces: the local server fetch and the worker runner. */
 export interface WorkersDeps extends BackendDeps {
@@ -125,6 +125,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
         prompt: { type: "string" },
         only: { type: "string", multiple: true },
         timeout: { type: "string" },
+        "max-turns": { type: "string" },
         "max-parallel": { type: "string" },
         env: { type: "string" },
         temperature: { type: "string" },
@@ -180,6 +181,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
     const prompt = readFileSync(promptPath, "utf8");
     const count = positiveInt("--count", values.count, 3);
     const timeoutSec = positiveInt("--timeout", values.timeout, 3600);
+    const maxTurns = values["max-turns"] === undefined ? undefined : positiveInt("--max-turns", values["max-turns"], 0);
 
     // Resolve the model once before the first worker: for a local model this also proves the server.
     const workerModel: WorkerModel = {
@@ -224,6 +226,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
           tools: values.tools ?? DEFAULT_TOOLS,
           deliverable: values.deliverable ?? "report.json",
           timeoutSec,
+          ...(maxTurns !== undefined ? { maxTurns } : {}),
           piProvider,
         });
       }

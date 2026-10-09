@@ -133,9 +133,20 @@ A text with no JSON goes to `deliverables/report.json.txt`, with the error `no-j
 | `timeout` | The worker ran past `--timeout`. |
 | `truncated` | The event stream went past the 256 MiB cap. |
 | `stopped` | A usage limit in another worker stopped this worker. |
+| `max-turns` | The worker passed `--max-turns` assistant turns. |
 | `usage-limit` | The Claude Code account hit its usage limit. |
 | `no-result` | No final answer. For Claude Code, also an exit code that is not 0 or an error result. |
 | `no-json` | A `.json` deliverable, and the final text holds no JSON. |
+
+## Turn cap
+
+`--max-turns N` stops a worker after N assistant turns. pi and `claude -p` have no turn cap, so the
+harness counts the turns in the live event stream. When the count passes N, the harness stops the
+worker and records the error `max-turns`. Without the option, only `--timeout` stops a worker.
+
+Use the cap for a small local model that can loop. Measured on qwen3.5:9b-64k: complete rollouts
+used 7 to 12 tool calls. Looping rollouts used 77 to 106 turns and ran until the timeout. A cap of
+about twice the normal turn count stops a loop in minutes, not in an hour.
 
 ## Resume
 

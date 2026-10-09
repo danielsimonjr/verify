@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { RunOptions, RunResult } from "../harness/grade/proc.ts";
+import { claudeStreamStats } from "../harness/workers/record.ts";
 import { runWorker, workerArgs, type WorkerJob } from "../harness/workers/worker.ts";
 
 let root: string;
@@ -174,6 +175,50 @@ describe("runWorker", () => {
   test("a stopped worker", async () => {
     const rec = await runWorker(job(), { run: fakeRun(PI_STREAM, { status: null, aborted: true }).run });
     expect(rec.error).toBe("stopped");
+  });
+
+  /** A run() fake that streams `stdout` through onStdout line by line and stops when the signal aborts. */
+  function streamingRun(stdout: string) {
+    let streamed = 0;
+    const run = async (_cmd: string, _args: string[], opts: RunOptions): Promise<RunResult> => {
+      for (const line of stdout.split(/(?<=\n)/)) {
+        if (opts.signal?.aborted) break;
+        opts.onStdout?.(Buffer.from(line, "utf8"));
+        streamed += line.length;
+      }
+      const aborted = opts.signal?.aborted === true;
+      return { status: aborted ? null : 0, signal: null, stdout: stdout.slice(0, streamed), stderr: "", timedOut: false, truncated: false, ...(aborted ? { aborted } : {}), timeoutMs: opts.timeoutMs };
+    };
+    return { run };
+  }
+
+  test("a worker past maxTurns assistant turns stops with max-turns", async () => {
+    const rec = await runWorker(job({ maxTurns: 1 }), { run: streamingRun(PI_STREAM).run });
+    expect(rec.error).toBe("max-turns");
+    expect(rec.turns).toBe(2);
+    expect(record()).toEqual(rec);
+  });
+
+  test("a worker within maxTurns completes", async () => {
+    const rec = await runWorker(job({ maxTurns: 3 }), { run: streamingRun(PI_STREAM).run });
+    expect(rec).toMatchObject({ error: null, turns: 3, form: "pure" });
+  });
+
+  test("a claude worker past maxTurns stops with max-turns", async () => {
+    const j = job({ model: { provider: "claude-code", model: "claude-haiku-5-5" }, piProvider: undefined, maxTurns: 1 });
+    const rec = await runWorker(j, { run: streamingRun(CLAUDE_STREAM).run });
+    expect(claudeStreamStats(CLAUDE_STREAM).turns).toBeGreaterThan(1);
+    expect(rec.error).toBe("max-turns");
+  });
+
+  test("with maxTurns, the job signal still stops the run", async () => {
+    const fake = fakeRun(PI_STREAM);
+    const ac = new AbortController();
+    await runWorker(job({ signal: ac.signal, maxTurns: 5 }), { run: fake.run });
+    const seen = fake.seen[0]!.opts.signal!;
+    expect(seen.aborted).toBe(false);
+    ac.abort();
+    expect(seen.aborted).toBe(true);
   });
 
   test("the signal of the job reaches the process runner", async () => {
