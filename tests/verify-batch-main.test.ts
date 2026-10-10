@@ -56,6 +56,38 @@ function ollamaLoaded(window: number) {
   };
 }
 
+describe("the files the spec and the prompt name", () => {
+  const SPEC = "Read `workspace/rows.md`, then `workspace/CHANGELOG.md`. Write `report.json`. See workspace/<name>.\n";
+  const args = (f: ReturnType<typeof files>, extra: string[] = []) => [...base(f), "--batch-tokens", "5000", "--reference", f.shared, ...extra];
+
+  test("a workspace file that no batch holds is named in a warning and in the manifest", async () => {
+    const f = files(ITEMS, SPEC);
+    const r = await batch(args(f));
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain("workspace/rows.md");
+    expect(r.stderr).toContain("--items-name");
+    expect(r.stderr).not.toContain("workspace/CHANGELOG.md, which");
+    expect(manifest(f.out).missing).toEqual([{ file: "rows.md", namedBy: "spec/task.md" }]);
+  });
+
+  test("the prompt is read too, and a name that the items file carries is not missing", async () => {
+    const f = files(ITEMS, "Read workspace/rows.md.\n");
+    const prompt = join(root, "prompt.md");
+    writeFileSync(prompt, "Then read workspace/INDEX.md and workspace/rows.md.\n");
+    const r = await batch(args(f, ["--items-name", "rows.md", "--prompt", prompt]));
+    expect(r.code).toBe(0);
+    expect(manifest(f.out).missing).toEqual([{ file: "INDEX.md", namedBy: "worker_prompt.md" }]);
+  });
+
+  test("when every named file is there, the manifest has no missing list", async () => {
+    const f = files(ITEMS, "Read workspace/rows.md and workspace/CHANGELOG.md.\n");
+    const r = await batch(args(f, ["--items-name", "rows.md"]));
+    expect(r.code).toBe(0);
+    expect(r.stderr).not.toContain("no batch holds");
+    expect(manifest(f.out)).not.toHaveProperty("missing");
+  });
+});
+
 describe("veriharness batch", () => {
   test("explicit budget", async () => {
     const f = files();

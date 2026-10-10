@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-10-10
+
+### Added
+- `batch` checks the files that the spec and the worker prompt name. Each `workspace/<file>` that no batch
+  holds is a `batch:` warning and an entry in `manifest.json` (`missing`). A batch used to be built without
+  a sign that the task read a file that was not there: a worker then read paths the task did not have, and
+  the run failed in the workers instead of at the batch.
+
 ## [0.11.0] - 2026-10-10
 
 ### Added

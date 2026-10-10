@@ -182,6 +182,20 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Backend
       }
     }
     if (values.prompt !== undefined) copyFileSync(values.prompt, join(tmp, "worker_prompt.md"));
+    // A worker told to read a file that is not there reads nothing, and the batch looks fine until the
+    // run. Every batch holds the same files but its items, so the first one stands for all.
+    const missing = missingWorkspaceFiles(
+      [
+        { by: "spec/task.md", text: readFileSync(specPath, "utf8") },
+        ...(values.prompt !== undefined ? [{ by: "worker_prompt.md", text: readFileSync(values.prompt, "utf8") }] : []),
+      ],
+      join(tmp, batches[0]!.name, "workspace"),
+    );
+    for (const m of missing) {
+      process.stderr.write(
+        `batch: ${m.namedBy} names workspace/${m.file}, which no batch holds (the items file is workspace/${itemsName}; --items-name sets it)\n`,
+      );
+    }
     const manifest = {
       budget,
       budgetSource: window ? "half-window" : "explicit",
@@ -194,6 +208,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Backend
       shared: shared.map((p) => basename(p)),
       reference: reference.map((p) => basename(p)),
       batches: batches.map((b) => ({ name: b.name, items: b.items.map((i) => i.id), estTokens: b.estTokens, overBudget: b.overBudget })),
+      ...(missing.length > 0 ? { missing } : {}),
     };
     writeFileSync(join(tmp, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
     if (existsSync(out)) rmdirSync(out);
@@ -209,6 +224,29 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Backend
     process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
     return writing ? 1 : 2;
   }
+}
+
+/**
+ * The `workspace/<file>` paths that texts name and `workspace` does not hold. A glob (`workspace/a*.md`)
+ * and a placeholder (`workspace/<name>`) are not files, and sentence punctuation after a name is not part of it.
+ */
+export function missingWorkspaceFiles(
+  texts: { by: string; text: string }[],
+  workspace: string,
+): { file: string; namedBy: string }[] {
+  const out: { file: string; namedBy: string }[] = [];
+  const seen = new Set<string>();
+  for (const { by, text } of texts) {
+    for (const m of text.matchAll(/workspace\/([A-Za-z0-9_][A-Za-z0-9_.\-/]*)(.?)/g)) {
+      const file = m[1]!.replace(/[.\-/]+$/, "");
+      const next = m[2] ?? "";
+      const pattern = next !== "" && "*?{[".includes(next);
+      if (file === "" || pattern || seen.has(file)) continue;
+      seen.add(file);
+      if (!existsSync(join(workspace, file))) out.push({ file, namedBy: by });
+    }
+  }
+  return out;
 }
 
 if (isMain(import.meta.url)) {

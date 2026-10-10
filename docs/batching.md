@@ -103,6 +103,11 @@ alone exceed the budget, the command stops with exit code 2.
 All batch names of one run have the same width: `b01` to `b31`, or `b001` to `b120`. A sort by name is
 also a sort by order.
 
+`batch` reads the spec and the worker prompt for each `workspace/<file>` they name. A name that no batch
+holds is printed as a `batch:` warning and listed in the manifest as `"missing": [{"file": "rows.md",
+"namedBy": "spec/task.md"}]`. The usual cause is an items file with another name than the task expects:
+`--items-name` sets it. A pattern (`workspace/a*.md`) and a placeholder (`workspace/<name>`) are not files.
+
 ## Split rules
 
 | Rule | Item | Id |
