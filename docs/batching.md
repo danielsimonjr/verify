@@ -70,15 +70,21 @@ ceil((chars(spec) + chars(shared) + chars(items)) / R) + overhead + item_tokens 
 ```
 
 `R` is `--chars-per-token` (default 3.6). `overhead` is `--overhead-tokens` (default 2000): the
-worker's system prompt and tool definitions. `item_tokens` is `--item-tokens` (default 0): the reads
-and search results that the work on one item adds.
+worker's system prompt and tool definitions (measured: 1,600 tokens for pi). `item_tokens` is
+`--item-tokens` (default 3000): the reads and search results that the work on one item adds.
 
 `shared` is the `--shared` files; `--reference` files are not in the estimate.
 
-The estimate counts only the text that the worker gets at the start. A worker that reads files and
-runs searches adds tokens on each turn. Measured on a 9B model with a 64k window: batches estimated at
-30k tokens reached a peak context of 34k to 48k. Set `--item-tokens` to keep that growth under the
-window, or keep the default budget of half the window.
+The start text alone does not size a batch. A worker that reads files and runs searches adds tokens
+on each turn, and it must have room to check every item. Measured on qwen3.5:9b with a 64k window,
+on a CHANGELOG audit:
+
+| `--item-tokens` | Rows in the first batch | Result of one worker |
+|---|---|---|
+| 0 | 41 | 18 tool calls, peak 48,763 tokens; 33 of 41 verdicts right, 5 of 6 MISSING rows called LOGGED |
+| about 3,000 per row (measured) | 2 | all verdicts right |
+
+Lower `--item-tokens` only for items that need no search. Raise it for items that need more reads.
 
 An item that alone exceeds the budget gets a batch of its own. The manifest marks it
 `overBudget: true`, and the command prints a warning. When the spec, the shared files and the overhead
@@ -90,7 +96,7 @@ alone exceed the budget, the command stops with exit code 2.
 {
   "budget": 32768, "budgetSource": "half-window",
   "window": 65536, "windowSource": "loaded",
-  "charsPerToken": 3.6, "overheadTokens": 2000, "itemTokens": 0,
+  "charsPerToken": 3.6, "overheadTokens": 2000, "itemTokens": 3000,
   "split": "heading:^### TODO line (\\d+)$", "reference": ["CHANGELOG.md"],
   "batches": [{"name": "b01", "items": ["6857", "6858"], "estTokens": 29674, "overBudget": false}]
 }

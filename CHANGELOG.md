@@ -6,7 +6,14 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
-## [0.7.1] - 2026-10-09
+## [0.8.0] - 2026-10-09
+
+### Changed
+- `veriharness batch --item-tokens` defaults to 3000, not 0. With 0, the estimate counted only the
+  start text: the packer put 41 CHANGELOG-audit rows in one batch for a 64k window, and one qwen3.5:9b
+  worker checked them in 18 tool calls, got 8 of 41 verdicts wrong and called 5 of 6 MISSING rows
+  LOGGED. 3000 is the measured cost of the searches and reads for one row. Pass `--item-tokens 0` for
+  items that need no search.
 
 ### Fixed
 - `veriharness workers` wrote `trajectory/agent.jsonl` only when the worker stopped, so a worker that

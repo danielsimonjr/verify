@@ -42,7 +42,8 @@ async function batch(argv: string[], fetch?: (input: string | URL) => Promise<Re
 const manifest = (out: string) => JSON.parse(readFileSync(join(out, "manifest.json"), "utf8"));
 const base = (f: ReturnType<typeof files>) => ["--items", f.itemsPath, "--split", RULE, "--spec", f.specPath, "--out", f.out];
 /** Fixed part: the spec (16) and CHANGELOG.md (12) are 28 characters, 8 tokens; overhead 0. Two items fit in 250. */
-const FIT_TWO = ["--shared", "", "--batch-tokens", "250", "--overhead-tokens", "0"];
+// --item-tokens 0: these tests pin the character arithmetic, not the per-item reserve.
+const FIT_TWO = ["--shared", "", "--batch-tokens", "250", "--overhead-tokens", "0", "--item-tokens", "0"];
 const withShared = (f: ReturnType<typeof files>, extra: string[]) => extra.map((a) => (a === "" ? f.shared : a));
 
 function ollamaLoaded(window: number) {
@@ -94,7 +95,8 @@ describe("veriharness batch", () => {
     expect(m.windowSource).toBe("loaded");
     expect(m.charsPerToken).toBe(3.6);
     expect(m.overheadTokens).toBe(2000);
-    expect(m.itemTokens).toBe(0);
+    // The default reserves the measured cost of checking one item (searches and slice reads).
+    expect(m.itemTokens).toBe(3000);
   });
 
   test("no budget", async () => {
@@ -151,7 +153,7 @@ describe("veriharness batch", () => {
 
   test("jsonl items-name default", async () => {
     const f = files('{"id":"a"}\n{"id":"b"}\n');
-    const argv = ["--items", f.itemsPath, "--split", "jsonl", "--spec", f.specPath, "--out", f.out, "--batch-tokens", "5000"];
+    const argv = ["--items", f.itemsPath, "--split", "jsonl", "--spec", f.specPath, "--out", f.out, "--batch-tokens", "5000", "--item-tokens", "0"];
     const r = await batch(argv);
     expect(r.code).toBe(0);
     expect(readFileSync(join(f.out, "b01", "workspace", "items.jsonl"), "utf8")).toBe('{"id":"a"}\n{"id":"b"}\n');
@@ -189,7 +191,7 @@ describe("veriharness batch", () => {
     const dir = join(root, "shared-dir");
     mkdirSync(join(dir, "sub"), { recursive: true });
     writeFileSync(join(dir, "sub", "a.txt"), "a".repeat(36));
-    const r = await batch([...base(f), "--shared", dir, "--batch-tokens", "250", "--overhead-tokens", "0"]);
+    const r = await batch([...base(f), "--shared", dir, "--batch-tokens", "250", "--overhead-tokens", "0", "--item-tokens", "0"]);
     expect(r.code).toBe(0);
     expect(readFileSync(join(f.out, "b01", "workspace", "shared-dir", "sub", "a.txt"), "utf8")).toBe("a".repeat(36));
     // spec 16 + folder 36 = 52 characters, 15 tokens, plus two items of 100.
@@ -201,7 +203,7 @@ describe("veriharness batch", () => {
     // 36,000 characters, 10,000 tokens: as a shared file it would put the fixed part over the budget.
     const corpus = join(root, "corpus.md");
     writeFileSync(corpus, "c".repeat(36_000));
-    const r = await batch([...base(f), "--reference", corpus, "--batch-tokens", "250", "--overhead-tokens", "0"]);
+    const r = await batch([...base(f), "--reference", corpus, "--batch-tokens", "250", "--overhead-tokens", "0", "--item-tokens", "0"]);
     expect(r.code).toBe(0);
     for (const b of ["b01", "b02"]) {
       expect(readFileSync(join(f.out, b, "workspace", "corpus.md"), "utf8")).toHaveLength(36_000);
@@ -217,7 +219,7 @@ describe("veriharness batch", () => {
     const dir = join(root, "ref-dir");
     mkdirSync(join(dir, "sub"), { recursive: true });
     writeFileSync(join(dir, "sub", "a.txt"), "a".repeat(36_000));
-    const r = await batch([...base(f), "--reference", dir, "--batch-tokens", "250", "--overhead-tokens", "0"]);
+    const r = await batch([...base(f), "--reference", dir, "--batch-tokens", "250", "--overhead-tokens", "0", "--item-tokens", "0"]);
     expect(r.code).toBe(0);
     expect(readFileSync(join(f.out, "b01", "workspace", "ref-dir", "sub", "a.txt"), "utf8")).toHaveLength(36_000);
   });

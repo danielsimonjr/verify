@@ -75,7 +75,7 @@ veriharness batch --items FILE --split RULE --spec FILE --out DIR
 | `--provider`, `--model`, `--base-url`, `--context-size` | The worker model. The harness resolves its window as in section 1. | — |
 | `--chars-per-token R` | The fixed ratio that turns characters into tokens. | `3.6` |
 | `--overhead-tokens N` | Tokens for the worker's own system prompt and tool definitions. | `2000` |
-| `--item-tokens N` | Tokens reserved for the work on each item (search results, reads). | `0` |
+| `--item-tokens N` | Tokens reserved for the work on each item (search results, reads). Measured: about 3,000 for a row of a CHANGELOG audit. | `3000` |
 | `--max-items N` | The largest number of items in one batch. | no limit |
 
 The call must give `--batch-tokens`, or a worker model with a window that resolves. Else it stops
@@ -130,7 +130,7 @@ DIR/
 {
   "budget": 32768, "budgetSource": "half-window",
   "window": 65536, "windowSource": "loaded",
-  "charsPerToken": 3.6, "overheadTokens": 2000, "itemTokens": 0,
+  "charsPerToken": 3.6, "overheadTokens": 2000, "itemTokens": 3000,
   "split": "heading:^### TODO line (\\d+)$", "reference": ["CHANGELOG.md"],
   "batches": [
     {"name": "b01", "items": ["6857", "6858"], "estTokens": 29674, "overBudget": false}

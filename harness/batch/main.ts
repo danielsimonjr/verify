@@ -35,6 +35,13 @@ const USAGE =
   "         [--batch-tokens N | --provider P --model M [--base-url U] [--context-size N|auto]]\n" +
   "         [--chars-per-token R] [--overhead-tokens N] [--item-tokens N] [--max-items N]\n";
 
+/**
+ * Tokens reserved for the work on one item: its searches and slice reads. Measured with qwen3.5:9b in
+ * pi on a CHANGELOG audit: about 3,000 for each row. With 0, the packer put 41 rows in one 64k-window
+ * batch; the worker had no room to check them and guessed 8 of 41 wrong.
+ */
+const DEFAULT_ITEM_TOKENS = 3000;
+
 /** An input error: exit 2 with the message. */
 class UsageError extends Error {}
 
@@ -157,7 +164,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Backend
       fixedChars: charsOf(specPath) + shared.reduce((sum, p) => sum + charsOf(p), 0),
       charsPerToken: positive("--chars-per-token", values["chars-per-token"], 3.6, false),
       overheadTokens: nonNegativeInt("--overhead-tokens", values["overhead-tokens"], 2000),
-      itemTokens: nonNegativeInt("--item-tokens", values["item-tokens"], 0),
+      itemTokens: nonNegativeInt("--item-tokens", values["item-tokens"], DEFAULT_ITEM_TOKENS),
       maxItems: values["max-items"] === undefined ? undefined : positive("--max-items", values["max-items"], 0),
     };
     const batches = pack(items, options);
