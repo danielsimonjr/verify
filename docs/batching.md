@@ -120,8 +120,10 @@ records the form:
 |---|---|
 | `pure` | JSON and nothing else |
 | `fenced` | one code fence that holds JSON |
-| `embedded` | prose around a fenced block or a bare object |
+| `embedded` | prose around a fenced block, a bare object or a bare array |
 
+In prose, the deliverable is the longest top-level JSON value, an array included. A value that never
+closes, or that is not valid JSON, gives `no-json`: the harness never returns an object from inside it.
 A text with no JSON goes to `deliverables/report.json.txt`, with the error `no-json`. A form other than
 `pure` is a format error: the record shows it, and the harness does not hide it.
 

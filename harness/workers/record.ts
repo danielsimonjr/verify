@@ -73,8 +73,8 @@ function tryParse(text: string): { ok: true; value: unknown } | { ok: false } {
   }
 }
 
-/** The end of the balanced `{...}` that starts at `start`, skipping braces inside strings; -1 if none. */
-function objectEnd(text: string, start: number): number {
+/** The end of the balanced `{...}` or `[...]` that starts at `start`, skipping brackets inside strings; -1 if it never closes. */
+function valueEnd(text: string, start: number): number {
   let depth = 0;
   let inString = false;
   for (let i = start; i < text.length; i++) {
@@ -83,13 +83,22 @@ function objectEnd(text: string, start: number): number {
       if (c === "\\") i++;
       else if (c === '"') inString = false;
     } else if (c === '"') inString = true;
-    else if (c === "{") depth++;
-    else if (c === "}" && --depth === 0) return i;
+    else if (c === "{" || c === "[") depth++;
+    else if ((c === "}" || c === "]") && --depth === 0) return i;
   }
   return -1;
 }
 
-/** Parse a JSON deliverable: the whole text, one whole fence, or a fence or bare object in prose. */
+/** A `[` opens a JSON array only when a value follows it: a bracketed word in prose does not. */
+const ARRAY_OPEN = /\[\s*[\[{"]/y;
+
+/**
+ * Parse a JSON deliverable: the whole text, one whole fence, or the largest JSON value in prose.
+ *
+ * In prose the answer is the longest top-level value, an array included. A value that never closes,
+ * or that is balanced but not valid JSON, is skipped whole and never searched for pieces: an object
+ * inside a truncated array is a fragment, and returning it would drop the rest with no error.
+ */
 export function parseJsonDeliverable(text: string): { value: unknown; form: DeliverableForm } | null {
   const trimmed = text.trim();
   if (trimmed === "") return null;
@@ -104,13 +113,21 @@ export function parseJsonDeliverable(text: string): { value: unknown; form: Deli
     const inner = tryParse(match[1]!.trim());
     if (inner.ok) return { value: inner.value, form: "embedded" };
   }
-  for (let start = trimmed.indexOf("{"); start >= 0; start = trimmed.indexOf("{", start + 1)) {
-    const end = objectEnd(trimmed, start);
-    if (end < 0) continue;
-    const bare = tryParse(trimmed.slice(start, end + 1));
-    if (bare.ok) return { value: bare.value, form: "embedded" };
+  let best: { value: unknown; length: number } | null = null;
+  for (let i = 0; i < trimmed.length; ) {
+    const c = trimmed[i];
+    ARRAY_OPEN.lastIndex = i;
+    if (c !== "{" && !(c === "[" && ARRAY_OPEN.test(trimmed))) {
+      i++;
+      continue;
+    }
+    const end = valueEnd(trimmed, i);
+    if (end < 0) break;
+    const found = tryParse(trimmed.slice(i, end + 1));
+    if (found.ok && (best === null || end + 1 - i > best.length)) best = { value: found.value, length: end + 1 - i };
+    i = end + 1;
   }
-  return null;
+  return best === null ? null : { value: best.value, form: "embedded" };
 }
 
 function events(text: string): Record<string, unknown>[] {

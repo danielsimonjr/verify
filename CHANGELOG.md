@@ -6,6 +6,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-10
+
+### Fixed
+- A JSON deliverable that was a top-level array in prose lost all but its first element with no
+  error. The extractor looked for `{` only, so a fence written as `` ```json [ `` fell through to the
+  first object inside the array. The record said `embedded` and `error: null`. The extractor now
+  returns the longest top-level value, an array included. A value that is cut off or not valid JSON
+  gives `no-json`, and the harness never returns an object from inside it.
+
 ## [0.8.0] - 2026-10-09
 
 ### Added

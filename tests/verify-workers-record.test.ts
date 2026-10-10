@@ -58,6 +58,32 @@ describe("parseJsonDeliverable", () => {
     expect(parseJsonDeliverable("")).toBeNull();
     expect(parseJsonDeliverable("{not json}")).toBeNull();
   });
+
+  test("an array is returned whole, also when the fence tag line holds its first bracket", () => {
+    const rows = [{ row: "line 1", verdict: "LOGGED" }, { row: "line 2", verdict: "MISSING" }, { row: "line 3", verdict: "LOGGED" }];
+    const text = JSON.stringify(rows, null, 1);
+    // A fence written as ```json [ has no newline after the tag, so the fence patterns do not match it.
+    const glued = `Here is the output:\n\n${FENCE}json ${text}${FENCE}\n\nAll rows are covered.`;
+    expect(parseJsonDeliverable(glued)).toEqual({ value: rows, form: "embedded" });
+    expect(parseJsonDeliverable(`Result: ${JSON.stringify(rows)} done`)).toEqual({ value: rows, form: "embedded" });
+  });
+
+  test("a bracketed word in prose is not the deliverable", () => {
+    expect(parseJsonDeliverable('See [1] and [note]. The result is {"rows": [3]} as asked.')).toEqual({ value: { rows: [3] }, form: "embedded" });
+  });
+
+  test("the longest top-level value wins over an earlier small one", () => {
+    const text = 'Format: {"a":1}. Report: {"rows":[1,2,3],"n":3}';
+    expect(parseJsonDeliverable(text)).toEqual({ value: { rows: [1, 2, 3], n: 3 }, form: "embedded" });
+  });
+
+  test("a truncated or malformed value is never answered with a fragment of it", () => {
+    // The array is cut off after its second element: the complete objects inside it are pieces, not the deliverable.
+    expect(parseJsonDeliverable('Here: [{"row":1},{"row":2},{"row"')).toBeNull();
+    expect(parseJsonDeliverable('Here: {"rows":[{"row":1},{"row":2}')).toBeNull();
+    // Balanced but not valid JSON (a trailing comma): its inner object is a piece too.
+    expect(parseJsonDeliverable('Here: [{"row":1},{"row":2},]')).toBeNull();
+  });
 });
 
 describe("stream stats", () => {
