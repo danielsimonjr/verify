@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.3] - 2026-10-10
+
+### Fixed
+- `workers` no longer names an `--item-tokens` value for a peak that is above the estimate and inside
+  the budget of the manifest. A rebatch with that value gave the same split (peak 32764, estimate
+  31399, budget 32768: the value 76 gave an estimate of 32767). The line now means a batch that did
+  not fit. A manifest without `budget` is tested against the estimate, as before.
+
 ## [0.12.2] - 2026-10-10
 
 ### Fixed

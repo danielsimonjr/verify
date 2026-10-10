@@ -147,9 +147,11 @@ A text with no JSON goes to `deliverables/report.json.txt`, with the error `no-j
 
 When the folder holds a `manifest.json` from `batch`, the line printed by `workers` also has
 `estTokens`, the estimate of that batch. The estimate is a claim that the batch fits. The measured
-`peakContext` tests it. When `peakContext` is above `estTokens`, the command writes a line to stderr
-with the `--item-tokens` value that would have covered the batch. Use that value, or one measured on
-your own task, in the next `batch` call. A default cannot know what one item costs: that depends on
+`peakContext` tests it. When `peakContext` is above `estTokens` and above the `budget` of the
+manifest, the command writes a line to stderr with the `--item-tokens` value that would have covered
+the batch. A peak above the estimate and inside the budget writes no line: the batch fit, and a
+`batch` call with that value would give the same split. Use the value, or one measured on your own
+task, in the next `batch` call. A default cannot know what one item costs: that depends on
 the task, the tools and the model. Each rollout of a batch gives its own value. Take the largest
 value over all rollouts of all batches, not the value of one probe: one rollout is one sample of a
 cost that varies from run to run.

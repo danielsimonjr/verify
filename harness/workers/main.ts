@@ -109,16 +109,22 @@ interface Estimate {
   items: number;
 }
 
-/** The estimates of a `batch` output root, by batch name, and the `--item-tokens` it used. Empty when there is no manifest. */
-function readEstimates(root: string): { byBatch: Map<string, Estimate>; itemTokens: number } {
+/**
+ * The estimates of a `batch` output root, by batch name, the `--item-tokens` it used and its token budget
+ * (0 when the manifest has none). Empty when there is no manifest.
+ */
+function readEstimates(root: string): { byBatch: Map<string, Estimate>; itemTokens: number; budget: number } {
   const byBatch = new Map<string, Estimate>();
   let itemTokens = 0;
+  let budget = 0;
   try {
     const m = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8")) as {
+      budget?: unknown;
       itemTokens?: unknown;
       batches?: { name?: unknown; items?: unknown; estTokens?: unknown }[];
     };
     if (typeof m.itemTokens === "number") itemTokens = m.itemTokens;
+    if (typeof m.budget === "number") budget = m.budget;
     for (const b of m.batches ?? []) {
       if (typeof b.name === "string" && typeof b.estTokens === "number" && Array.isArray(b.items)) {
         byBatch.set(b.name, { estTokens: b.estTokens, items: b.items.length });
@@ -127,7 +133,7 @@ function readEstimates(root: string): { byBatch: Map<string, Estimate>; itemToke
   } catch {
     // No manifest, or one that is not a batch manifest: the records carry no estimate.
   }
-  return { byBatch, itemTokens };
+  return { byBatch, itemTokens, budget };
 }
 
 /** A complete rollout: its record says no error. */
@@ -352,7 +358,10 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
     // The estimate is a claim that the batch fits; the record carries the measurement that tests it.
     const est = estimates.byBatch.get(batch.name);
     process.stdout.write(JSON.stringify({ batch: batch.name, ...record, attempts, ...(est ? { estTokens: est.estTokens } : {}) }) + "\n");
-    if (est && est.items > 0 && record.peakContext > est.estTokens) {
+    // A peak above the estimate and inside the budget falsifies nothing: the batch fit, and a rebatch with
+    // the calibrated cost would give the same split. Only a peak past the budget says the split was wrong.
+    const insideBudget = estimates.budget > 0 && record.peakContext <= estimates.budget;
+    if (est && est.items > 0 && record.peakContext > est.estTokens && !insideBudget) {
       const itemTokens = estimates.itemTokens + Math.ceil((record.peakContext - est.estTokens) / est.items);
       suggested = Math.max(suggested, itemTokens);
       // Compaction caps the peak: the context the worker needed was larger than the one it measured.

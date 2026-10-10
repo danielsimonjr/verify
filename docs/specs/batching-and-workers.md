@@ -220,9 +220,11 @@ deliverable that parses and does not fit the `--schema` file. A rollout with an 
 text of the worker as `deliverables/<name>.partial.txt`.
 
 When the batch root has a `manifest.json`, the printed line also has `estTokens` (the manifest's
-estimate for that batch). A `peakContext` above `estTokens` writes one stderr line that names the
-`--item-tokens` value that would have covered it: the manifest's `itemTokens` plus the overshoot
-divided by the item count, rounded up.
+estimate for that batch). A `peakContext` above `estTokens` and above the manifest's `budget` writes
+one stderr line that names the `--item-tokens` value that would have covered it: the manifest's
+`itemTokens` plus the overshoot divided by the item count, rounded up. A peak inside the budget writes
+no line, because the batch fit and a rebatch would give the same split. A manifest without `budget`
+is tested against the estimate alone.
 
 ### Resume
 

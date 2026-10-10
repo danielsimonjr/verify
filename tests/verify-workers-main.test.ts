@@ -136,6 +136,41 @@ describe("veriharness workers", () => {
     expect(r.stderr).not.toContain("b02/r01: peak context");
   });
 
+  test("a peak past the estimate and inside the budget names no --item-tokens: a rebatch would not change the split", async () => {
+    const dir = batchRoot(["b01"]);
+    writeFileSync(
+      join(dir, "manifest.json"),
+      JSON.stringify({ budget: 2000, itemTokens: 0, batches: [{ name: "b01", items: ["1", "2"], estTokens: 1000 }] }),
+    );
+    const r = await workers([dir, ...OLLAMA, "--count", "1"], fake((j) => ({ ...ok(j), peakContext: 1500 })));
+    // The record still carries the measurement and the estimate: the reader can see the gap.
+    expect(r.lines[0]).toMatchObject({ estTokens: 1000, peakContext: 1500 });
+    expect(r.stderr).not.toContain("passed the estimate");
+    expect(r.stderr).not.toContain("--item-tokens");
+    expect(r.lines.at(-1)).toEqual({ summary: { complete: 1, errors: 0, skipped: 0 } });
+  });
+
+  test("a peak past the budget names the --item-tokens that would have covered it", async () => {
+    const dir = batchRoot(["b01"]);
+    writeFileSync(
+      join(dir, "manifest.json"),
+      JSON.stringify({ budget: 1200, itemTokens: 0, batches: [{ name: "b01", items: ["1", "2"], estTokens: 1000 }] }),
+    );
+    const r = await workers([dir, ...OLLAMA, "--count", "1"], fake((j) => ({ ...ok(j), peakContext: 1500 })));
+    expect(r.stderr).toContain("b01/r01: peak context 1500 passed the estimate of 1000");
+    expect(r.stderr).toContain("--item-tokens 250");
+  });
+
+  test("a peak at the budget is inside it", async () => {
+    const dir = batchRoot(["b01"]);
+    writeFileSync(
+      join(dir, "manifest.json"),
+      JSON.stringify({ budget: 1500, itemTokens: 0, batches: [{ name: "b01", items: ["1", "2"], estTokens: 1000 }] }),
+    );
+    const r = await workers([dir, ...OLLAMA, "--count", "1"], fake((j) => ({ ...ok(j), peakContext: 1500 })));
+    expect(r.stderr).not.toContain("--item-tokens");
+  });
+
   test("a rollout that compacted its context is reported: its answer rests on turns it no longer held", async () => {
     const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1"], fake((j) => ({ ...ok(j), compactions: 2 })));
     expect(r.lines[0]).toMatchObject({ compactions: 2 });
