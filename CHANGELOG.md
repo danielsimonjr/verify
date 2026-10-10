@@ -6,7 +6,45 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
-## [0.8.1] - 2026-10-10
+## [0.9.0] - 2026-10-10
+
+### Added
+- `veriharness workers --schema FILE` checks each parsed deliverable against a JSON Schema file. A
+  deliverable that does not fit ends as `schema`, with the errors in
+  `deliverables/<name>.schema-errors.txt`. A schema with a keyword the check does not know is an
+  input error, so a schema is never passed by a part that was skipped.
+- `veriharness workers --retries N` runs a rollout again when its error is `no-result`, `no-json`,
+  `thinking-only`, `length` or `schema`. A timeout, a usage limit, a stop and a turn cap are never
+  repeated. Each printed line has `attempts`.
+- `worker.json` has `compactions`, the number of times the agent compacted its context, and
+  `workers` writes a stderr line when it is above 0: the answer rests on turns the worker no longer
+  held.
+- New `error` values `length` (the last turn ended at the output limit) and `thinking-only` (the last
+  turn held thinking and no text). Both were `no-result` or a cut deliverable before.
+- A rollout that ends with an error keeps the last text of the worker as
+  `deliverables/<name>.partial.txt`. A timeout no longer loses what the worker had written.
+- `manifest.json` of `batch` lists `shared` beside `reference`: the files the estimate counted and
+  the files it did not.
+- The driver logs when a model's last message ended at the output limit (`stopReason length`), and
+  logs the path of the live session stream at the start of each investigation.
+- A worker whose pi session ends without an answer (a timeout, a turn of thought alone, a cut, no
+  JSON) is continued once in the same session with a short nudge. `--nudge-timeout S` sets its
+  budget (default 300; 0 turns it off). `worker.json` has `nudged`. Before, the work was lost.
+- A rollout whose agent compacted its context ends as `compacted`, with its deliverable kept, and
+  `--allow-compaction` accepts it. A compaction means the batch did not fit the window.
+- `workers` writes the largest `--item-tokens` suggestion over all rollouts at the end of a run and
+  puts it in the summary line as `itemTokens`. A compacted rollout gives a lower bound ("at least").
+- `worker.json` has `toolErrors`, and `workers` warns when at least half of at least five tool
+  calls failed: the worker reads paths or patterns that the task does not have.
+- The driver writes a progress line to `driver.log` every 60 s (`VERIHARNESS_PROGRESS_SEC`) while a
+  pi or Claude Code turn runs, with the session counts. A turn of many minutes no longer looks frozen.
+- The driver nudge says "do not think further" when the last message was cut or held only thinking.
+
+### Changed
+- The driver adjudicates when one investigation left no record. The missing record is written as
+  `{"missing": true, ...}` and the reviewer is told to adjudicate from the other record and the
+  rollouts. Before, one failed role stopped the whole pipeline with no `finish.json`. When no
+  investigation leaves a record, nothing is adjudicated, as before.
 
 ### Fixed
 - A JSON deliverable that was a top-level array in prose lost all but its first element with no

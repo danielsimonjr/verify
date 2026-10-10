@@ -20,7 +20,11 @@ veriharness batch --items TODO-closed.md --split "heading:^### TODO line (\d+)$"
 Each line that matches the regex starts one item. The capture group is the item id. The command
 resolves the worker model's window, takes half of it as the budget, and packs the items in file order.
 
-`--shared` and `--reference` both copy a file or a folder into each batch's `workspace/`. Use
+`--shared` and `--reference` both copy a file or a folder into each batch's `workspace/`. The test
+for the choice: does the worker prompt tell the worker to read the file whole? If it does, the file
+is `--shared`. A file that the worker only searches is `--reference`. A file that is listed wrongly
+as `--reference` is read whole and is not counted, so the batch goes over its budget. The
+`manifest.json` lists both sets, as `shared` and `reference`. Use
 `--shared` for a file that the worker reads whole: the estimate counts it. Use `--reference` for a
 file that the worker only searches, such as a large CHANGELOG: the estimate does not count it. A
 CHANGELOG of 1 MB is about 290,000 tokens, so as `--shared` it puts every batch over the budget.
@@ -141,7 +145,24 @@ When the folder holds a `manifest.json` from `batch`, the line printed by `worke
 `peakContext` tests it. When `peakContext` is above `estTokens`, the command writes a line to stderr
 with the `--item-tokens` value that would have covered the batch. Use that value, or one measured on
 your own task, in the next `batch` call. A default cannot know what one item costs: that depends on
-the task, the tools and the model.
+the task, the tools and the model. Each rollout of a batch gives its own value. Take the largest
+value over all rollouts of all batches, not the value of one probe: one rollout is one sample of a
+cost that varies from run to run.
+
+`compactions` is the number of times the agent compacted its context. Each compaction drops the
+older turns, so a worker that compacted answers from turns it no longer holds. A rollout with a
+compaction ends as `compacted`: its deliverable is kept, but the batch did not fit the window, which
+is the premise of `batch`. Make the batches smaller. `--allow-compaction` accepts such a rollout.
+Compaction caps `peakContext`, so the suggested `--item-tokens` of a compacted rollout is a lower
+bound: the line says "at least".
+
+At the end of a run, `workers` writes the largest `--item-tokens` suggestion over all rollouts, and
+the summary line has it as `itemTokens`.
+
+`toolErrors` is the number of tool calls that failed. A worker that reads paths or patterns the task
+does not have fails many calls; `workers` writes a stderr line when at least half of at least five
+calls failed.
+
 `error` is null when the rollout is complete. Otherwise it is one of these values:
 
 | `error` | Cause |
@@ -154,6 +175,39 @@ the task, the tools and the model.
 | `usage-limit` | The Claude Code account hit its usage limit. |
 | `no-result` | No final answer. For Claude Code, also an exit code that is not 0 or an error result. |
 | `no-json` | A `.json` deliverable, and the final text holds no JSON. |
+| `length` | The last turn ended at the output-token limit, so its text is cut. |
+| `thinking-only` | The last turn held thinking and no text: the model spent its output on thought. |
+| `schema` | The deliverable is JSON but does not fit the `--schema` file. |
+| `compacted` | The agent compacted its context. The deliverable is kept; see `--allow-compaction`. |
+
+When a rollout ends with an error and its last turn had text, the harness keeps that text as
+`deliverables/<name>.partial.txt`. A timeout, a cut or a stop no longer loses what the worker wrote.
+For `schema`, the file `deliverables/<name>.schema-errors.txt` lists each error with its path.
+
+## Deliverable schema
+
+`--schema FILE` checks each parsed deliverable against a JSON Schema file. A value that parses is
+not yet a deliverable: it must have the shape the task asked for. The check knows `type`, `enum`,
+`const`, `required`, `properties`, `additionalProperties`, `items`, `minItems`, `maxItems`,
+`minimum`, `maximum` and `anyOf`. A schema that holds any other keyword is an input error, so a
+schema is never passed by a part that the check skipped.
+
+## Retries
+
+`--retries N` runs a rollout again, up to N more times, when its error is `no-result`, `no-json`,
+`thinking-only`, `length` or `schema`: the model's output was wrong or empty, and a second try can
+differ. A `timeout`, a `usage-limit`, a `stopped` and a `max-turns` are never repeated. Each printed
+line has `attempts`.
+
+## Nudge
+
+Three things end a pi session with no answer: the time limit, a last turn of thought alone, and a
+last turn cut at the output limit. A fourth is a final message without the JSON. Each one used to
+throw away what the worker had found. `workers` now continues the same session once with a short
+message: stop investigating, do not think further, write the answer now. The message depends on the
+cause. The nudge has its own budget: `--nudge-timeout S` (default 300; 0 turns it off). The record
+has `nudged: true`, and `agent.jsonl` holds both sessions. A nudge needs a saved session, so a
+Claude Code worker has none, and `--nudge-timeout` with `--provider claude-code` is an input error.
 
 ## Turn cap
 

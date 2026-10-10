@@ -205,11 +205,18 @@ Each rollout gets `trajectory/worker.json`:
 
 ```json
 {"rollout": "r01", "exit": 0, "seconds": 699, "turns": 7, "tools": 16, "peakContext": 36982,
- "outputTokens": 4864, "form": "pure", "error": null}
+ "outputTokens": 4864, "compactions": 0, "toolErrors": 0, "nudged": false, "form": "pure", "error": null}
 ```
 
 `peakContext` is the largest prompt size of one turn: input plus cache read plus cache write
-tokens. `error` is one of `timeout`, `no-result`, `no-json`, `start-failed`, `usage-limit` or null.
+tokens. `compactions` counts the context compactions of the agent: above 0, the worker answered from
+turns it no longer held. `error` is one of `timeout`, `no-result`, `no-json`, `start-failed`,
+`usage-limit`, `truncated`, `stopped`, `max-turns`, `length`, `thinking-only`, `schema`, `compacted` or null.
+`toolErrors` counts failed tool calls. `nudged` is true when a pi session that ended without an answer
+was continued once with a short message (`--nudge-timeout`, default 300 s; 0 turns it off). `length` is a last
+turn cut at the output limit; `thinking-only` is a last turn of thought with no text; `schema` is a
+deliverable that parses and does not fit the `--schema` file. A rollout with an error keeps the last
+text of the worker as `deliverables/<name>.partial.txt`.
 
 When the batch root has a `manifest.json`, the printed line also has `estTokens` (the manifest's
 estimate for that batch). A `peakContext` above `estTokens` writes one stderr line that names the
