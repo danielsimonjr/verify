@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { parseDriverArgv } from "../harness/driver.ts";
@@ -145,6 +145,82 @@ describe("an investigation that leaves no record", () => {
     const result = JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8"));
     expect(result.exit).toBe(0);
     expect(result.investigations).toEqual({ elim: true, fals: false });
+  });
+
+  test("a record the challenger wrote in its own folder and then read back with a shell counts", async () => {
+    // fals/ holds the format file the model was told to follow; a model may put the record next to it.
+    const record = { challenges: [{ claim: "c", tried: "t", found: "f", holds: true, because: "b" }], notes: "" };
+    const text = JSON.stringify(record);
+    const own = join(rig.ws, "fals", "ledger_fals.json");
+    const rules = happyRules(rig.ws).filter((r) => !JSON.stringify(r).includes("ledger_fals.json"));
+    rig.script([
+      ...rules,
+      {
+        match: "# Falsification",
+        action: {
+          toolUses: [
+            { name: "Write", input: { file_path: own, content: text } },
+            { name: "Bash", input: { command: "cat fals/ledger_fals.json" } },
+          ],
+          writes: [{ path: "fals/ledger_fals.json", content: text }],
+        },
+      },
+    ]);
+    expect(await rig.run(ARGS)).toBe(0);
+    const result = JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8"));
+    expect(result.investigations).toEqual({ elim: true, fals: true });
+    expect(JSON.parse(readFileSync(join(rig.ws, "ledger_fals.json"), "utf8"))).toEqual(record);
+    expect(rig.log()).not.toContain("no ledger_fals.json of its own");
+  });
+
+  test("the same for a pi investigation that wrote its record with a shell command", async () => {
+    const record = { challenges: [{ claim: "c", tried: "t", found: "f", holds: true, because: "b" }], notes: "" };
+    const text = JSON.stringify(record);
+    const pi = piHappyRules(rig.ws).filter((r) => !JSON.stringify(r).includes("ledger_fals.json"));
+    rig.script([
+      ...happyRules(rig.ws).slice(0, 2),
+      ...pi.slice(2),
+      {
+        match: "# Falsification",
+        action: {
+          toolUses: [{ name: "bash", arguments: { command: "cat > fals/ledger_fals.json <<'EOF'\n" + text + "\nEOF" } }],
+          writes: [{ path: "fals/ledger_fals.json", content: text }],
+        },
+      },
+    ]);
+    const code = await rig.run(
+      [...ARGS, "--role", "checker=anthropic:pi-model", "--role", "challenger=anthropic:pi-model"],
+      {},
+      { piCommand: [process.execPath, STUB_PI] },
+    );
+    expect(code).toBe(0);
+    const result = JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8"));
+    expect(result.investigations).toEqual({ elim: true, fals: true });
+    expect(JSON.parse(readFileSync(join(rig.ws, "ledger_fals.json"), "utf8"))).toEqual(record);
+  });
+
+  test("a record file of an earlier run is not this run's record", async () => {
+    // The challenger only lists the file; the copy in the task root is left over from before.
+    const stale = JSON.stringify({ challenges: [{ claim: "old" }], notes: "earlier run" });
+    writeFileSync(join(rig.ws, "ledger_fals.json"), stale);
+    const rules = happyRules(rig.ws).filter((r) => !JSON.stringify(r).includes("ledger_fals.json"));
+    rig.script([
+      ...rules,
+      { match: "# Falsification", action: { toolUses: [{ name: "Bash", input: { command: "ls -la ledger_fals.json" } }] } },
+    ]);
+    expect(await rig.run(ARGS)).toBe(0);
+    const result = JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8"));
+    expect(result.investigations).toEqual({ elim: true, fals: false });
+    expect(JSON.parse(readFileSync(join(rig.ws, "ledger_fals.json"), "utf8")).missing).toBe(true);
+  });
+
+  test("a finish.json of an earlier run is set aside, so a reviewer that writes none is not taken for done", async () => {
+    writeFileSync(join(rig.ws, "finish.json"), JSON.stringify({ base: "r1", work: [], open: [], notes: "earlier run" }));
+    rig.script(happyRules(rig.ws).filter((r) => !JSON.stringify(r).includes("finish.json")));
+    expect(await rig.run(ARGS)).toBe(1);
+    expect(existsSync(join(rig.ws, "previous", "finish.json"))).toBe(true);
+    expect(existsSync(join(rig.ws, "finish.json"))).toBe(false);
+    expect(rig.log()).toContain("an earlier run left finish.json");
   });
 
   test("when no investigation leaves a record, nothing is adjudicated", async () => {

@@ -145,11 +145,12 @@ interface ToolUse {
  *
  * - a `Write` whose `file_path` ends in the record name supplies the record from its `content`, which must parse;
  * - a `Bash` call that mentions the record name, or an `Edit` / `MultiEdit` of it, means the verifier built or
- *   changed the file by other means, so the record is read back from `recordPath` and must parse.
+ *   changed the file by other means, so the record is read back from `recordPath`, or from one of `alsoAt`,
+ *   and must parse.
  *
  * A file another session left at that path is therefore never taken for this session's own.
  */
-export function claudeOwnRecord(sessionDir: string, recordPath: string): string | null {
+export function claudeOwnRecord(sessionDir: string, recordPath: string, alsoAt: readonly string[] = []): string | null {
   const record = recordPath.replace(/\\/g, "/").split("/").pop() ?? recordPath;
   let last: ["write", string] | ["disk", null] | null = null;
   let files: string[];
@@ -190,8 +191,8 @@ export function claudeOwnRecord(sessionDir: string, recordPath: string): string 
       return null;
     }
   }
-  if (readJson(recordPath) !== null && isFile(recordPath)) {
-    return readFileSync(recordPath, "utf8");
+  for (const path of [recordPath, ...alsoAt]) {
+    if (isFile(path) && readJson(path) !== null) return readFileSync(path, "utf8");
   }
   return null;
 }

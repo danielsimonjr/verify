@@ -4,6 +4,21 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-10-10
+
+### Fixed
+- A valid record could count as missing. An investigation that wrote its record in its own folder
+  (`fals/ledger_fals.json`, next to the format file) and then read it back with a shell command was judged
+  to have no record, because the driver looked for a shell-built file in the task root only, while the
+  restore step after the run treated the folder as the place of the record. With both investigations
+  empty, the run ended with exit 1 and the reviewer and fixer never ran. The driver now reads a
+  shell-built record from the task root or from the folder of the investigation.
+- A record, `finish.json` or `repair.json` of an earlier run passed for a record of the new run when a
+  session only named the file in a shell command, or when the reviewer wrote nothing. The driver moves
+  these files to `previous/` at the start of a run.
+- The log line for an investigation with no record now gives the assistant messages and tool calls
+  of its session (pi lane), so a model that never used a tool shows as that.
+
 ## [0.10.0] - 2026-10-10
 
 ### Added

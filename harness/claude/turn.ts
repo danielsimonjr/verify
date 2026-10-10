@@ -255,8 +255,8 @@ export class ClaudeSession {
   }
 
   /** The record this session's own tool calls wrote, or null; see `claudeOwnRecord`. */
-  ownRecord(record: string): string | null {
-    return claudeOwnRecord(this.sessionDir, record);
+  ownRecord(record: string, alsoAt: readonly string[] = []): string | null {
+    return claudeOwnRecord(this.sessionDir, record, alsoAt);
   }
 
   /**

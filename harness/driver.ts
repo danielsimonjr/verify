@@ -258,8 +258,11 @@ export interface Agent {
   withSession(name: string): Agent;
   /** Run one turn; true when the runtime says it succeeded. The caller judges the turn by the records it left. */
   turn(message: string, timeout: number, continueSession: boolean, tag?: string): Promise<boolean>;
-  /** The text of the record file this session wrote itself (not a file another session left), or null. */
-  ownRecord(record: string): string | null;
+  /**
+   * The text of the record file this session wrote itself (not a file another session left), or null.
+   * When the session built the file with a shell, it is read back from `record` or from one of `alsoAt`.
+   */
+  ownRecord(record: string, alsoAt?: readonly string[]): string | null;
   /** True when the last message of the session was cut at the output limit or held only thinking. */
   endedCut(): boolean;
 }
@@ -434,8 +437,8 @@ class Pi implements Agent {
     return new Pi(this.ws, this.piCommand, this.flags, this.useJail, this.deadline, native, this.piHome, this.backoff);
   }
 
-  ownRecord(record: string): string | null {
-    return ownRecord(this.sessionDir, record);
+  ownRecord(record: string, alsoAt: readonly string[] = []): string | null {
+    return ownRecord(this.sessionDir, record, alsoAt);
   }
 
   endedCut(): boolean {
@@ -858,10 +861,13 @@ async function investigate(
   log(ws, `${tag}live stream: session/${name}/ (driver.log is silent until this turn ends)`);
   const session = agent.withSession(name);
   await session.turn(message, args.turnTimeout, false, tag);
-  if (session.ownRecord(join(ws, record)) === null) {
+  // The format file the model follows lives in `<name>/`, and the driver keeps its own copy there, so a
+  // record built with a shell may stand in either place.
+  const places = [join(ws, name, record)];
+  if (session.ownRecord(join(ws, record), places) === null) {
     await session.turn(nudgeFor(session, NUDGE_LEDGER.replace("{record}", record)), args.nudgeTimeout, true, tag);
   }
-  const own = session.ownRecord(join(ws, record));
+  const own = session.ownRecord(join(ws, record), places);
   let ledger: Record<string, unknown> | null = null;
   if (own !== null) {
     try {
@@ -871,7 +877,9 @@ async function investigate(
     }
   }
   if (ledger === null) {
-    log(ws, `${tag}no ${record} of its own after nudge`);
+    // What the session did tells a model that never started from one that wrote the wrong thing.
+    const seen = kind === "pi" ? ` (${sessionProgress(join(ws, "session", name))})` : "";
+    log(ws, `${tag}no ${record} of its own after nudge${seen}`);
     return false;
   }
   writeFileSync(join(ws, name, record), own!, "utf8");
@@ -970,7 +978,7 @@ export function lastStopReason(sessionDir: string): string {
   return reason;
 }
 
-function ownRecord(sessionDir: string, record: string): string | null {
+function ownRecord(sessionDir: string, record: string, alsoAt: readonly string[] = []): string | null {
   let last: ["write", string] | ["shell", null] | null = null;
   const recordName = basename(record);
   if (!isDir(sessionDir)) return null;
@@ -1008,8 +1016,8 @@ function ownRecord(sessionDir: string, record: string): string | null {
       return null;
     }
   }
-  if (readJsonFs(record) !== null && isFile(record)) {
-    return readFileSync(record, "utf8");
+  for (const path of [record, ...alsoAt]) {
+    if (isFile(path) && readJsonFs(path) !== null) return readFileSync(path, "utf8");
   }
   return null;
 }
@@ -1065,6 +1073,24 @@ export function settleScope(ws: string, snap: Map<string, Buffer>): string[] {
     found.push(`${rel} (added; set aside)`);
   }
   return found;
+}
+
+/**
+ * Files an earlier run of this task left: each investigation's record (in the task root and in its
+ * own folder), finish.json and repair.json. They would pass for this run's, because a record is read
+ * back from disk when a session built it with a shell and finish.json is read from disk after its
+ * turn. They are moved to `previous/`, never deleted.
+ */
+function setAsideEarlierRun(ws: string): void {
+  const stale = [...INVESTIGATIONS.flatMap(([name, , , record]) => [record, `${name}/${record}`]), ...SCOPE_FILES];
+  for (const rel of stale) {
+    const from = join(ws, rel);
+    if (!isFile(from)) continue;
+    const to = join(ws, "previous", rel);
+    ensureDir(dirname(to));
+    renameSync(from, to);
+    log(ws, `an earlier run left ${rel}; set aside as previous/${rel}`);
+  }
 }
 
 function restoreRecords(ws: string): void {
@@ -1423,6 +1449,7 @@ async function runPhases(cast: Cast, args: DriverArgs, mission: string, skills: 
   const [elim, fals] = INVESTIGATIONS as [[string, string, string, string], [string, string, string, string]];
   // A result.json of an earlier run would describe a run that did not happen.
   if (isFile(join(ws, "result.json"))) unlinkSync(join(ws, "result.json"));
+  setAsideEarlierRun(ws);
   const scope = snapshotScope(ws);
   const ok = await Promise.all([
     investigate(cast.checker, args, mission, skills, elim, cast.kinds.checker),

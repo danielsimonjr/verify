@@ -80,6 +80,11 @@ roles, or use two servers:
   options to `driver_args`.
 * The runner checks the options of each lane with the parser of the driver
   before it starts a task. A bad option stops the run with exit code 2.
+* A record is the file that the session of the investigation wrote itself. The driver accepts it in
+  the task root or in the folder of the investigation (`elim/`, `fals/`), and it must parse as JSON.
+  When a session built the file with a shell command, the driver reads it back from either place.
+* The driver does not take a file of an earlier run for a record. At the start of a run it moves
+  the records, `finish.json` and `repair.json` of an earlier run to `previous/`, and logs one line for each.
 
 ## What a run did
 
