@@ -27,7 +27,7 @@ function batchRoot(names: string[], prompt = true): string {
 }
 
 function ok(job: WorkerJob, error: WorkerRecord["error"] = null): WorkerRecord {
-  return { rollout: job.rollout, exit: 0, seconds: 1, totalSeconds: (job.priorSeconds ?? 0) + 1, turns: 1, tools: 0, peakContext: 1, outputTokens: 1, compactions: 0, toolErrors: 0, nudged: false, attempts: job.attempt ?? 1, form: error ? null : "pure", error };
+  return { rollout: job.rollout, exit: 0, seconds: 1, totalSeconds: (job.priorSeconds ?? 0) + 1, turns: 1, tools: 0, peakContext: 1, outputTokens: 1, compactions: 0, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0 }, nudged: false, attempts: job.attempt ?? 1, form: error ? null : "pure", error };
 }
 
 /** A runWorker fake: records each call, the largest number in flight, and the order of starts and ends. */
@@ -173,6 +173,20 @@ describe("veriharness workers", () => {
     const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "2"], fake((j) => ({ ...ok(j), tools: 10, toolErrors: j.rollout === "r01" ? 6 : 1 })));
     expect(r.stderr).toContain("b01/r01: 6 of 10 tool calls failed");
     expect(r.stderr).not.toContain("b01/r02: 1 of 10");
+  });
+
+  test("the off-task warning names the class of error that occurred, not a guessed cause", async () => {
+    const kinds = (k: Partial<{ invalid: number; missing: number; other: number }>) => ({ invalid: 0, missing: 0, other: 0, ...k });
+    const invalid = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1"], fake((j) => ({ ...ok(j), tools: 10, toolErrors: 9, toolErrorKinds: kinds({ invalid: 9 }) })));
+    expect(invalid.stderr).toContain("b01/r01: 9 of 10 tool calls failed");
+    expect(invalid.stderr).toContain("arguments the tool does not accept");
+    expect(invalid.stderr).not.toContain("paths or patterns");
+    const missing = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1"], fake((j) => ({ ...ok(j), tools: 10, toolErrors: 9, toolErrorKinds: kinds({ missing: 9 }) })));
+    expect(missing.stderr).toContain("paths or patterns the task does not have");
+    const other = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1"], fake((j) => ({ ...ok(j), tools: 10, toolErrors: 9, toolErrorKinds: kinds({ other: 9 }) })));
+    expect(other.stderr).toContain("b01/r01: 9 of 10 tool calls failed");
+    expect(other.stderr).not.toContain("paths or patterns");
+    expect(other.stderr).not.toContain("arguments the tool does not accept");
   });
 
   test("--nudge-timeout and --allow-compaction reach every job; the nudge is on by default", async () => {

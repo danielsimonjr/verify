@@ -60,6 +60,8 @@ export interface WorkerRecord {
   compactions: number;
   /** Tool calls that failed (a path the task does not have, a bad pattern): a worker that wanders has many. */
   toolErrors: number;
+  /** The failed tool calls by class, read from each call's own result text. They add up to `toolErrors`. */
+  toolErrorKinds: ToolErrorKinds;
   /** A nudge turn ran after the first session ended without an answer. */
   nudged: boolean;
   /** Runs of this rollout, the first one included: a retry replaces the stream, so the count says it happened. */
@@ -87,6 +89,37 @@ export interface StreamStats {
   thinkingOnly: boolean;
   /** Tool calls whose result was an error. */
   toolErrors: number;
+  /** The same calls by class. */
+  toolErrorKinds: ToolErrorKinds;
+}
+
+/**
+ * Why a tool call failed, from the text of its result: the tool refused the arguments (`invalid`: none,
+ * a wrong type), the path or file was not there (`missing`), or anything else.
+ */
+export interface ToolErrorKinds {
+  invalid: number;
+  missing: number;
+  other: number;
+}
+
+const INVALID_ARGUMENTS = /^\s*(<tool_use_error>\s*)?(Validation failed for tool|InputValidationError)/i;
+const MISSING_PATH = /\b(ENOENT|no such file|not found|does not exist|cannot find)\b/i;
+
+/** Class one failed tool result by its text. A result with no text is `other`: nothing says what failed. */
+export function toolErrorKind(text: string): keyof ToolErrorKinds {
+  if (INVALID_ARGUMENTS.test(text)) return "invalid";
+  if (MISSING_PATH.test(text)) return "missing";
+  return "other";
+}
+
+/** The text of a tool result: a string, or an array of `{ text }` blocks (pi and Claude Code both use these). */
+function resultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((b) => (b && typeof b === "object" && typeof (b as { text?: unknown }).text === "string" ? (b as { text: string }).text : ""))
+    .join("\n");
 }
 
 const WHOLE_FENCE = /^```[\w-]*[ \t]*\n([\s\S]*?)\n?```$/;
@@ -222,11 +255,14 @@ export function turnCounter(claude: boolean): (chunk: Buffer) => number {
 
 /** pi `--mode json`: assistant `message_end` events carry the usage; `tool_execution_end` is one tool call. */
 export function piStreamStats(text: string): StreamStats {
-  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0 };
+  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0 } };
   for (const e of events(text)) {
     if (e.type === "tool_execution_end") {
       stats.tools++;
-      if (e.isError === true) stats.toolErrors++;
+      if (e.isError === true) {
+        stats.toolErrors++;
+        stats.toolErrorKinds[toolErrorKind(resultText((e.result as { content?: unknown } | undefined)?.content))]++;
+      }
     }
     if (e.type === "compaction_start") stats.compactions++;
     const m = piTurn(e);
@@ -250,15 +286,18 @@ export function piStreamStats(text: string): StreamStats {
  * a turn is a message id. The `result` event holds the final text and the session's output total.
  */
 export function claudeStreamStats(text: string): StreamStats {
-  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0 };
+  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0 } };
   const output = new Map<string, number>();
   let lastText = "";
   let resultUsage: Record<string, unknown> | undefined;
   for (const e of events(text)) {
     if (e.type === "user" && Array.isArray((e.message as { content?: unknown } | undefined)?.content)) {
       for (const b of (e.message as { content: unknown[] }).content) {
-        const block = b as { type?: unknown; is_error?: unknown };
-        if (block && block.type === "tool_result" && block.is_error === true) stats.toolErrors++;
+        const block = b as { type?: unknown; is_error?: unknown; content?: unknown };
+        if (block && block.type === "tool_result" && block.is_error === true) {
+          stats.toolErrors++;
+          stats.toolErrorKinds[toolErrorKind(resultText(block.content))]++;
+        }
       }
     }
     if (e.type === "result") resultUsage = (e.usage ?? undefined) as Record<string, unknown> | undefined;

@@ -363,10 +363,15 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
       );
     }
     if (record.tools >= 5 && record.toolErrors >= 3 && record.toolErrors * 2 >= record.tools) {
-      process.stderr.write(
-        `workers: ${batch.name}/${job.rollout}: ${record.toolErrors} of ${record.tools} tool calls failed: ` +
-          `the worker is reading paths or patterns the task does not have\n`,
-      );
+      // Say what the failed results said: a worker that calls a tool with no arguments is not reading a path.
+      const k = record.toolErrorKinds;
+      const cause =
+        k.invalid >= k.missing && k.invalid >= k.other && k.invalid > 0
+          ? "the worker is calling tools with arguments the tool does not accept (see the tool results in trajectory/)"
+          : k.missing >= k.other && k.missing > 0
+            ? "the worker is reading paths or patterns the task does not have"
+            : "the tool results say why (see trajectory/)";
+      process.stderr.write(`workers: ${batch.name}/${job.rollout}: ${record.toolErrors} of ${record.tools} tool calls failed: ${cause}\n`);
     }
     if (record.compactions > 0) {
       process.stderr.write(

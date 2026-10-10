@@ -164,9 +164,10 @@ bound: the line says "at least".
 At the end of a run, `workers` writes the largest `--item-tokens` suggestion over all rollouts, and
 the summary line has it as `itemTokens`.
 
-`toolErrors` is the number of tool calls that failed. A worker that reads paths or patterns the task
-does not have fails many calls; `workers` writes a stderr line when at least half of at least five
-calls failed.
+`toolErrors` is the number of tool calls that failed. `toolErrorKinds` splits them by what each failed
+result said: `invalid` (the tool refused the arguments, for example none), `missing` (a path or file the
+task does not have) and `other`. `workers` writes a stderr line when at least half of at least five
+calls failed, and the line names the class that occurred most.
 
 `error` is null when the rollout is complete. Otherwise it is one of these values:
 

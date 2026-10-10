@@ -100,6 +100,7 @@ describe("stream stats", () => {
       stopReason: "stop",
       thinkingOnly: false,
       toolErrors: 0,
+      toolErrorKinds: { invalid: 0, missing: 0, other: 0 },
     });
   });
 
@@ -118,11 +119,12 @@ describe("stream stats", () => {
       stopReason: "",
       thinkingOnly: false,
       toolErrors: 0,
+      toolErrorKinds: { invalid: 0, missing: 0, other: 0 },
     });
   });
 
   test("an empty stream gives zeros and no text", () => {
-    const empty = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0 };
+    const empty = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0 } };
     expect(piStreamStats("")).toEqual(empty);
     expect(claudeStreamStats("")).toEqual(empty);
   });
@@ -139,6 +141,29 @@ describe("stream stats", () => {
     const stats = piStreamStats(stream);
     expect(stats.tools).toBe(3);
     expect(stats.toolErrors).toBe(2);
+  });
+
+  test("pi: a failed tool call is classed by its own result text", () => {
+    const fail = (text: string) =>
+      JSON.stringify({ type: "tool_execution_end", toolName: "grep", isError: true, result: { content: [{ type: "text", text }] } });
+    const stream = [
+      fail('Validation failed for tool "grep":\n  - pattern: must have required properties pattern\n\nReceived arguments:\n{}'),
+      fail('Validation failed for tool "read":\n  - path: must be string'),
+      fail("ENOENT: no such file or directory, open 'workspace/rows.md'"),
+      fail("something the harness does not know"),
+    ].join("\n");
+    const stats = piStreamStats(stream);
+    expect(stats.toolErrors).toBe(4);
+    expect(stats.toolErrorKinds).toEqual({ invalid: 2, missing: 1, other: 1 });
+  });
+
+  test("claude: a failed tool result is classed by its content", () => {
+    const user = (content: string) =>
+      JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", is_error: true, content }] } });
+    const stats = claudeStreamStats(
+      [user("<tool_use_error>InputValidationError: pattern is required</tool_use_error>"), user("File does not exist."), user("boom")].join("\n"),
+    );
+    expect(stats.toolErrorKinds).toEqual({ invalid: 1, missing: 1, other: 1 });
   });
 
   test("claude: a tool result with is_error is counted", () => {

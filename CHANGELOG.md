@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-10-10
+
+### Fixed
+- The `workers` warning "N of M tool calls failed" no longer guesses its cause. It named paths the task
+  did not have even when every failure was a call with no arguments (`grep` with `{}`, 23 of 23 calls in
+  one rollout, `rows.md` present). `worker.json` now has `toolErrorKinds` (`invalid`, `missing`, `other`),
+  read from each failed result, and the warning names the class that occurred most.
+
 ## [0.12.0] - 2026-10-10
 
 ### Added

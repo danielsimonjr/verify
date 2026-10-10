@@ -326,6 +326,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       outputTokens: stats.outputTokens,
       compactions: stats.compactions,
       toolErrors: stats.toolErrors,
+      toolErrorKinds: stats.toolErrorKinds,
       nudged,
       attempts: job.attempt ?? 1,
       form,
