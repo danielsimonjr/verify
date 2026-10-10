@@ -114,6 +114,34 @@ describe("veriharness workers", () => {
     }
   });
 
+  test("a rollout record carries the batch estimate, and a peak past it is reported with the item cost that covers it", async () => {
+    const dir = batchRoot(["b01", "b02"]);
+    writeFileSync(
+      join(dir, "manifest.json"),
+      JSON.stringify({
+        itemTokens: 100,
+        batches: [
+          { name: "b01", items: ["1", "2"], estTokens: 1000 },
+          { name: "b02", items: ["3"], estTokens: 1000 },
+        ],
+      }),
+    );
+    const peak = (job: WorkerJob): WorkerRecord => ({ ...ok(job), peakContext: job.batchDir.endsWith("b01") ? 1500 : 900 });
+    const r = await workers([dir, ...OLLAMA, "--count", "1"], fake(peak));
+    expect(r.lines.find((l) => l.batch === "b01")).toMatchObject({ estTokens: 1000, peakContext: 1500 });
+    expect(r.lines.find((l) => l.batch === "b02")).toMatchObject({ estTokens: 1000, peakContext: 900 });
+    // 1500 - 1000 = 500 over 2 items = 250 more per item, on top of the 100 the estimate already had.
+    expect(r.stderr).toContain("b01/r01: peak context 1500 passed the estimate of 1000");
+    expect(r.stderr).toContain("--item-tokens 350");
+    expect(r.stderr).not.toContain("b02/r01: peak context");
+  });
+
+  test("a batch root with no manifest has no estimate and no warning", async () => {
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1"], fake());
+    expect(r.lines[0]).not.toHaveProperty("estTokens");
+    expect(r.stderr).not.toContain("passed the estimate");
+  });
+
   test("one task workspace", async () => {
     const dir = join(root, "task");
     makeBatch(dir);

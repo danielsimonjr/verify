@@ -211,6 +211,11 @@ Each rollout gets `trajectory/worker.json`:
 `peakContext` is the largest prompt size of one turn: input plus cache read plus cache write
 tokens. `error` is one of `timeout`, `no-result`, `no-json`, `start-failed`, `usage-limit` or null.
 
+When the batch root has a `manifest.json`, the printed line also has `estTokens` (the manifest's
+estimate for that batch). A `peakContext` above `estTokens` writes one stderr line that names the
+`--item-tokens` value that would have covered it: the manifest's `itemTokens` plus the overshoot
+divided by the item count, rounded up.
+
 ### Resume
 
 A rollout whose `worker.json` has `error: null` is complete, and the command skips it. Other

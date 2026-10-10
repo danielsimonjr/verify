@@ -6,7 +6,13 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
-## [0.7.1] - 2026-10-09
+## [0.8.0] - 2026-10-09
+
+### Added
+- `veriharness workers` reads the `manifest.json` of a `batch` root. Each printed rollout line has
+  `estTokens`, the estimate of its batch. When the measured `peakContext` is above the estimate, the
+  command writes a stderr line with the `--item-tokens` value that would have covered the batch. The
+  estimate was never compared with the measurement before.
 
 ### Fixed
 - `veriharness workers` wrote `trajectory/agent.jsonl` only when the worker stopped, so a worker that

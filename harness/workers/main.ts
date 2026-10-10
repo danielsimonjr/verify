@@ -77,6 +77,33 @@ function optionalNumber(name: string, raw: string | undefined): number | undefin
   return n;
 }
 
+/** What `batch` estimated for one batch: its token estimate and item count, from `manifest.json`. */
+interface Estimate {
+  estTokens: number;
+  items: number;
+}
+
+/** The estimates of a `batch` output root, by batch name, and the `--item-tokens` it used. Empty when there is no manifest. */
+function readEstimates(root: string): { byBatch: Map<string, Estimate>; itemTokens: number } {
+  const byBatch = new Map<string, Estimate>();
+  let itemTokens = 0;
+  try {
+    const m = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8")) as {
+      itemTokens?: unknown;
+      batches?: { name?: unknown; items?: unknown; estTokens?: unknown }[];
+    };
+    if (typeof m.itemTokens === "number") itemTokens = m.itemTokens;
+    for (const b of m.batches ?? []) {
+      if (typeof b.name === "string" && typeof b.estTokens === "number" && Array.isArray(b.items)) {
+        byBatch.set(b.name, { estTokens: b.estTokens, items: b.items.length });
+      }
+    }
+  } catch {
+    // No manifest, or one that is not a batch manifest: the records carry no estimate.
+  }
+  return { byBatch, itemTokens };
+}
+
 /** A complete rollout: its record says no error. */
 function isComplete(batchDir: string, rollout: string): boolean {
   const path = join(batchDir, "rollouts", rollout, "trajectory", "worker.json");
@@ -238,6 +265,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
   }
 
   const start = deps.runWorker ?? runWorker;
+  const estimates = readEstimates(resolve(positionals[0]!));
   let complete = 0;
   let errors = 0;
   let limited = false;
@@ -252,7 +280,16 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
       errors++;
       return;
     }
-    process.stdout.write(JSON.stringify({ batch: batch.name, ...record }) + "\n");
+    // The estimate is a claim that the batch fits; the record carries the measurement that tests it.
+    const est = estimates.byBatch.get(batch.name);
+    process.stdout.write(JSON.stringify({ batch: batch.name, ...record, ...(est ? { estTokens: est.estTokens } : {}) }) + "\n");
+    if (est && est.items > 0 && record.peakContext > est.estTokens) {
+      const itemTokens = estimates.itemTokens + Math.ceil((record.peakContext - est.estTokens) / est.items);
+      process.stderr.write(
+        `workers: ${batch.name}/${job.rollout}: peak context ${record.peakContext} passed the estimate of ${est.estTokens}; ` +
+          `--item-tokens ${itemTokens} would have covered it\n`,
+      );
+    }
     if (record.error === null) complete++;
     else errors++;
     if (record.error === "usage-limit" && !limited) {
