@@ -48,7 +48,10 @@ export type WorkerError =
 export interface WorkerRecord {
   rollout: string;
   exit: number | null;
+  /** Wall-clock seconds of this attempt (the last one, after a retry). */
   seconds: number;
+  /** Seconds of every attempt of this rollout, this one included: what a retry cost in all. */
+  totalSeconds: number;
   turns: number;
   tools: number;
   peakContext: number;

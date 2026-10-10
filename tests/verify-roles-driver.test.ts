@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { parseDriverArgv } from "../harness/driver.ts";
-import { STUB_PI, happyRules, makeRig, piHappyRules, type Call, type Rig } from "./fixtures/verify-claude-code/rig.ts";
+import { STUB_PI, happyRules, makeRig, piHappyRules, writeRule, type Call, type Rig } from "./fixtures/verify-claude-code/rig.ts";
 
 let rig: Rig;
 beforeEach(() => {
@@ -212,6 +212,19 @@ describe("an investigation that leaves no record", () => {
     const result = JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8"));
     expect(result.investigations).toEqual({ elim: true, fals: false });
     expect(JSON.parse(readFileSync(join(rig.ws, "ledger_fals.json"), "utf8")).missing).toBe(true);
+  });
+
+  test("result.json names the items the reviewer left open, not only how many", async () => {
+    const open = [{ item: "row 2558", readings: ["LOGGED, heading A", "MISSING, no entry"], why: "dates differ" }];
+    const rules = happyRules(rig.ws).filter((r) => !JSON.stringify(r).includes("finish.json"));
+    rig.script([
+      ...rules,
+      writeRule(rig.ws, "# Adjudication", "finish.json", { base: "r1", work: [], open, notes: "r1" }),
+    ]);
+    expect(await rig.run(ARGS)).toBe(0);
+    const result = JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8"));
+    expect(result.open).toBe(1);
+    expect(result.openItems).toEqual(open);
   });
 
   test("a finish.json of an earlier run is set aside, so a reviewer that writes none is not taken for done", async () => {

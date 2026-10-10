@@ -199,7 +199,8 @@ schema is never passed by a part that the check skipped.
 differ. A `timeout`, a `usage-limit`, a `stopped` and a `max-turns` are never repeated. Each printed
 line and each `worker.json` has `attempts`. A retry runs in the same rollout folder, so the harness first
 moves the stream and the record of the attempt before it to `trajectory/attempt-N/`. A rollout that
-took three tries shows all three.
+took three tries shows all three. `seconds` is the time of the last attempt; `totalSeconds` is the time of
+all of them.
 
 ## Nudge
 

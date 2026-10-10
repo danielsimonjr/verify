@@ -1505,6 +1505,8 @@ async function runPhases(cast: Cast, args: DriverArgs, mission: string, skills: 
     base: baseOf(finish),
     work: (finish.work as unknown[] | undefined)?.length ?? 0,
     open: (finish.open as unknown[] | undefined)?.length ?? 0,
+    // The items themselves: a count says that something is in doubt, the list says what.
+    openItems: Array.isArray(finish.open) ? finish.open : [],
     ...(finish.repair ? { delivery: finish.repair } : {}),
   });
 }

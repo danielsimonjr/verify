@@ -59,6 +59,8 @@ export interface WorkerJob {
   rollout: string;
   /** 1 for the first run of the rollout, 2 for the first retry, and so on. */
   attempt?: number;
+  /** Seconds the attempts before this one took; `totalSeconds` adds them to this attempt's own. */
+  priorSeconds?: number;
   prompt: string;
   model: WorkerModel;
   /** pi tool names; a Claude Code worker gets the matching Claude Code tools. */
@@ -317,6 +319,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       rollout: job.rollout,
       exit: r.timedOut ? null : r.status,
       seconds,
+      totalSeconds: (job.priorSeconds ?? 0) + seconds,
       turns: stats.turns,
       tools: stats.tools,
       peakContext: stats.peakContext,

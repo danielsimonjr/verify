@@ -27,7 +27,7 @@ function batchRoot(names: string[], prompt = true): string {
 }
 
 function ok(job: WorkerJob, error: WorkerRecord["error"] = null): WorkerRecord {
-  return { rollout: job.rollout, exit: 0, seconds: 1, turns: 1, tools: 0, peakContext: 1, outputTokens: 1, compactions: 0, toolErrors: 0, nudged: false, attempts: job.attempt ?? 1, form: error ? null : "pure", error };
+  return { rollout: job.rollout, exit: 0, seconds: 1, totalSeconds: (job.priorSeconds ?? 0) + 1, turns: 1, tools: 0, peakContext: 1, outputTokens: 1, compactions: 0, toolErrors: 0, nudged: false, attempts: job.attempt ?? 1, form: error ? null : "pure", error };
 }
 
 /** A runWorker fake: records each call, the largest number in flight, and the order of starts and ends. */
@@ -221,6 +221,13 @@ describe("veriharness workers", () => {
     expect(f.calls).toHaveLength(3);
     expect(r.lines.at(-1)).toEqual({ summary: { complete: 1, errors: 0, skipped: 0 } });
     expect(r.lines[0]).toMatchObject({ error: null, attempts: 3 });
+  });
+
+  test("each retry is told the seconds of the attempts before it, so the record can total them", async () => {
+    const f = fake((j) => ok(j, (j.attempt ?? 1) < 3 ? "no-json" : null));
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--retries", "2"], f);
+    expect(f.calls.map((c) => c.priorSeconds ?? 0)).toEqual([0, 1, 2]);
+    expect(r.lines[0]).toMatchObject({ seconds: 1, totalSeconds: 3, attempts: 3 });
   });
 
   test("a retry keeps the stream and the record of each earlier attempt", async () => {

@@ -336,11 +336,13 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
   const work = async ({ batch, job }: { batch: Batch; job: WorkerJob }): Promise<void> => {
     let record: WorkerRecord;
     let attempts = 0;
+    let priorSeconds = 0;
     try {
       do {
         attempts++;
         if (attempts > 1) keepAttempt(job, attempts - 1);
-        record = await start({ ...job, attempt: attempts, signal: stopAll.signal });
+        record = await start({ ...job, attempt: attempts, priorSeconds, signal: stopAll.signal });
+        priorSeconds += record.seconds;
       } while (record.error !== null && RETRYABLE.has(record.error) && attempts <= retries && !limited);
     } catch (err) {
       process.stderr.write(`error: ${batch.name}/${job.rollout}: ${err instanceof Error ? err.message : String(err)}\n`);

@@ -111,6 +111,15 @@ describe("runWorker", () => {
     expect(rec).toMatchObject({ rollout: "r01", exit: 0, turns: 3, tools: 1, peakContext: 24766, outputTokens: 404, form: "pure", error: null });
   });
 
+  test("totalSeconds adds the seconds of the attempts before to this attempt's own", async () => {
+    const retry = await runWorker(job({ attempt: 2, priorSeconds: 50 }), { run: fakeRun(PI_STREAM).run });
+    expect(retry.totalSeconds).toBe(50 + retry.seconds);
+    const first = await runWorker(job(), { run: fakeRun(PI_STREAM).run });
+    expect(first.totalSeconds).toBe(first.seconds);
+    const onDisk = JSON.parse(readFileSync(join(batchDir, "rollouts", "r01", "trajectory", "worker.json"), "utf8"));
+    expect(onDisk.totalSeconds).toBe(first.totalSeconds);
+  });
+
   test("a retry keeps the archived earlier attempts, and a first run clears every old file", async () => {
     const old = join(batchDir, "rollouts", "r01", "trajectory", "attempt-1");
     mkdirSync(old, { recursive: true });

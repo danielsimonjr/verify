@@ -92,13 +92,19 @@ The exit code says only that the run ended. `result.json` in the task folder say
 
 ```json
 {"exit": 0, "investigations": {"elim": false, "fals": true}, "scope": [], "base": "none",
- "work": 3, "open": 1, "delivery": {"written": true, "valid": true, "applied": true}}
+ "work": 3, "open": 1, "openItems": [{"item": "row 2558", "readings": ["..."]}],
+ "delivery": {"written": true, "valid": true, "applied": true}}
 ```
 
 * `investigations` is `false` for a role that left no record. The adjudication then ran on the other
   record, and the missing one is a stub with `"missing": true`.
 * `base` is `none` when no rollout was a usable start. The fixer then builds the deliverable from the
-  inputs, so the output is not derived from any rollout.
+  inputs, so the output is not derived from any rollout. The exit code is still 0: the run delivered a
+  checked file, and `base` says where it came from. A consumer that must have a rollout as its start
+  reads `base` and stops on `none`.
+* `open` counts the items the reviewer could not settle, and `openItems` lists them as the reviewer wrote
+  them (`finish.json`, `open`). The delivered file holds a verdict for each of these items, so a
+  consumer that trusts every row of the file reads `openItems` first.
 * `delivery.valid` is `false` when a file is not what its name declares: a `.json` file must be valid
   UTF-8 and parse, and the other text types (`.md`, `.txt`, `.csv`, `.tsv`, `.yaml`, `.yml`, `.xml`,
   `.html`, `.htm`) must be valid UTF-8.

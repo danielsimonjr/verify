@@ -4,6 +4,19 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-10-10
+
+### Added
+- `result.json` has `openItems`: the items the reviewer left open, as it wrote them. Before, only the
+  count was there, and the delivered file holds a verdict for each of these items.
+- `worker.json` has `totalSeconds`: the seconds of every attempt of the rollout. `seconds` stays the
+  time of the last attempt. A retry told the harness nothing about the attempts before it, so a rollout that took
+  three tries looked as cheap as its last one.
+
+### Changed
+- docs/roles.md states that a run with `base: none` exits 0: the run delivered a checked file, and
+  `base` says it was built from the inputs.
+
 ## [0.10.1] - 2026-10-10
 
 ### Fixed
