@@ -80,3 +80,25 @@ roles, or use two servers:
   options to `driver_args`.
 * The runner checks the options of each lane with the parser of the driver
   before it starts a task. A bad option stops the run with exit code 2.
+
+## What a run did
+
+The exit code says only that the run ended. `result.json` in the task folder says what it did:
+
+```json
+{"exit": 0, "investigations": {"elim": false, "fals": true}, "scope": [], "base": "none",
+ "work": 3, "open": 1, "delivery": {"written": true, "valid": true, "applied": true}}
+```
+
+* `investigations` is `false` for a role that left no record. The adjudication then ran on the other
+  record, and the missing one is a stub with `"missing": true`.
+* `base` is `none` when no rollout was a usable start. The fixer then builds the deliverable from the
+  inputs, so the output is not derived from any rollout.
+* `delivery.valid` is `false` when a file is not what its name declares: a `.json` file must be valid
+  UTF-8 and parse, and the other text types (`.md`, `.txt`, `.csv`, `.tsv`, `.yaml`, `.yml`, `.xml`,
+  `.html`, `.htm`) must be valid UTF-8.
+* `scope` lists each write that an investigation made outside its own files. An investigation runs in the
+  task folder with a shell, and a model can write where the prompt says it must not. The harness keeps a
+  copy of `rollouts/`, `out/`, `finish.json` and `repair.json` before the investigations. A file they
+  changed or deleted comes back. A file they added moves to `foreign/`. `driver.log` has one
+  `scope:` line for each.

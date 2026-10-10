@@ -4,7 +4,23 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.0] - 2026-10-10
+
+### Added
+- `result.json` in the task folder: which investigations left a record, the base, the delivery check,
+  and the writes an investigation made outside its own files. The exit code says only that the run ended;
+  an exit 0 with a missing investigation or base `none` no longer looks like a verified run.
+
+### Fixed
+- An investigation could write outside its own files (it wrote
+  `out/deliverables/report.json` and `finish.json` itself). The harness now keeps a copy of `rollouts/`, `out/`,
+  `finish.json` and `repair.json`, restores what an investigation changed, and moves what it added to
+  `foreign/`, with one `scope:` line in `driver.log` for each.
+- A delivery was valid when a non-empty file existed. A `.json` file that is not valid UTF-8 or does not
+  parse, and any text file that is not valid UTF-8, now makes the delivery invalid, with the file named.
+- A retry (`--retries`) no longer replaces the stream and the record of the attempt before it.
+  The harness moves them to `trajectory/attempt-N/`, and `worker.json` has `attempts`. Before, a rollout
+  that took two tries showed only the second one, and its first failure left no trace.
 
 ## [0.9.0] - 2026-10-10
 

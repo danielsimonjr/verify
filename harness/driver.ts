@@ -661,6 +661,36 @@ function outRefusal(ws: string): string | null {
   }
 }
 
+/** Extensions that name a text format: the file must decode as UTF-8, with no replacement of a bad byte. */
+const TEXT_EXTENSIONS = new Set([".json", ".md", ".txt", ".csv", ".tsv", ".yaml", ".yml", ".xml", ".html", ".htm"]);
+
+/**
+ * The first deliverable whose content is not the format its name declares, or null. A lenient decoder
+ * turns a bad byte into U+FFFD and the file still parses, so the check decodes strictly: a consumer
+ * that does the same would fail on a file the harness had called valid.
+ */
+function formatProblem(out: string, names: Iterable<string>): string | null {
+  const strict = new TextDecoder("utf-8", { fatal: true });
+  for (const name of [...names].sort()) {
+    const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
+    if (!TEXT_EXTENSIONS.has(ext)) continue;
+    let text: string;
+    try {
+      text = strict.decode(readFileSync(join(out, name)));
+    } catch {
+      return `${name} is not valid UTF-8`;
+    }
+    if (ext === ".json" && text.trim() !== "") {
+      try {
+        JSON.parse(text);
+      } catch (e) {
+        return `${name} is not valid JSON: ${(e as Error).message}`;
+      }
+    }
+  }
+  return null;
+}
+
 /** Check `out/deliverables` against the chosen base; the result says whether the bundle is valid and why not. */
 export function validateDelivery(ws: string, base: string): Record<string, unknown> {
   const refusal = outRefusal(ws);
@@ -677,6 +707,8 @@ export function validateDelivery(ws: string, base: string): Record<string, unkno
     if (!nonempty.length) {
       return { valid: false, reason: "base none and out/deliverables empty", n_base: 0, n_out: 0 };
     }
+    const bad = formatProblem(out, nonempty);
+    if (bad) return { valid: false, reason: bad, n_base: 0, n_out: nonempty.length };
     return { valid: true, n_base: 0, n_out: nonempty.length, added: nonempty.slice(0, 20) };
   }
   const baseRoot = rolloutDir(ws, base);
@@ -701,6 +733,8 @@ export function validateDelivery(ws: string, base: string): Record<string, unkno
       n_out: have.size,
     };
   }
+  const bad = formatProblem(out, [...have].filter((f) => fileSize(join(out, f)) > 0));
+  if (bad) return { valid: false, reason: bad, n_base: need.size, n_out: have.size };
   return {
     valid: true,
     n_base: need.size,
@@ -978,6 +1012,59 @@ function ownRecord(sessionDir: string, record: string): string | null {
     return readFileSync(record, "utf8");
   }
   return null;
+}
+
+/** What an investigation may not touch: the evidence it reads, the deliverable and the adjudication files. */
+const SCOPE_DIRS = ["rollouts", "out"];
+const SCOPE_FILES = ["finish.json", "repair.json"];
+
+/**
+ * The contents of every file an investigation must leave alone. The investigation sessions run in the
+ * task root with a shell, and without a jail nothing but their prompt stops a write outside their own
+ * files, so the harness checks the result instead of trusting the model.
+ */
+export function snapshotScope(ws: string): Map<string, Buffer> {
+  const snap = new Map<string, Buffer>();
+  const add = (p: string) => snap.set(posixRel(ws, p), readFileSync(p));
+  for (const dir of SCOPE_DIRS) {
+    if (isDir(join(ws, dir))) walkFiles(join(ws, dir)).forEach(add);
+  }
+  for (const file of SCOPE_FILES) {
+    if (isFile(join(ws, file))) add(join(ws, file));
+  }
+  return snap;
+}
+
+/**
+ * Undoes what an investigation did outside its own files and returns one line for each change: a file
+ * it changed or deleted comes back as it was, and a file it added is moved to `foreign/` where the
+ * reviewer can still read it. A file that is only set aside cannot pose as a deliverable.
+ */
+export function settleScope(ws: string, snap: Map<string, Buffer>): string[] {
+  const found: string[] = [];
+  for (const [rel, bytes] of snap) {
+    const p = join(ws, rel);
+    if (!isFile(p)) {
+      ensureDir(dirname(p));
+      writeFileSync(p, bytes);
+      found.push(`${rel} (deleted; restored)`);
+    } else if (!readFileSync(p).equals(bytes)) {
+      writeFileSync(p, bytes);
+      found.push(`${rel} (changed; restored)`);
+    }
+  }
+  const now: string[] = [];
+  for (const dir of SCOPE_DIRS) {
+    if (isDir(join(ws, dir))) walkFiles(join(ws, dir)).forEach((p) => now.push(posixRel(ws, p)));
+  }
+  for (const rel of now) {
+    if (snap.has(rel)) continue;
+    const to = join(ws, "foreign", rel);
+    ensureDir(dirname(to));
+    renameSync(join(ws, rel), to);
+    found.push(`${rel} (added; set aside)`);
+  }
+  return found;
 }
 
 function restoreRecords(ws: string): void {
@@ -1334,14 +1421,31 @@ interface Cast {
 async function runPhases(cast: Cast, args: DriverArgs, mission: string, skills: string[]): Promise<number> {
   const ws = cast.checker.ws;
   const [elim, fals] = INVESTIGATIONS as [[string, string, string, string], [string, string, string, string]];
+  // A result.json of an earlier run would describe a run that did not happen.
+  if (isFile(join(ws, "result.json"))) unlinkSync(join(ws, "result.json"));
+  const scope = snapshotScope(ws);
   const ok = await Promise.all([
     investigate(cast.checker, args, mission, skills, elim, cast.kinds.checker),
     investigate(cast.challenger, args, mission, skills, fals, cast.kinds.challenger),
   ]);
+  const scopeFound = settleScope(ws, scope);
+  for (const line of scopeFound) {
+    log(ws, `scope: an investigation wrote outside its own files: ${line}`);
+  }
   restoreRecords(ws);
+  // The exit code says only that the run ended. result.json says what it did, so an exit 0 with an
+  // investigation missing, or with no usable rollout as the base, cannot pass for a verified run.
+  const result: Record<string, unknown> = {
+    investigations: Object.fromEntries(INVESTIGATIONS.map(([name], i) => [name, Boolean(ok[i])])),
+    scope: scopeFound,
+  };
+  const done = (code: number, more: Record<string, unknown> = {}): number => {
+    writeJsonFs(join(ws, "result.json"), { exit: code, ...result, ...more });
+    return code;
+  };
   if (!ok.some(Boolean)) {
     log(ws, "no investigation left a record; recording no-output");
-    return 1;
+    return done(1);
   }
   // One investigation without a record leaves the other, and the rollouts, to adjudicate from. The
   // reviewer reads both record files, so the missing one is written as a stub that says it is missing.
@@ -1358,7 +1462,7 @@ async function runPhases(cast: Cast, args: DriverArgs, mission: string, skills: 
   const finish = await adjudicate(reviewer, args, skills, cast.kinds.reviewer);
   if (finish === null) {
     log(ws, "no finish.json after nudge; recording no-output");
-    return 1;
+    return done(1);
   }
   log(
     ws,
@@ -1370,7 +1474,12 @@ async function runPhases(cast: Cast, args: DriverArgs, mission: string, skills: 
     const fixer = cast.fixer === null ? reviewer : cast.fixer();
     await deliver(fixer, args, finish, skills, cast.kinds.fixer, cast.fixer !== null);
   }
-  return 0;
+  return done(0, {
+    base: baseOf(finish),
+    work: (finish.work as unknown[] | undefined)?.length ?? 0,
+    open: (finish.open as unknown[] | undefined)?.length ?? 0,
+    ...(finish.repair ? { delivery: finish.repair } : {}),
+  });
 }
 
 /**

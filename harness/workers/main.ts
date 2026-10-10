@@ -20,7 +20,7 @@
  * call after a stop finishes the job without repeating work.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { USAGE_LIMIT_EXIT, claudeTools, isClaudeCodeProvider } from "../claude/provider.js";
@@ -49,6 +49,19 @@ class UsageError extends Error {}
 const DEFAULT_TOOLS = "read,grep,find,ls";
 
 /** Errors a second try can fix: the model's output was wrong or empty. A limit, a timeout or a stop would only repeat. */
+/**
+ * A retry runs in the same rollout folder and would replace the stream and the record of the attempt
+ * before it. Move both to trajectory/attempt-N/, so a rollout that took three tries shows all three.
+ */
+function keepAttempt(job: WorkerJob, attempt: number): void {
+  const t = join(job.batchDir, "rollouts", job.rollout, "trajectory");
+  const to = join(t, `attempt-${attempt}`);
+  mkdirSync(to, { recursive: true });
+  for (const name of ["agent.jsonl", "worker.json"]) {
+    if (existsSync(join(t, name))) renameSync(join(t, name), join(to, name));
+  }
+}
+
 const RETRYABLE = new Set(["no-result", "no-json", "thinking-only", "length", "schema"]);
 
 interface Batch {
@@ -326,7 +339,8 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
     try {
       do {
         attempts++;
-        record = await start({ ...job, signal: stopAll.signal });
+        if (attempts > 1) keepAttempt(job, attempts - 1);
+        record = await start({ ...job, attempt: attempts, signal: stopAll.signal });
       } while (record.error !== null && RETRYABLE.has(record.error) && attempts <= retries && !limited);
     } catch (err) {
       process.stderr.write(`error: ${batch.name}/${job.rollout}: ${err instanceof Error ? err.message : String(err)}\n`);

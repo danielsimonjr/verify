@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -27,7 +27,7 @@ function batchRoot(names: string[], prompt = true): string {
 }
 
 function ok(job: WorkerJob, error: WorkerRecord["error"] = null): WorkerRecord {
-  return { rollout: job.rollout, exit: 0, seconds: 1, turns: 1, tools: 0, peakContext: 1, outputTokens: 1, compactions: 0, toolErrors: 0, nudged: false, form: error ? null : "pure", error };
+  return { rollout: job.rollout, exit: 0, seconds: 1, turns: 1, tools: 0, peakContext: 1, outputTokens: 1, compactions: 0, toolErrors: 0, nudged: false, attempts: job.attempt ?? 1, form: error ? null : "pure", error };
 }
 
 /** A runWorker fake: records each call, the largest number in flight, and the order of starts and ends. */
@@ -221,6 +221,26 @@ describe("veriharness workers", () => {
     expect(f.calls).toHaveLength(3);
     expect(r.lines.at(-1)).toEqual({ summary: { complete: 1, errors: 0, skipped: 0 } });
     expect(r.lines[0]).toMatchObject({ error: null, attempts: 3 });
+  });
+
+  test("a retry keeps the stream and the record of each earlier attempt", async () => {
+    const f = fake((j) => {
+      const t = join(j.batchDir, "rollouts", j.rollout, "trajectory");
+      mkdirSync(t, { recursive: true });
+      writeFileSync(join(t, "agent.jsonl"), `stream ${j.attempt}`);
+      const r = ok(j, (j.attempt ?? 1) < 3 ? "schema" : null);
+      writeFileSync(join(t, "worker.json"), JSON.stringify(r));
+      return r;
+    });
+    const dir = batchRoot(["b01"]);
+    const r = await workers([dir, ...OLLAMA, "--count", "1", "--retries", "2"], f);
+    expect(f.calls.map((c) => c.attempt)).toEqual([1, 2, 3]);
+    expect(r.lines[0]).toMatchObject({ error: null, attempts: 3 });
+    const t = join(dir, "b01", "rollouts", "r01", "trajectory");
+    expect(readFileSync(join(t, "agent.jsonl"), "utf8")).toBe("stream 3");
+    expect(readFileSync(join(t, "attempt-1", "agent.jsonl"), "utf8")).toBe("stream 1");
+    expect(JSON.parse(readFileSync(join(t, "attempt-2", "worker.json"), "utf8")).error).toBe("schema");
+    expect(JSON.parse(readFileSync(join(t, "worker.json"), "utf8")).attempts).toBe(3);
   });
 
   test("--retries stops at its count, and never repeats a usage limit or a timeout", async () => {

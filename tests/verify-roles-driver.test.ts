@@ -109,6 +109,10 @@ describe("each role on its own model", () => {
     expect(existsSync(join(rig.ws, "elim", "ledger_elim.json"))).toBe(true);
     expect(existsSync(join(rig.ws, "fals", "ledger_fals.json"))).toBe(true);
     expect(JSON.parse(readFileSync(join(rig.ws, "finish.json"), "utf8")).repair.written).toBe(true);
+    const result = JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8"));
+    expect(result).toMatchObject({ exit: 0, investigations: { elim: true, fals: true }, delivery: { written: true } });
+    expect(typeof result.base).toBe("string");
+    expect(result.scope).toEqual([]);
   });
 });
 
@@ -137,6 +141,10 @@ describe("an investigation that leaves no record", () => {
     expect(rig.log()).toContain("fals: no record");
     expect(rig.log()).toContain("[elim] live stream: session/elim/");
     expect(existsSync(join(rig.ws, "finish.json"))).toBe(true);
+    // Exit 0 must not read as a verified run: the result says which investigation had no record.
+    const result = JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8"));
+    expect(result.exit).toBe(0);
+    expect(result.investigations).toEqual({ elim: true, fals: false });
   });
 
   test("when no investigation leaves a record, nothing is adjudicated", async () => {
@@ -144,6 +152,8 @@ describe("an investigation that leaves no record", () => {
     expect(await rig.run(ARGS)).toBe(1);
     expect(rig.log()).toContain("recording no-output");
     expect(existsSync(join(rig.ws, "finish.json"))).toBe(false);
+    const result = JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8"));
+    expect(result).toMatchObject({ exit: 1, investigations: { elim: false, fals: false } });
   });
 });
 

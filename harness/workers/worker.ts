@@ -18,7 +18,7 @@
  * to `rollouts/<rollout>/` of the batch. The temp copy is deleted whatever happens.
  */
 
-import { closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeSessionEnv, classifyFailure, claudeCommand, parseStream } from "../claude/index.js";
@@ -57,6 +57,8 @@ export interface WorkerModel {
 export interface WorkerJob {
   batchDir: string;
   rollout: string;
+  /** 1 for the first run of the rollout, 2 for the first retry, and so on. */
+  attempt?: number;
   prompt: string;
   model: WorkerModel;
   /** pi tool names; a Claude Code worker gets the matching Claude Code tools. */
@@ -185,11 +187,31 @@ function runError(r: RunResult, claude: boolean, stats: StreamStats, overTurns: 
   return null;
 }
 
+/**
+ * Empties a rollout folder before a run. A retry keeps `trajectory/attempt-N/`: those hold the streams of
+ * the attempts before it, which the caller moved there. A first run keeps nothing, so a rollout never
+ * shows files of an older run.
+ */
+function clearRollout(out: string, keepAttempts: boolean): void {
+  if (!keepAttempts || !existsSync(out)) {
+    rmrf(out);
+    return;
+  }
+  for (const entry of readdirSync(out)) {
+    if (entry !== "trajectory") rmrf(join(out, entry));
+  }
+  const trajectory = join(out, "trajectory");
+  if (!existsSync(trajectory)) return;
+  for (const entry of readdirSync(trajectory)) {
+    if (!/^attempt-\d+$/.test(entry)) rmrf(join(trajectory, entry));
+  }
+}
+
 /** Run one worker in a temp copy of the batch and write its rollout. The copy is deleted in every case. */
 export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<WorkerRecord> {
   const claude = isClaudeCodeProvider(job.model.provider);
   const out = join(job.batchDir, "rollouts", job.rollout);
-  rmrf(out);
+  clearRollout(out, (job.attempt ?? 1) > 1);
   mkdirSync(join(out, "trajectory"), { recursive: true });
   mkdirSync(join(out, "deliverables"), { recursive: true });
 
@@ -302,6 +324,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       compactions: stats.compactions,
       toolErrors: stats.toolErrors,
       nudged,
+      attempts: job.attempt ?? 1,
       form,
       error,
     };

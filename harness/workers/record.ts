@@ -59,6 +59,8 @@ export interface WorkerRecord {
   toolErrors: number;
   /** A nudge turn ran after the first session ended without an answer. */
   nudged: boolean;
+  /** Runs of this rollout, the first one included: a retry replaces the stream, so the count says it happened. */
+  attempts: number;
   form: DeliverableForm | null;
   error: WorkerError;
 }

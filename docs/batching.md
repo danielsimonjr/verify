@@ -197,7 +197,9 @@ schema is never passed by a part that the check skipped.
 `--retries N` runs a rollout again, up to N more times, when its error is `no-result`, `no-json`,
 `thinking-only`, `length` or `schema`: the model's output was wrong or empty, and a second try can
 differ. A `timeout`, a `usage-limit`, a `stopped` and a `max-turns` are never repeated. Each printed
-line has `attempts`.
+line and each `worker.json` has `attempts`. A retry runs in the same rollout folder, so the harness first
+moves the stream and the record of the attempt before it to `trajectory/attempt-N/`. A rollout that
+took three tries shows all three.
 
 ## Nudge
 

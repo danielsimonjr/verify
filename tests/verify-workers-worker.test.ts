@@ -111,6 +111,20 @@ describe("runWorker", () => {
     expect(rec).toMatchObject({ rollout: "r01", exit: 0, turns: 3, tools: 1, peakContext: 24766, outputTokens: 404, form: "pure", error: null });
   });
 
+  test("a retry keeps the archived earlier attempts, and a first run clears every old file", async () => {
+    const old = join(batchDir, "rollouts", "r01", "trajectory", "attempt-1");
+    mkdirSync(old, { recursive: true });
+    writeFileSync(join(old, "agent.jsonl"), "first try");
+    writeFileSync(join(batchDir, "rollouts", "r01", "trajectory", "stale.txt"), "from an older run");
+    const retry = await runWorker(job({ attempt: 2 }), { run: fakeRun(PI_STREAM).run });
+    expect(retry.attempts).toBe(2);
+    expect(readFileSync(join(old, "agent.jsonl"), "utf8")).toBe("first try");
+    expect(existsSync(rollout("trajectory", "stale.txt"))).toBe(false);
+    const first = await runWorker(job(), { run: fakeRun(PI_STREAM).run });
+    expect(first.attempts).toBe(1);
+    expect(existsSync(old)).toBe(false);
+  });
+
   test("a claude worker reads the claude stream", async () => {
     const fake = fakeRun(CLAUDE_STREAM);
     const j = job({ model: { provider: "claude-code", model: "claude-haiku-5-5" }, piProvider: undefined });

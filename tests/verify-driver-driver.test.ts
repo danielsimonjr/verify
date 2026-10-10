@@ -21,6 +21,8 @@ import {
   renderSkills,
   resolveSkills,
   rolloutDir,
+  settleScope,
+  snapshotScope,
   validateDelivery,
 } from "../harness/driver.ts";
 
@@ -493,5 +495,80 @@ describe("a nudge after a cut message", () => {
     expect(nudgeFor(agent(true), "You have not written x.json yet.")).toBe(
       "Your last message was cut off or held only thinking, so no file was written. Do not think further: you have not written x.json yet.",
     );
+  });
+});
+
+describe("an investigation stays inside its own files", () => {
+  function scopeWs(name: string): string {
+    const ws = join(scratch, name);
+    for (const d of ["rollouts/r01/deliverables", "out/deliverables", "elim", "fals"]) mkdirSync(join(ws, d), { recursive: true });
+    writeFileSync(join(ws, "rollouts/r01/deliverables/report.json"), '{"rows":[]}');
+    writeFileSync(join(ws, "finish.json"), '{"base":"r01"}');
+    return ws;
+  }
+
+  test("a file an investigation added under out/ is set aside, and it is logged", () => {
+    const ws = scopeWs("ws-scope-add");
+    const snap = snapshotScope(ws);
+    writeFileSync(join(ws, "out/deliverables/report.json"), "from an investigator");
+    const found = settleScope(ws, snap);
+    expect(found).toEqual(["out/deliverables/report.json (added; set aside)"]);
+    expect(existsSync(join(ws, "out/deliverables/report.json"))).toBe(false);
+    expect(readFileSync(join(ws, "foreign/out/deliverables/report.json"), "utf8")).toBe("from an investigator");
+  });
+
+  test("evidence an investigation changed or deleted is restored", () => {
+    const ws = scopeWs("ws-scope-change");
+    const snap = snapshotScope(ws);
+    writeFileSync(join(ws, "rollouts/r01/deliverables/report.json"), "tampered");
+    rmSync(join(ws, "finish.json"));
+    const found = settleScope(ws, snap).sort();
+    expect(found).toEqual(["finish.json (deleted; restored)", "rollouts/r01/deliverables/report.json (changed; restored)"]);
+    expect(readFileSync(join(ws, "rollouts/r01/deliverables/report.json"), "utf8")).toBe('{"rows":[]}');
+    expect(readFileSync(join(ws, "finish.json"), "utf8")).toBe('{"base":"r01"}');
+  });
+
+  test("an investigation that writes only its own files finds nothing", () => {
+    const ws = scopeWs("ws-scope-clean");
+    const snap = snapshotScope(ws);
+    writeFileSync(join(ws, "ledger_elim.json"), "{}");
+    writeFileSync(join(ws, "elim/LEDGER.md"), "notes");
+    expect(settleScope(ws, snap)).toEqual([]);
+  });
+});
+
+describe("a deliverable is checked in the format its name declares", () => {
+  function bundle(name: string, files: Record<string, Buffer | string>): string {
+    const ws = makeWs(name);
+    for (const [f, body] of Object.entries(files)) writeFileSync(join(ws, "out", "deliverables", f), body);
+    return ws;
+  }
+
+  test("a .json file that is not valid UTF-8 is not a valid delivery, even with base none", () => {
+    // 0x97 is the Windows-1252 em dash: it decodes to U+FFFD with a lenient reader, so the JSON still parses.
+    const ws = bundle("ws-fmt-utf8", { "report.json": Buffer.from([0x7b, 0x22, 0x61, 0x22, 0x3a, 0x22, 0x97, 0x22, 0x7d]) });
+    const v = validateDelivery(ws, "none");
+    expect(v.valid).toBe(false);
+    expect(String(v.reason)).toContain("report.json");
+    expect(String(v.reason)).toContain("UTF-8");
+  });
+
+  test("a .json file that does not parse is not a valid delivery", () => {
+    const ws = bundle("ws-fmt-json", { "report.json": '{"rows": [' });
+    const v = validateDelivery(ws, "none");
+    expect(v.valid).toBe(false);
+    expect(String(v.reason)).toContain("not valid JSON");
+  });
+
+  test("a valid .json file and a plain text file pass", () => {
+    const ws = bundle("ws-fmt-ok", { "report.json": '{"rows": []}', "notes.md": "café" });
+    expect(validateDelivery(ws, "none")).toMatchObject({ valid: true, n_out: 2 });
+  });
+
+  test("a file the base did not have is checked too", () => {
+    const ws = makeWs("ws-fmt-extra");
+    writeFileSync(join(ws, "out", "deliverables", "answer.txt"), "r1 answer");
+    writeFileSync(join(ws, "out", "deliverables", "extra.json"), Buffer.from([0xff, 0xfe]));
+    expect(validateDelivery(ws, "r1")).toMatchObject({ valid: false });
   });
 });
