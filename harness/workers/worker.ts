@@ -18,7 +18,7 @@
  * to `rollouts/<rollout>/` of the batch. The temp copy is deleted whatever happens.
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeSessionEnv, classifyFailure, claudeCommand, parseStream } from "../claude/index.js";
@@ -171,23 +171,36 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     // the session through its own signal, which the job's signal also trips.
     let overTurns = false;
     let signal = job.signal;
-    let onStdout: ((chunk: Buffer) => void) | undefined;
+    let overCap: ((chunk: Buffer) => void) | undefined;
     if (job.maxTurns !== undefined) {
       const cap = new AbortController();
       const maxTurns = job.maxTurns;
       const count = turnCounter(claude);
       signal = job.signal ? AbortSignal.any([job.signal, cap.signal]) : cap.signal;
-      onStdout = (chunk) => {
+      overCap = (chunk) => {
         if (!overTurns && count(chunk) > maxTurns) {
           overTurns = true;
           cap.abort();
         }
       };
     }
+    // The event stream goes to agent.jsonl as it arrives, so a running worker can be watched. The
+    // complete stdout replaces it at the end.
+    const streamPath = join(out, "trajectory", "agent.jsonl");
+    const live = openSync(streamPath, "w");
+    const onStdout = (chunk: Buffer): void => {
+      writeSync(live, chunk);
+      overCap?.(chunk);
+    };
     const started = Date.now();
-    const r = await (deps.run ?? run)(cmd[0]!, cmd.slice(1), { input, timeoutMs: job.timeoutSec * 1000, cwd, env, signal, onStdout });
+    let r: RunResult;
+    try {
+      r = await (deps.run ?? run)(cmd[0]!, cmd.slice(1), { input, timeoutMs: job.timeoutSec * 1000, cwd, env, signal, onStdout });
+    } finally {
+      closeSync(live);
+    }
     const seconds = Math.round((Date.now() - started) / 1000);
-    writeFileSync(join(out, "trajectory", "agent.jsonl"), r.stdout, "utf8");
+    writeFileSync(streamPath, r.stdout, "utf8");
 
     const stats = claude ? claudeStreamStats(r.stdout) : piStreamStats(r.stdout);
     let error = runError(r, claude, stats.finalText, overTurns);

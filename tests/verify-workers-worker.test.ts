@@ -192,6 +192,21 @@ describe("runWorker", () => {
     return { run };
   }
 
+  test("agent.jsonl grows while the worker runs", async () => {
+    const seenDuring: string[] = [];
+    const run = async (_cmd: string, _args: string[], opts: RunOptions): Promise<RunResult> => {
+      const lines = PI_STREAM.split(/(?<=\n)/);
+      opts.onStdout?.(Buffer.from(lines[0]!, "utf8"));
+      seenDuring.push(readFileSync(rollout("trajectory", "agent.jsonl"), "utf8"));
+      for (const line of lines.slice(1)) opts.onStdout?.(Buffer.from(line, "utf8"));
+      return { status: 0, signal: null, stdout: PI_STREAM, stderr: "", timedOut: false, truncated: false, timeoutMs: opts.timeoutMs };
+    };
+    const rec = await runWorker(job(), { run });
+    expect(seenDuring[0]).toBe(PI_STREAM.split(/(?<=\n)/)[0]);
+    expect(readFileSync(rollout("trajectory", "agent.jsonl"), "utf8")).toBe(PI_STREAM);
+    expect(rec.error).toBeNull();
+  });
+
   test("a worker past maxTurns assistant turns stops with max-turns", async () => {
     const rec = await runWorker(job({ maxTurns: 1 }), { run: streamingRun(PI_STREAM).run });
     expect(rec.error).toBe("max-turns");

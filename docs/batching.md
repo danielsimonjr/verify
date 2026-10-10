@@ -40,7 +40,8 @@ veriharness workers work --provider ollama --model qwen3.5:9b-64k --base-url htt
 ```
 
 Each batch gets the rollouts `r01` to `r03`. Each rollout has `trajectory/agent.jsonl`,
-`trajectory/worker.json` and `deliverables/report.json`.
+`trajectory/worker.json` and `deliverables/report.json`. `agent.jsonl` grows while the worker runs,
+so its size shows progress; `worker.json` is written when the worker stops.
 
 ### 3. Check each batch
 

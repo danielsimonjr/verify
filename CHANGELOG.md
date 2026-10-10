@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-09
+
+### Fixed
+- `veriharness workers` wrote `trajectory/agent.jsonl` only when the worker stopped, so a worker that
+  ran for an hour showed an empty folder. The event stream now goes to the file as it arrives; the
+  complete stdout replaces it at the end.
+
 ## [0.7.0] - 2026-10-09
 
 ### Added
