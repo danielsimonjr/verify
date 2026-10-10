@@ -30,12 +30,14 @@ import { prepareLocalProvider } from "../model/prepare.js";
 import type { PiProviderRecord } from "../model/pi.js";
 import { isMain } from "../runtime.js";
 import type { WorkerRecord } from "./record.js";
+import { unsupportedKeywords } from "./schema.js";
 import { runWorker, type WorkerJob, type WorkerModel } from "./worker.js";
 
 const USAGE =
   "usage: veriharness workers DIR --provider P --model M [--base-url U] [--context-size N|auto]\n" +
   "         [--count N] [--tools LIST] [--deliverable NAME] [--prompt FILE] [--only NAME]...\n" +
-  "         [--timeout S] [--max-turns N] [--max-parallel N] [--env none] [--temperature T] [--thinking L] [--max-tokens N]\n";
+  "         [--timeout S] [--max-turns N] [--max-parallel N] [--env none] [--temperature T] [--thinking L] [--max-tokens N]\n" +
+  "         [--schema FILE] [--retries N] [--nudge-timeout S] [--allow-compaction]\n";
 
 /** What a test replaces: the local server fetch and the worker runner. */
 export interface WorkersDeps extends BackendDeps {
@@ -45,6 +47,9 @@ export interface WorkersDeps extends BackendDeps {
 class UsageError extends Error {}
 
 const DEFAULT_TOOLS = "read,grep,find,ls";
+
+/** Errors a second try can fix: the model's output was wrong or empty. A limit, a timeout or a stop would only repeat. */
+const RETRYABLE = new Set(["no-result", "no-json", "thinking-only", "length", "schema"]);
 
 interface Batch {
   name: string;
@@ -68,6 +73,14 @@ function positiveInt(name: string, raw: string | undefined, fallback: number): n
   const n = Number(raw);
   if (!Number.isInteger(n) || n <= 0) throw new UsageError(`${name} must be a positive whole number, not '${raw}'`);
   return n;
+}
+
+function readText(path: string, flag: string): string {
+  try {
+    return readFileSync(resolve(path), "utf8");
+  } catch (err) {
+    throw new UsageError(`${flag} ${path}: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 function optionalNumber(name: string, raw: string | undefined): number | undefined {
@@ -158,6 +171,10 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
         temperature: { type: "string" },
         thinking: { type: "string" },
         "max-tokens": { type: "string" },
+        schema: { type: "string" },
+        retries: { type: "string" },
+        "nudge-timeout": { type: "string" },
+        "allow-compaction": { type: "boolean", default: false },
       },
     }));
   } catch (err) {
@@ -173,6 +190,8 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
   let parallel: number;
   let local: boolean;
   let skipped = 0;
+  let retries = 0;
+  let nudgeTimeoutSec: number | undefined;
   try {
     if (positionals.length !== 1) throw new UsageError("give one DIR: a batch output root or one task workspace");
     const dir = resolve(positionals[0]!);
@@ -209,6 +228,29 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
     const count = positiveInt("--count", values.count, 3);
     const timeoutSec = positiveInt("--timeout", values.timeout, 3600);
     const maxTurns = values["max-turns"] === undefined ? undefined : positiveInt("--max-turns", values["max-turns"], 0);
+    if (values.retries !== undefined) {
+      retries = Number(values.retries);
+      if (!Number.isInteger(retries) || retries < 0) throw new UsageError(`--retries must be a whole number, not '${values.retries}'`);
+    }
+    // A nudge continues a saved pi session, so a Claude Code worker has none. 0 turns it off.
+    const nudgeRaw = values["nudge-timeout"];
+    const nudge = nudgeRaw === undefined ? 300 : Number(nudgeRaw);
+    if (!Number.isInteger(nudge) || nudge < 0) throw new UsageError(`--nudge-timeout must be a whole number of seconds, not '${nudgeRaw}'`);
+    if (claude && nudgeRaw !== undefined && nudge > 0) throw new UsageError("--nudge-timeout needs a pi worker: a claude-code worker keeps no session to continue");
+    nudgeTimeoutSec = claude || nudge === 0 ? undefined : nudge;
+    let schema: unknown;
+    if (values.schema !== undefined) {
+      const text = readText(values.schema, "--schema");
+      try {
+        schema = JSON.parse(text);
+      } catch {
+        throw new UsageError(`--schema ${values.schema} is not JSON`);
+      }
+      const ignored = unsupportedKeywords(schema);
+      if (ignored.length) {
+        throw new UsageError(`--schema ${values.schema} has keywords the check does not know, so it would be skipped: ${ignored.join(", ")}`);
+      }
+    }
 
     // Resolve the model once before the first worker: for a local model this also proves the server.
     const workerModel: WorkerModel = {
@@ -254,6 +296,9 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
           deliverable: values.deliverable ?? "report.json",
           timeoutSec,
           ...(maxTurns !== undefined ? { maxTurns } : {}),
+          ...(schema !== undefined ? { schema } : {}),
+          ...(nudgeTimeoutSec !== undefined ? { nudgeTimeoutSec } : {}),
+          ...(values["allow-compaction"] ? { allowCompaction: true } : {}),
           piProvider,
         });
       }
@@ -269,12 +314,20 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
   let complete = 0;
   let errors = 0;
   let limited = false;
+  // The cost of one item differs from rollout to rollout, so the value to use is the largest suggestion
+  // of all of them, not the suggestion of one. A rollout that compacted gives only a lower bound.
+  let suggested = 0;
+  let lowerBound = false;
   // A usage limit stops the workers still running too: each one would only meet the same limit.
   const stopAll = new AbortController();
   const work = async ({ batch, job }: { batch: Batch; job: WorkerJob }): Promise<void> => {
     let record: WorkerRecord;
+    let attempts = 0;
     try {
-      record = await start({ ...job, signal: stopAll.signal });
+      do {
+        attempts++;
+        record = await start({ ...job, signal: stopAll.signal });
+      } while (record.error !== null && RETRYABLE.has(record.error) && attempts <= retries && !limited);
     } catch (err) {
       process.stderr.write(`error: ${batch.name}/${job.rollout}: ${err instanceof Error ? err.message : String(err)}\n`);
       errors++;
@@ -282,12 +335,27 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
     }
     // The estimate is a claim that the batch fits; the record carries the measurement that tests it.
     const est = estimates.byBatch.get(batch.name);
-    process.stdout.write(JSON.stringify({ batch: batch.name, ...record, ...(est ? { estTokens: est.estTokens } : {}) }) + "\n");
+    process.stdout.write(JSON.stringify({ batch: batch.name, ...record, attempts, ...(est ? { estTokens: est.estTokens } : {}) }) + "\n");
     if (est && est.items > 0 && record.peakContext > est.estTokens) {
       const itemTokens = estimates.itemTokens + Math.ceil((record.peakContext - est.estTokens) / est.items);
+      suggested = Math.max(suggested, itemTokens);
+      // Compaction caps the peak: the context the worker needed was larger than the one it measured.
+      if (record.compactions > 0) lowerBound = true;
       process.stderr.write(
         `workers: ${batch.name}/${job.rollout}: peak context ${record.peakContext} passed the estimate of ${est.estTokens}; ` +
-          `--item-tokens ${itemTokens} would have covered it\n`,
+          `${record.compactions > 0 ? "at least " : ""}--item-tokens ${itemTokens} would have covered it\n`,
+      );
+    }
+    if (record.tools >= 5 && record.toolErrors >= 3 && record.toolErrors * 2 >= record.tools) {
+      process.stderr.write(
+        `workers: ${batch.name}/${job.rollout}: ${record.toolErrors} of ${record.tools} tool calls failed: ` +
+          `the worker is reading paths or patterns the task does not have\n`,
+      );
+    }
+    if (record.compactions > 0) {
+      process.stderr.write(
+        `workers: ${batch.name}/${job.rollout}: the context was compacted ${record.compactions} times; ` +
+          `the answer rests on turns the worker no longer held, so the batch is too big for the window\n`,
       );
     }
     if (record.error === null) complete++;
@@ -307,7 +375,13 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
   } else {
     await pool(tagged.flat(), parallel, work, stop);
   }
-  process.stdout.write(JSON.stringify({ summary: { complete, errors, skipped } }) + "\n");
+  if (suggested > 0) {
+    process.stderr.write(
+      `workers: ${lowerBound ? "at least " : ""}--item-tokens ${suggested} would have covered every rollout\n`,
+    );
+  }
+  const summary = { complete, errors, skipped, ...(suggested > 0 ? { itemTokens: suggested } : {}) };
+  process.stdout.write(JSON.stringify({ summary }) + "\n");
   if (limited) return USAGE_LIMIT_EXIT;
   return errors > 0 ? 1 : 0;
 }

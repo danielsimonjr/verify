@@ -96,6 +96,10 @@ describe("stream stats", () => {
       // max(1551, 236 + 24032 + 10, 393 + 24373)
       peakContext: 24766,
       outputTokens: 187 + 106 + 111,
+      compactions: 0,
+      stopReason: "stop",
+      thinkingOnly: false,
+      toolErrors: 0,
     });
   });
 
@@ -110,11 +114,53 @@ describe("stream stats", () => {
       peakContext: 6463,
       // The result event's total; the per-block events carry partial counts.
       outputTokens: 265,
+      compactions: 0,
+      stopReason: "",
+      thinkingOnly: false,
+      toolErrors: 0,
     });
   });
 
   test("an empty stream gives zeros and no text", () => {
-    expect(piStreamStats("")).toEqual({ finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0 });
-    expect(claudeStreamStats("")).toEqual({ finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0 });
+    const empty = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0 };
+    expect(piStreamStats("")).toEqual(empty);
+    expect(claudeStreamStats("")).toEqual(empty);
+  });
+
+  const end = (content: unknown[], stopReason: string): string =>
+    JSON.stringify({ type: "message_end", message: { role: "assistant", content, usage: { input: 10, output: 5 }, stopReason } });
+
+  test("pi: a tool call that failed is counted, so a worker reading paths the task lacks shows", () => {
+    const stream = [
+      JSON.stringify({ type: "tool_execution_end", toolName: "read", isError: true, result: { content: [] } }),
+      JSON.stringify({ type: "tool_execution_end", toolName: "grep", isError: false, result: { content: [] } }),
+      JSON.stringify({ type: "tool_execution_end", toolName: "read", isError: true, result: { content: [] } }),
+    ].join("\n");
+    const stats = piStreamStats(stream);
+    expect(stats.tools).toBe(3);
+    expect(stats.toolErrors).toBe(2);
+  });
+
+  test("claude: a tool result with is_error is counted", () => {
+    const user = (isError: boolean) =>
+      JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", is_error: isError, content: "x" }] } });
+    expect(claudeStreamStats([user(true), user(false), user(true)].join("\n")).toolErrors).toBe(2);
+  });
+
+  test("pi: compactions are counted from compaction_start events", () => {
+    const stream = [JSON.stringify({ type: "compaction_start", reason: "threshold" }), end([{ type: "text", text: "ok" }], "stop"), JSON.stringify({ type: "compaction_start", reason: "overflow" })].join("\n");
+    expect(piStreamStats(stream).compactions).toBe(2);
+  });
+
+  test("pi: the stop reason of the last turn is kept, and a turn of thinking alone is flagged", () => {
+    const cut = piStreamStats(end([{ type: "text", text: '{"rows": [' }], "length"));
+    expect(cut.stopReason).toBe("length");
+    expect(cut.thinkingOnly).toBe(false);
+    const thought = piStreamStats(end([{ type: "thinking", thinking: "hmm" }], "stop"));
+    expect(thought.finalText).toBe("");
+    expect(thought.thinkingOnly).toBe(true);
+    // Text earlier in the session does not make a later empty turn an answer: the last turn counts.
+    const later = piStreamStats([end([{ type: "text", text: "x" }], "toolUse"), end([{ type: "thinking", thinking: "hmm" }], "stop")].join("\n"));
+    expect(later.thinkingOnly).toBe(true);
   });
 });

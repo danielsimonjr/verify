@@ -108,4 +108,5 @@ if (sessionDir) {
     );
   }
 }
+if (action.delayMs) await new Promise((done) => setTimeout(done, Number(action.delayMs)));
 process.exit(0);

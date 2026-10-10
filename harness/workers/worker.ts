@@ -30,12 +30,14 @@ import { copyTree, rmrf } from "../fsutil.js";
 import { run, type RunResult } from "../grade/proc.js";
 import type { ContextSize } from "../model/config.js";
 import { materializePiHome, type PiProviderRecord } from "../model/pi.js";
+import { validateSchema } from "./schema.js";
 import {
   claudeStreamStats,
   parseJsonDeliverable,
   piStreamStats,
   turnCounter,
   type DeliverableForm,
+  type StreamStats,
   type WorkerError,
   type WorkerRecord,
 } from "./record.js";
@@ -69,6 +71,29 @@ export interface WorkerJob {
   signal?: AbortSignal;
   /** Most assistant turns: a session that passes it is stopped and its record says `max-turns`. */
   maxTurns?: number;
+  /** A JSON Schema the deliverable must fit; a parsed value that does not fit ends as `schema`. */
+  schema?: unknown;
+  /**
+   * Seconds for one nudge turn. Set: a pi session that ends without an answer (a timeout, a turn of
+   * thought alone, a cut, no JSON) is continued once with a short message that asks for the answer
+   * now. The session is saved in the temp copy for that. Absent: no nudge, and `--no-session`.
+   */
+  nudgeTimeoutSec?: number;
+  /** Accept a rollout whose agent compacted its context. Otherwise it ends as `compacted`. */
+  allowCompaction?: boolean;
+}
+
+/** Why a session ended without an answer decides what the nudge says. */
+const NUDGE_TIME = "Time is nearly up. Stop investigating and do not read any more files. Write your final answer now, from what you have found, in the format the task asked for, as the text of your next message.";
+const NUDGE_CUT = "Your last message ended without an answer: it was cut off or held only thinking. Do not think further. Write your final answer now, in the format the task asked for, as the text of your next message.";
+const NUDGE_FORMAT = "Your last message did not hold the answer in the format the task asked for. Write your final answer now, in that format, as the text of your next message.";
+
+/** The nudge message for a session that ended with `error`, or null when a nudge cannot help. */
+function nudgeFor(error: WorkerError): string | null {
+  if (error === "timeout") return NUDGE_TIME;
+  if (error === "length" || error === "thinking-only") return NUDGE_CUT;
+  if (error === "no-result" || error === "no-json") return NUDGE_FORMAT;
+  return null;
 }
 
 /** What a test replaces: the process runner and the delete of the temp copy. */
@@ -78,7 +103,12 @@ export interface WorkerDeps {
 }
 
 /** The command, stdin and environment of one worker. `home` is the pi home of a local model. */
-export function workerArgs(job: WorkerJob, home: string): { cmd: string[]; input?: string; env: NodeJS.ProcessEnv } {
+export function workerArgs(
+  job: WorkerJob,
+  home: string,
+  /** A nudge turn: the message and `-c`, in the session saved under `home`. Absent: the first turn, with the job's prompt. */
+  nudge?: string,
+): { cmd: string[]; input?: string; env: NodeJS.ProcessEnv } {
   if (isClaudeCodeProvider(job.model.provider)) {
     const cmd = [
       ...(job.command ?? claudeCommand(undefined)),
@@ -106,7 +136,8 @@ export function workerArgs(job: WorkerJob, home: string): { cmd: string[]; input
     "--no-extensions",
     "--no-prompt-templates",
     "--no-skills",
-    "--no-session",
+    // A job with a nudge saves its session in the temp copy, so the nudge can continue it.
+    ...(job.nudgeTimeoutSec === undefined ? ["--no-session"] : ["--session-dir", join(home, "session")]),
     "--mode",
     "json",
     "--tools",
@@ -120,8 +151,8 @@ export function workerArgs(job: WorkerJob, home: string): { cmd: string[]; input
   const plan = planPiCommand({
     piCommand: job.command ?? piCommandFor(config.PI_BIN),
     flags,
-    message: job.prompt,
-    continueSession: false,
+    message: nudge ?? job.prompt,
+    continueSession: nudge !== undefined,
     canPipe: true,
     // canPipe: a message too long for the command line goes on stdin, so no file is written.
     writeFile: (name) => join(home, name),
@@ -133,7 +164,8 @@ export function workerArgs(job: WorkerJob, home: string): { cmd: string[]; input
 }
 
 /** The error of a finished session, before its deliverable is read. `overTurns`: the turn cap stopped it. */
-function runError(r: RunResult, claude: boolean, finalText: string, overTurns: boolean): WorkerError {
+function runError(r: RunResult, claude: boolean, stats: StreamStats, overTurns: boolean): WorkerError {
+  const finalText = stats.finalText;
   if (r.error) return "start-failed";
   if (r.aborted) return overTurns ? "max-turns" : "stopped";
   if (r.timedOut) return "timeout";
@@ -146,6 +178,9 @@ function runError(r: RunResult, claude: boolean, finalText: string, overTurns: b
     // before an error result is a stray sentence, not a deliverable.
     if (r.status !== 0 || !result || result.isError) return "no-result";
   }
+  // The stream says why the last turn ended: output cut at the limit, or all of it spent on thought.
+  if (stats.stopReason === "length") return "length";
+  if (stats.thinkingOnly) return "thinking-only";
   if (finalText.trim() === "") return "no-result";
   return null;
 }
@@ -166,7 +201,6 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     copyTree(join(job.batchDir, "workspace"), join(cwd, "workspace"));
     if (job.piProvider && !claude) materializePiHome(home, job.piProvider);
 
-    const { cmd, input, env } = workerArgs(job, home);
     // Neither pi nor `claude -p` has a turn cap, so the worker counts turns in the live stream and stops
     // the session through its own signal, which the job's signal also trips.
     let overTurns = false;
@@ -187,38 +221,75 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     // The event stream goes to agent.jsonl as it arrives, so a running worker can be watched. The
     // complete stdout replaces it at the end.
     const streamPath = join(out, "trajectory", "agent.jsonl");
-    const live = openSync(streamPath, "w");
-    const onStdout = (chunk: Buffer): void => {
-      writeSync(live, chunk);
-      overCap?.(chunk);
+    const isJson = job.deliverable.toLowerCase().endsWith(".json");
+    const exec = async (nudge: string | undefined, timeoutSec: number): Promise<RunResult> => {
+      const { cmd, input, env } = workerArgs(job, home, nudge);
+      const live = openSync(streamPath, nudge === undefined ? "w" : "a");
+      const onStdout = (chunk: Buffer): void => {
+        writeSync(live, chunk);
+        overCap?.(chunk);
+      };
+      try {
+        return await (deps.run ?? run)(cmd[0]!, cmd.slice(1), { input, timeoutMs: timeoutSec * 1000, cwd, env, signal, onStdout });
+      } finally {
+        closeSync(live);
+      }
     };
+    /** What a finished session says: its numbers, its error, and the deliverable it parsed to. */
+    const judge = (r: RunResult, stdout: string) => {
+      const stats = claude ? claudeStreamStats(stdout) : piStreamStats(stdout);
+      let error = runError(r, claude, stats, overTurns);
+      let parsed: ReturnType<typeof parseJsonDeliverable> = null;
+      if (error === null && isJson) {
+        parsed = parseJsonDeliverable(stats.finalText);
+        if (parsed === null) error = "no-json";
+      }
+      return { stats, error, parsed };
+    };
+
+    if (!claude) mkdirSync(join(home, "session"), { recursive: true });
     const started = Date.now();
-    let r: RunResult;
-    try {
-      r = await (deps.run ?? run)(cmd[0]!, cmd.slice(1), { input, timeoutMs: job.timeoutSec * 1000, cwd, env, signal, onStdout });
-    } finally {
-      closeSync(live);
+    let r = await exec(undefined, job.timeoutSec);
+    let stdout = r.stdout;
+    let verdict = judge(r, stdout);
+    // A session that ends without an answer is asked once for it, in the same session: a timeout or a
+    // turn of thought alone otherwise throws away everything the worker found. Claude Code workers do not
+    // save a session, so only pi workers get the nudge.
+    let nudged = false;
+    const message = job.nudgeTimeoutSec !== undefined && !claude && !overTurns && !r.aborted && !r.error ? nudgeFor(verdict.error) : null;
+    if (message !== null) {
+      nudged = true;
+      r = await exec(message, job.nudgeTimeoutSec!);
+      stdout += r.stdout;
+      verdict = judge(r, stdout);
     }
     const seconds = Math.round((Date.now() - started) / 1000);
-    writeFileSync(streamPath, r.stdout, "utf8");
+    writeFileSync(streamPath, stdout, "utf8");
 
-    const stats = claude ? claudeStreamStats(r.stdout) : piStreamStats(r.stdout);
-    let error = runError(r, claude, stats.finalText, overTurns);
+    const { stats, parsed } = verdict;
+    let error = verdict.error;
     let form: DeliverableForm | null = null;
+    const target = join(out, "deliverables", job.deliverable);
+    // A session that ended without a deliverable still said something: keep the last text, so a
+    // timeout or a cut does not lose what the worker had written.
+    if (error !== null && error !== "start-failed" && stats.finalText.trim() !== "") {
+      writeFileSync(error === "no-json" ? `${target}.txt` : `${target}.partial.txt`, stats.finalText, "utf8");
+    }
     if (error === null) {
-      const target = join(out, "deliverables", job.deliverable);
-      if (job.deliverable.toLowerCase().endsWith(".json")) {
-        const parsed = parseJsonDeliverable(stats.finalText);
-        if (parsed) {
-          form = parsed.form;
-          writeFileSync(target, JSON.stringify(parsed.value, null, 2) + "\n", "utf8");
-        } else {
-          error = "no-json";
-          writeFileSync(`${target}.txt`, stats.finalText, "utf8");
+      if (parsed) {
+        form = parsed.form;
+        writeFileSync(target, JSON.stringify(parsed.value, null, 2) + "\n", "utf8");
+        const problems = job.schema === undefined ? [] : validateSchema(parsed.value, job.schema);
+        if (problems.length > 0) {
+          error = "schema";
+          writeFileSync(`${target}.schema-errors.txt`, problems.join("\n") + "\n", "utf8");
         }
       } else {
         writeFileSync(target, stats.finalText, "utf8");
       }
+      // An answer from a context the agent compacted rests on turns it no longer held. The deliverable
+      // is kept, and the rollout is not complete unless the job accepts compaction.
+      if (error === null && stats.compactions > 0 && !job.allowCompaction) error = "compacted";
     }
     const record: WorkerRecord = {
       rollout: job.rollout,
@@ -228,6 +299,9 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       tools: stats.tools,
       peakContext: stats.peakContext,
       outputTokens: stats.outputTokens,
+      compactions: stats.compactions,
+      toolErrors: stats.toolErrors,
+      nudged,
       form,
       error,
     };

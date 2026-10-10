@@ -34,6 +34,14 @@ export type WorkerError =
   | "truncated"
   | "stopped"
   | "max-turns"
+  /** The last turn ended at the output-token limit, so its text is cut. */
+  | "length"
+  /** The last turn held thinking and no text: the model spent its output on thought. */
+  | "thinking-only"
+  /** The deliverable parsed but does not fit the `--schema` file. */
+  | "schema"
+  /** The agent compacted its context: the answer rests on turns it no longer held. */
+  | "compacted"
   | null;
 
 /** `trajectory/worker.json`: the numbers and the outcome of one rollout. */
@@ -45,6 +53,12 @@ export interface WorkerRecord {
   tools: number;
   peakContext: number;
   outputTokens: number;
+  /** Times the agent compacted its context: each one drops the older turns, so the worker lost what it had read. */
+  compactions: number;
+  /** Tool calls that failed (a path the task does not have, a bad pattern): a worker that wanders has many. */
+  toolErrors: number;
+  /** A nudge turn ran after the first session ended without an answer. */
+  nudged: boolean;
   form: DeliverableForm | null;
   error: WorkerError;
 }
@@ -60,6 +74,14 @@ export interface StreamStats {
   /** The largest prompt of one turn: input plus cache read plus cache write tokens. */
   peakContext: number;
   outputTokens: number;
+  /** Compaction events in the stream (pi only). */
+  compactions: number;
+  /** Why the last assistant turn ended: `stop`, `toolUse`, `length`... Empty when the stream does not say. */
+  stopReason: string;
+  /** The last assistant turn has thinking blocks and no text (pi only). */
+  thinkingOnly: boolean;
+  /** Tool calls whose result was an error. */
+  toolErrors: number;
 }
 
 const WHOLE_FENCE = /^```[\w-]*[ \t]*\n([\s\S]*?)\n?```$/;
@@ -195,9 +217,13 @@ export function turnCounter(claude: boolean): (chunk: Buffer) => number {
 
 /** pi `--mode json`: assistant `message_end` events carry the usage; `tool_execution_end` is one tool call. */
 export function piStreamStats(text: string): StreamStats {
-  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0 };
+  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0 };
   for (const e of events(text)) {
-    if (e.type === "tool_execution_end") stats.tools++;
+    if (e.type === "tool_execution_end") {
+      stats.tools++;
+      if (e.isError === true) stats.toolErrors++;
+    }
+    if (e.type === "compaction_start") stats.compactions++;
     const m = piTurn(e);
     if (!m) continue;
     const u = (m.usage ?? {}) as Record<string, unknown>;
@@ -205,6 +231,11 @@ export function piStreamStats(text: string): StreamStats {
     stats.peakContext = Math.max(stats.peakContext, num(u.input) + num(u.cacheRead) + num(u.cacheWrite));
     stats.outputTokens += num(u.output);
     stats.finalText = textOf(m.content);
+    stats.stopReason = typeof m.stopReason === "string" ? m.stopReason : "";
+    stats.thinkingOnly =
+      stats.finalText.trim() === "" &&
+      Array.isArray(m.content) &&
+      m.content.some((b) => b && typeof b === "object" && (b as { type?: unknown }).type === "thinking");
   }
   return stats;
 }
@@ -214,11 +245,17 @@ export function piStreamStats(text: string): StreamStats {
  * a turn is a message id. The `result` event holds the final text and the session's output total.
  */
 export function claudeStreamStats(text: string): StreamStats {
-  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0 };
+  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0 };
   const output = new Map<string, number>();
   let lastText = "";
   let resultUsage: Record<string, unknown> | undefined;
   for (const e of events(text)) {
+    if (e.type === "user" && Array.isArray((e.message as { content?: unknown } | undefined)?.content)) {
+      for (const b of (e.message as { content: unknown[] }).content) {
+        const block = b as { type?: unknown; is_error?: unknown };
+        if (block && block.type === "tool_result" && block.is_error === true) stats.toolErrors++;
+      }
+    }
     if (e.type === "result") resultUsage = (e.usage ?? undefined) as Record<string, unknown> | undefined;
     const id = claudeTurnId(e, output.size);
     if (id === undefined) continue;

@@ -27,7 +27,7 @@ function batchRoot(names: string[], prompt = true): string {
 }
 
 function ok(job: WorkerJob, error: WorkerRecord["error"] = null): WorkerRecord {
-  return { rollout: job.rollout, exit: 0, seconds: 1, turns: 1, tools: 0, peakContext: 1, outputTokens: 1, form: error ? null : "pure", error };
+  return { rollout: job.rollout, exit: 0, seconds: 1, turns: 1, tools: 0, peakContext: 1, outputTokens: 1, compactions: 0, toolErrors: 0, nudged: false, form: error ? null : "pure", error };
 }
 
 /** A runWorker fake: records each call, the largest number in flight, and the order of starts and ends. */
@@ -134,6 +134,105 @@ describe("veriharness workers", () => {
     expect(r.stderr).toContain("b01/r01: peak context 1500 passed the estimate of 1000");
     expect(r.stderr).toContain("--item-tokens 350");
     expect(r.stderr).not.toContain("b02/r01: peak context");
+  });
+
+  test("a rollout that compacted its context is reported: its answer rests on turns it no longer held", async () => {
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1"], fake((j) => ({ ...ok(j), compactions: 2 })));
+    expect(r.lines[0]).toMatchObject({ compactions: 2 });
+    expect(r.stderr).toContain("b01/r01: the context was compacted 2 times");
+  });
+
+  test("the summary names one --item-tokens that covers every rollout: the largest suggestion, not one probe's", async () => {
+    const dir = batchRoot(["b01", "b02"]);
+    writeFileSync(
+      join(dir, "manifest.json"),
+      JSON.stringify({
+        itemTokens: 100,
+        batches: [
+          { name: "b01", items: ["1", "2"], estTokens: 1000 },
+          { name: "b02", items: ["3"], estTokens: 1000 },
+        ],
+      }),
+    );
+    // b01: 1500 over 2 items = +250 -> 350. b02: 1900 over 1 item = +900 -> 1000. The largest wins.
+    const peak = (job: WorkerJob): WorkerRecord => ({ ...ok(job), peakContext: job.batchDir.endsWith("b01") ? 1500 : 1900 });
+    const r = await workers([dir, ...OLLAMA, "--count", "1"], fake(peak));
+    expect(r.lines.at(-1)).toEqual({ summary: { complete: 2, errors: 0, skipped: 0, itemTokens: 1000 } });
+    expect(r.stderr).toContain("workers: --item-tokens 1000 would have covered every rollout");
+  });
+
+  test("a rollout that compacted gives a lower bound: its peak is capped by the compaction", async () => {
+    const dir = batchRoot(["b01"]);
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify({ itemTokens: 0, batches: [{ name: "b01", items: ["1", "2"], estTokens: 1000 }] }));
+    const r = await workers([dir, ...OLLAMA, "--count", "1"], fake((j) => ({ ...ok(j, "compacted"), peakContext: 1200, compactions: 1 })));
+    expect(r.stderr).toContain("at least --item-tokens 100");
+    expect(r.lines.at(-1)).toMatchObject({ summary: { itemTokens: 100 } });
+  });
+
+  test("a worker whose tool calls mostly fail is reported as off task", async () => {
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "2"], fake((j) => ({ ...ok(j), tools: 10, toolErrors: j.rollout === "r01" ? 6 : 1 })));
+    expect(r.stderr).toContain("b01/r01: 6 of 10 tool calls failed");
+    expect(r.stderr).not.toContain("b01/r02: 1 of 10");
+  });
+
+  test("--nudge-timeout and --allow-compaction reach every job; the nudge is on by default", async () => {
+    const dir = batchRoot(["b01"]);
+    const d = fake();
+    await workers([dir, ...OLLAMA, "--count", "1"], d);
+    expect(d.calls[0]!.nudgeTimeoutSec).toBe(300);
+    expect(d.calls[0]!.allowCompaction).toBeUndefined();
+    const f = fake();
+    await workers([dir, ...OLLAMA, "--count", "1", "--nudge-timeout", "45", "--allow-compaction"], f);
+    expect(f.calls[0]!).toMatchObject({ nudgeTimeoutSec: 45, allowCompaction: true });
+    const off = fake();
+    await workers([dir, ...OLLAMA, "--count", "1", "--nudge-timeout", "0"], off);
+    expect(off.calls[0]!.nudgeTimeoutSec).toBeUndefined();
+  });
+
+  test("--schema reaches every job as the parsed schema", async () => {
+    const dir = batchRoot(["b01"]);
+    writeFileSync(join(dir, "schema.json"), JSON.stringify({ type: "object", required: ["rows"] }));
+    const f = fake();
+    expect((await workers([dir, ...OLLAMA, "--count", "2", "--schema", join(dir, "schema.json")], f)).code).toBe(0);
+    expect(f.calls.map((c) => c.schema)).toEqual([{ type: "object", required: ["rows"] }, { type: "object", required: ["rows"] }]);
+  });
+
+  test("--schema that cannot be read, is not JSON, or holds a keyword the check skips is an input error", async () => {
+    const dir = batchRoot(["b01"]);
+    writeFileSync(join(dir, "bad.json"), "{not json");
+    writeFileSync(join(dir, "pattern.json"), JSON.stringify({ type: "string", pattern: "^x" }));
+    for (const [file, message] of [
+      ["missing.json", "--schema"],
+      ["bad.json", "is not JSON"],
+      ["pattern.json", "$: pattern"],
+    ] as const) {
+      const f = fake();
+      const r = await workers([dir, ...OLLAMA, "--schema", join(dir, file)], f);
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain(message);
+      expect(f.calls).toHaveLength(0);
+    }
+  });
+
+  test("--retries runs a rollout again while its error is one a second try can fix", async () => {
+    let tries = 0;
+    const f = fake((j) => ok(j, ++tries < 3 ? "thinking-only" : null));
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--retries", "2"], f);
+    expect(f.calls).toHaveLength(3);
+    expect(r.lines.at(-1)).toEqual({ summary: { complete: 1, errors: 0, skipped: 0 } });
+    expect(r.lines[0]).toMatchObject({ error: null, attempts: 3 });
+  });
+
+  test("--retries stops at its count, and never repeats a usage limit or a timeout", async () => {
+    const f = fake((j) => ok(j, "no-json"));
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--retries", "1"], f);
+    expect(f.calls).toHaveLength(2);
+    expect(r.code).toBe(1);
+    for (const error of ["timeout", "usage-limit"] as const) {
+      const g = fake((j) => ok(j, error));
+      await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--retries", "3"], g);
+      expect(g.calls).toHaveLength(1);
+    }
   });
 
   test("a batch root with no manifest has no estimate and no warning", async () => {

@@ -145,6 +145,129 @@ describe("runWorker", () => {
     expect(existsSync(rollout("deliverables", "report.json"))).toBe(false);
   });
 
+  /** A pi stream of the given assistant turns, each `[content, stopReason]`. */
+  const turns = (...list: [unknown[], string][]): string =>
+    list
+      .map(([content, stopReason]) =>
+        JSON.stringify({ type: "message_end", message: { role: "assistant", content, usage: { input: 10, output: 5 }, stopReason } }),
+      )
+      .join("\n") + "\n";
+
+  test("a last turn cut at the output limit is length, and its text is kept for the reader", async () => {
+    const fake = fakeRun(turns([[{ type: "text", text: '{"rows": [{"line": 1' }], "length"]));
+    const rec = await runWorker(job(), { run: fake.run });
+    expect(rec.error).toBe("length");
+    expect(readFileSync(rollout("deliverables", "report.json.partial.txt"), "utf8")).toBe('{"rows": [{"line": 1');
+  });
+
+  test("a last turn of thinking alone is thinking-only, not no-result", async () => {
+    const fake = fakeRun(turns([[{ type: "thinking", thinking: "hmm" }], "stop"]));
+    expect((await runWorker(job(), { run: fake.run })).error).toBe("thinking-only");
+  });
+
+  test("a worker that compacted its context is compacted, with its deliverable kept; allowCompaction accepts it", async () => {
+    const stream = '{"type":"compaction_start","reason":"threshold"}\n' + PI_STREAM;
+    const rec = await runWorker(job(), { run: fakeRun(stream).run });
+    expect(rec.compactions).toBe(1);
+    expect(record().compactions).toBe(1);
+    expect(rec.error).toBe("compacted");
+    expect(JSON.parse(readFileSync(rollout("deliverables", "report.json"), "utf8"))).toEqual({ rows: [{ line: 7, verdict: "LOGGED" }] });
+    const allowed = await runWorker(job({ allowCompaction: true }), { run: fakeRun(stream).run });
+    expect(allowed.error).toBeNull();
+  });
+
+  /** A run() fake that answers call n with results[n]; the last result repeats. */
+  function sequence(...results: { stdout: string; extra?: Partial<RunResult> }[]) {
+    const calls: { args: string[]; opts: RunOptions }[] = [];
+    const run = async (_cmd: string, args: string[], opts: RunOptions): Promise<RunResult> => {
+      const r = results[Math.min(calls.length, results.length - 1)]!;
+      calls.push({ args, opts });
+      return { status: 0, signal: null, stdout: r.stdout, stderr: "", timedOut: false, truncated: false, timeoutMs: opts.timeoutMs, ...r.extra };
+    };
+    return { run, calls };
+  }
+  const THOUGHT = turns([[{ type: "thinking", thinking: "hmm" }], "stop"]);
+
+  test("a session that ends in thought alone is continued once with a nudge, and the answer completes the rollout", async () => {
+    const f = sequence({ stdout: THOUGHT }, { stdout: PI_STREAM });
+    const rec = await runWorker(job({ nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(2);
+    expect(rec).toMatchObject({ error: null, nudged: true, form: "pure" });
+    const [first, second] = f.calls;
+    expect(first!.args).toContain("--session-dir");
+    expect(first!.args).not.toContain("--no-session");
+    expect(first!.args).not.toContain("-c");
+    expect(second!.args).toContain("-c");
+    expect(second!.args.at(-1)).toContain("Do not think further");
+    expect(first!.opts.timeoutMs).toBe(60_000);
+    expect(second!.opts.timeoutMs).toBe(90_000);
+    // Both sessions are in the stream, and the counts cover both.
+    expect(readFileSync(rollout("trajectory", "agent.jsonl"), "utf8")).toBe(THOUGHT + PI_STREAM);
+    expect(rec.turns).toBe(1 + 3);
+  });
+
+  test("a timeout is continued with a wrap-up nudge, so the work done is not lost", async () => {
+    const partial = turns([[{ type: "text", text: "Rows 1 to 4 are logged." }], "toolUse"]);
+    const f = sequence({ stdout: partial, extra: { status: null, timedOut: true } }, { stdout: PI_STREAM });
+    const rec = await runWorker(job({ nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls[1]!.args.at(-1)).toContain("Stop investigating");
+    expect(rec).toMatchObject({ error: null, nudged: true });
+  });
+
+  test("a nudge that ends without an answer leaves the error of the nudge and the text it did write", async () => {
+    const f = sequence({ stdout: THOUGHT }, { stdout: turns([[{ type: "text", text: "Still no JSON." }], "stop"]) });
+    const rec = await runWorker(job({ nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(2);
+    expect(rec).toMatchObject({ error: "no-json", nudged: true });
+  });
+
+  test("no nudge for a stop, a turn cap, a usage limit, a start failure, or when the nudge is off", async () => {
+    const stopped = new AbortController();
+    stopped.abort();
+    for (const [extra, over] of [
+      [{ status: null, aborted: true }, { signal: stopped.signal }],
+      [{ status: null, error: new Error("spawn ENOENT") }, {}],
+    ] as const) {
+      const f = sequence({ stdout: THOUGHT, extra });
+      await runWorker(job({ nudgeTimeoutSec: 90, ...over }), { run: f.run });
+      expect(f.calls).toHaveLength(1);
+    }
+    const off = sequence({ stdout: THOUGHT });
+    await runWorker(job(), { run: off.run });
+    expect(off.calls).toHaveLength(1);
+    expect(off.calls[0]!.args).toContain("--no-session");
+    const claude = sequence({ stdout: "" });
+    await runWorker(job({ model: { provider: "claude-code", model: "claude-haiku-5-5" }, piProvider: undefined, nudgeTimeoutSec: 90 }), { run: claude.run });
+    expect(claude.calls).toHaveLength(1);
+  });
+
+  const ROWS_SCHEMA = {
+    type: "object",
+    required: ["rows"],
+    properties: { rows: { type: "array", items: { type: "object", required: ["row", "verdict"] } } },
+  };
+
+  test("a deliverable that fails the schema is schema, with the errors beside it", async () => {
+    const rec = await runWorker(job({ schema: ROWS_SCHEMA }), { run: fakeRun(PI_STREAM).run });
+    expect(rec.error).toBe("schema");
+    expect(readFileSync(rollout("deliverables", "report.json.schema-errors.txt"), "utf8")).toContain("$.rows[0]: missing property 'row'");
+    // The value is kept: a reader can still use what the worker said.
+    expect(JSON.parse(readFileSync(rollout("deliverables", "report.json"), "utf8"))).toEqual({ rows: [{ line: 7, verdict: "LOGGED" }] });
+  });
+
+  test("a deliverable that fits the schema completes", async () => {
+    const schema = { type: "object", required: ["rows"] };
+    expect((await runWorker(job({ schema }), { run: fakeRun(PI_STREAM).run })).error).toBeNull();
+  });
+
+  test("a timeout keeps the last text the worker wrote", async () => {
+    const fake = fakeRun(turns([[{ type: "text", text: "Rows 1 to 4 are logged." }], "toolUse"]), { status: null, timedOut: true });
+    const rec = await runWorker(job(), { run: fake.run });
+    expect(rec.error).toBe("timeout");
+    expect(readFileSync(rollout("deliverables", "report.json.partial.txt"), "utf8")).toBe("Rows 1 to 4 are logged.");
+  });
+
   test("usage limit", async () => {
     const limited = CLAUDE_STREAM.replace('"is_error": false', '"is_error": true').replace('"result": "{\\"rows\\": []}"', '"result": "You\'ve hit your weekly usage limit"');
     expect(limited).not.toBe(CLAUDE_STREAM);
