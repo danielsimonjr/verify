@@ -137,6 +137,15 @@ export function killProcessTree(pid: number): void {
   }
 }
 
+/**
+ * Seconds between the progress lines of a running turn: `VERIHARNESS_PROGRESS_SEC`, else 60. A model
+ * turn can run for many minutes and writes nothing to driver.log meanwhile; the line says it is alive.
+ */
+export function progressIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
+  const sec = Number(env.VERIHARNESS_PROGRESS_SEC);
+  return sec > 0 ? Math.round(sec * 1000) : 60_000;
+}
+
 export interface BudgetedRun {
   /** Exit code; null when the process was killed or never started. */
   code: number | null;
@@ -160,6 +169,9 @@ export interface BudgetedRunOptions {
   stdoutFile?: string;
   /** Runs after the tree is killed, on every kill path (e.g. `docker rm -f` of a named container). */
   onKill?: () => void;
+  /** With `onHeartbeat`: call it every `heartbeatMs` ms while the process runs, with the elapsed ms. */
+  heartbeatMs?: number;
+  onHeartbeat?: (elapsedMs: number) => void;
 }
 
 /** Node words a failed spawn as "spawn x ENOENT", Bun as "Executable not found"; keep the errno either way. */
@@ -268,10 +280,12 @@ export function runWithBudget(cmd: string[], opts: BudgetedRunOptions): Promise<
     let spawnError: string | undefined;
     let closeGrace: ReturnType<typeof setTimeout> | undefined;
     let done = false;
+    let beat: ReturnType<typeof setInterval> | undefined;
     const settle = (code: number | null): void => {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      clearInterval(beat);
       clearTimeout(closeGrace);
       if (pid !== undefined) live.delete(pid);
       unhookLive();
@@ -303,6 +317,16 @@ export function runWithBudget(cmd: string[], opts: BudgetedRunOptions): Promise<
         settle(null);
       }, 5000);
     }, timerDelay(opts.budgetMs));
+    const began = Date.now();
+    if (beat === undefined && opts.heartbeatMs !== undefined && opts.onHeartbeat !== undefined) {
+      beat = setInterval(() => {
+        try {
+          opts.onHeartbeat!(Date.now() - began);
+        } catch {
+          /* a failed progress line must not end the turn */
+        }
+      }, opts.heartbeatMs);
+    }
     child.on("error", (err) => {
       spawnError = describeSpawnError(err);
       settle(null);

@@ -77,6 +77,24 @@ describe("runWithBudget", () => {
     expect(killed).toBe(1);
   }, 20_000);
 
+  test("a heartbeat ticks while the turn runs, with the elapsed time, and stops when it ends", async () => {
+    const ticks: number[] = [];
+    const run = await runWithBudget([process.execPath, "-e", "setTimeout(() => {}, 1100)"], {
+      cwd: scratch,
+      env: process.env,
+      budgetMs: 10_000,
+      heartbeatMs: 300,
+      onHeartbeat: (elapsedMs) => ticks.push(elapsedMs),
+    });
+    expect(run.code).toBe(0);
+    expect(ticks.length).toBeGreaterThanOrEqual(2);
+    expect(ticks.length).toBeLessThanOrEqual(4);
+    expect(ticks[0]).toBeGreaterThanOrEqual(250);
+    const after = ticks.length;
+    await new Promise((r) => setTimeout(r, 700));
+    expect(ticks).toHaveLength(after);
+  });
+
   test("a missing binary is reported, not swallowed", async () => {
     const run = await runWithBudget(["definitely-not-a-binary-verify-driver"], {
       cwd: scratch,

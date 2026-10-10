@@ -26,7 +26,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { ensureDir } from "../fsutil.js";
-import { runWithBudget } from "../runtime.js";
+import { progressIntervalMs, runWithBudget } from "../runtime.js";
 import { classifyFailure } from "./errors.js";
 import { VERIFIER_SETTINGS } from "./env.js";
 import { claudeConfigDir, findPersisted, movePersisted } from "./persisted.js";
@@ -241,6 +241,11 @@ export class ClaudeSession {
     this.ws = runtime.options.ws;
   }
 
+  /** Claude Code ends a turn with a result event, never in thought alone: nothing to flag. */
+  endedCut(): boolean {
+    return false;
+  }
+
   get sessionDir(): string {
     return join(this.ws, "session", this.name);
   }
@@ -311,7 +316,20 @@ export class ClaudeSession {
             addDirs: o.addDirs,
           }),
         ],
-        { cwd: this.ws, env: o.env, budgetMs: budget * 1000, input: message, stdoutFile: transcript },
+        {
+          cwd: this.ws,
+          env: o.env,
+          budgetMs: budget * 1000,
+          input: message,
+          stdoutFile: transcript,
+          heartbeatMs: progressIntervalMs(),
+          // The event stream goes to the transcript as it arrives, so its growth is the live signal.
+          onHeartbeat: (ms) =>
+            o.log(
+              `${tag}claude turn running ${Math.round(ms / 1000)}s of ${Math.floor(budget)}s; ` +
+                `transcript +${Math.round((sizeOrZero(transcript) - from) / 1024)} KB`,
+            ),
+        },
       );
 
       if (run.spawnError !== undefined) {

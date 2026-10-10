@@ -12,6 +12,10 @@ import {
   changedFiles,
   completeBundle,
   hasSessionFile,
+  lastStopReason,
+  lastTurnCut,
+  nudgeFor,
+  sessionProgress,
   isTransient,
   parseDriverArgv,
   renderSkills,
@@ -417,5 +421,77 @@ describe("renderSkills: which skills mount", () => {
     const pdf = skill(root, "pdf", "description: d\napplies-to: *.pdf\nphase: repair");
     expect(renderSkills([pdf], ws, "repair")).toContain("BODY-pdf");
     expect(renderSkills([pdf], ws, "elim")).toBe("");
+  });
+});
+
+describe("lastStopReason", () => {
+  const line = (role: string, stopReason?: string) =>
+    JSON.stringify({ type: "message", message: { role, content: [], ...(stopReason ? { stopReason } : {}) } });
+
+  test("is the stop reason of the last assistant message of the newest session file", () => {
+    const dir = join(scratch, "stops");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "2026-01.jsonl"), [line("assistant", "length")].join("\n") + "\n");
+    writeFileSync(join(dir, "2026-02.jsonl"), [line("assistant", "toolUse"), line("toolResult"), line("assistant", "length"), line("toolResult")].join("\n") + "\n");
+    expect(lastStopReason(dir)).toBe("length");
+    writeFileSync(join(dir, "2026-03.jsonl"), [line("assistant", "stop")].join("\n") + "\n");
+    expect(lastStopReason(dir)).toBe("stop");
+  });
+
+  test("is empty for a missing directory, no session file, or no assistant message", () => {
+    expect(lastStopReason(join(scratch, "nowhere"))).toBe("");
+    const dir = join(scratch, "bare");
+    mkdirSync(dir);
+    expect(lastStopReason(dir)).toBe("");
+    writeFileSync(join(dir, "s.jsonl"), line("user") + "\nnot json\n");
+    expect(lastStopReason(dir)).toBe("");
+  });
+});
+
+describe("sessionProgress", () => {
+  const msg = (content: unknown[]) => JSON.stringify({ type: "message", message: { role: "assistant", content } });
+
+  test("counts the assistant messages and tool calls and names the last tool", () => {
+    const dir = join(scratch, "progress");
+    mkdirSync(dir);
+    writeFileSync(
+      join(dir, "s.jsonl"),
+      [msg([{ type: "toolCall", name: "read" }]), JSON.stringify({ type: "message", message: { role: "toolResult" } }), msg([{ type: "toolCall", name: "grep" }, { type: "text", text: "x" }])].join("\n") + "\n",
+    );
+    expect(sessionProgress(dir)).toMatch(/^2 assistant messages, 2 tool calls \(last: grep\), session \d+ KB$/);
+  });
+
+  test("says so when there is no session file yet", () => {
+    expect(sessionProgress(join(scratch, "nowhere"))).toBe("no session file yet");
+    const dir = join(scratch, "empty-progress");
+    mkdirSync(dir);
+    expect(sessionProgress(dir)).toBe("no session file yet");
+  });
+});
+
+describe("a nudge after a cut message", () => {
+  const msg = (content: unknown[], stopReason = "stop") =>
+    JSON.stringify({ type: "message", message: { role: "assistant", content, stopReason } }) + "\n";
+
+  test("lastTurnCut: a limit stop or thought alone is cut; text or a tool call is not", () => {
+    const dir = join(scratch, "cut");
+    mkdirSync(dir);
+    const at = (name: string, text: string) => {
+      writeFileSync(join(dir, name), text);
+      return lastTurnCut(dir);
+    };
+    expect(at("1.jsonl", msg([{ type: "thinking", thinking: "hmm" }]))).toBe(true);
+    expect(at("2.jsonl", msg([{ type: "text", text: "part" }], "length"))).toBe(true);
+    expect(at("3.jsonl", msg([{ type: "thinking", thinking: "hmm" }, { type: "text", text: "done" }]))).toBe(false);
+    expect(at("4.jsonl", msg([{ type: "thinking", thinking: "hmm" }, { type: "toolCall", name: "write" }], "toolUse"))).toBe(false);
+    expect(lastTurnCut(join(scratch, "nowhere"))).toBe(false);
+  });
+
+  test("nudgeFor adds the warning against more thinking only when the last message was cut", () => {
+    const agent = (cut: boolean) => ({ endedCut: () => cut }) as unknown as Parameters<typeof nudgeFor>[0];
+    expect(nudgeFor(agent(false), "You have not written x.json yet.")).toBe("You have not written x.json yet.");
+    expect(nudgeFor(agent(true), "You have not written x.json yet.")).toBe(
+      "Your last message was cut off or held only thinking, so no file was written. Do not think further: you have not written x.json yet.",
+    );
   });
 });

@@ -5,6 +5,9 @@ other's work: `ledger_elim.json` holds the disagreements one of them worked and 
 right; `ledger_fals.json` holds the positions all candidates share and whether each survived an
 attempt to break it. You have neither session's context, and that is the point: only the two
 records, spec/, workspace/ and the deliverables count. Read spec/ and both records first.
+A record that holds `"missing": true` means that session left no record. Then the other record,
+spec/, workspace/ and the deliverables are all you have: check the candidates yourself where the
+missing record would have told you.
 
 Both records are provisional. Check every entry you lean on: does what was checked actually
 show what the entry says? Re-run a command when it matters. Weigh, do not count — one finding

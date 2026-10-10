@@ -112,6 +112,41 @@ describe("each role on its own model", () => {
   });
 });
 
+describe("a turn that runs long", () => {
+  test("driver.log gets a progress line while a pi turn runs, with its session numbers", async () => {
+    const pi = piHappyRules(rig.ws).map((r) => (r.match === "# Discrimination" ? { ...r, action: { ...r.action, delayMs: 1500 } } : r));
+    rig.script([...happyRules(rig.ws).slice(0, 2), ...pi.slice(2)]);
+    const code = await rig.run(
+      [...ARGS, "--role", "checker=anthropic:pi-model", "--role", "challenger=anthropic:pi-model"],
+      { VERIHARNESS_PROGRESS_SEC: "0.4" },
+      { piCommand: [process.execPath, STUB_PI] },
+    );
+    expect(code).toBe(0);
+    expect(rig.log()).toMatch(/\[elim\] pi turn running \d+s of \d+s; /);
+  });
+});
+
+describe("an investigation that leaves no record", () => {
+  test("the adjudication still runs on the other record, and the missing one says so", async () => {
+    // The challenger has no rule, so it writes nothing: its record is missing.
+    rig.script(happyRules(rig.ws).filter((r) => !JSON.stringify(r).includes("ledger_fals.json")));
+    expect(await rig.run([...ARGS, "--no-skills"])).toBe(0);
+    const stub = JSON.parse(readFileSync(join(rig.ws, "ledger_fals.json"), "utf8"));
+    expect(stub.missing).toBe(true);
+    expect(stub.reason).toContain("no record of its own");
+    expect(rig.log()).toContain("fals: no record");
+    expect(rig.log()).toContain("[elim] live stream: session/elim/");
+    expect(existsSync(join(rig.ws, "finish.json"))).toBe(true);
+  });
+
+  test("when no investigation leaves a record, nothing is adjudicated", async () => {
+    rig.script(happyRules(rig.ws).filter((r) => !JSON.stringify(r).includes("ledger_")));
+    expect(await rig.run(ARGS)).toBe(1);
+    expect(rig.log()).toContain("recording no-output");
+    expect(existsSync(join(rig.ws, "finish.json"))).toBe(false);
+  });
+});
+
 describe("a usage limit in one Claude Code role", () => {
   test("stops the roles on other Claude Code models too, and the driver exits 75", async () => {
     const limit = { is_error: true, text: "You've hit your weekly usage limit" };

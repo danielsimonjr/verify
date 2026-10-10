@@ -61,7 +61,7 @@ import { canonicalLocalProvider, materializePiHome, prepareLocalProvider, resolv
 import type { ContextSize } from "./model/config.js";
 import type { FetchLike } from "./model/http.js";
 import { ROLES, describeRoles, parseRoleOptions, resolveRoles, roleKey, sharedServerWarnings, type Role, type RoleModel } from "./roles.js";
-import { isBun, isMain, runWithBudget } from "./runtime.js";
+import { isBun, isMain, progressIntervalMs, runWithBudget } from "./runtime.js";
 import { isView } from "./views.js";
 
 export { readJsonFs as readJson, writeJsonFs as writeJson };
@@ -143,6 +143,13 @@ const INVESTIGATIONS: [string, string, string, string][] = [
 const NUDGE_LEDGER =
   "You have not written {record} yet. Please write it now, in the LEDGER.md format, " +
   "with what you have; then stop.";
+/** Before a nudge that follows a message that was cut or held only thinking: more thinking would end the same way. */
+const NUDGE_CUT_PREFIX =
+  "Your last message was cut off or held only thinking, so no file was written. Do not think further: ";
+/** The nudge for `agent`: the same text, with the warning against thinking when its last message was cut. */
+export function nudgeFor(agent: Agent, nudge: string): string {
+  return agent.endedCut() ? NUDGE_CUT_PREFIX + nudge.charAt(0).toLowerCase() + nudge.slice(1) : nudge;
+}
 const NUDGE_FINISH =
   "You have not written finish.json yet. Please finish now: write finish.json " + "as instructed.";
 const NUDGE_REPAIR =
@@ -253,6 +260,8 @@ export interface Agent {
   turn(message: string, timeout: number, continueSession: boolean, tag?: string): Promise<boolean>;
   /** The text of the record file this session wrote itself (not a file another session left), or null. */
   ownRecord(record: string): string | null;
+  /** True when the last message of the session was cut at the output limit or held only thinking. */
+  endedCut(): boolean;
 }
 
 /**
@@ -271,7 +280,7 @@ export async function turnUntil(
   await agent.turn(message, timeouts[0], continueSession, tag);
   let result = readJsonFs<Record<string, unknown>>(output);
   if (result === null) {
-    await agent.turn(nudge, timeouts[1], true, tag);
+    await agent.turn(nudgeFor(agent, nudge), timeouts[1], true, tag);
     result = readJsonFs<Record<string, unknown>>(output);
   }
   return result;
@@ -429,6 +438,10 @@ class Pi implements Agent {
     return ownRecord(this.sessionDir, record);
   }
 
+  endedCut(): boolean {
+    return lastTurnCut(this.sessionDir);
+  }
+
   /** The command for one turn, and what goes to its stdin. See `planPiCommand`. */
   _cmd(message: string, continueSession: boolean, env: NodeJS.ProcessEnv): [string[], string | null, string | undefined] {
     const plan = planPiCommand({
@@ -485,6 +498,9 @@ class Pi implements Agent {
         budgetMs: budget * 1000,
         input,
         onKill: container && this.native ? () => this.native!.kill(container) : undefined,
+        heartbeatMs: progressIntervalMs(),
+        onHeartbeat: (ms) =>
+          log(this.ws, `${tag}pi turn running ${Math.round(ms / 1000)}s of ${Math.floor(budget)}s; ${sessionProgress(this.sessionDir)}`),
       });
 
       if (run.spawnError !== undefined) {
@@ -499,6 +515,11 @@ class Pi implements Agent {
       const rc = run.code ?? 1;
       log(this.ws, `${tag}pi exited rc=${rc}`);
       if (rc === 0) {
+        // A model that spends its whole output on thought ends at the limit with no answer. Say so, or
+        // the missing record looks like a model that did not try.
+        if (lastStopReason(this.sessionDir) === "length") {
+          log(this.ws, `${tag}the last message ended at the output limit (stopReason length): it is cut, not an answer; raise --max-tokens`);
+        }
         return true;
       }
       log(
@@ -799,10 +820,12 @@ async function investigate(
     renderSkills(skills, ws, name, args.skillsMode, kind);
   const tag = `[${name}] `;
   log(ws, `${tag}investigation: ${playbook}`);
+  // driver.log changes between turns, not inside one; the session stream is what moves while a model works.
+  log(ws, `${tag}live stream: session/${name}/ (driver.log is silent until this turn ends)`);
   const session = agent.withSession(name);
   await session.turn(message, args.turnTimeout, false, tag);
   if (session.ownRecord(join(ws, record)) === null) {
-    await session.turn(NUDGE_LEDGER.replace("{record}", record), args.nudgeTimeout, true, tag);
+    await session.turn(nudgeFor(session, NUDGE_LEDGER.replace("{record}", record)), args.nudgeTimeout, true, tag);
   }
   const own = session.ownRecord(join(ws, record));
   let ledger: Record<string, unknown> | null = null;
@@ -824,6 +847,93 @@ async function investigate(
       `challenges=${(ledger.challenges as unknown[] | undefined)?.length ?? 0}`,
   );
   return true;
+}
+
+/**
+ * What the newest session file says about a running turn: assistant messages, tool calls, the last tool
+ * and the size. It is the only thing that moves during a turn, so the driver logs it as a heartbeat.
+ */
+export function sessionProgress(sessionDir: string): string {
+  if (!isDir(sessionDir)) return "no session file yet";
+  const newest = readdirSync(sessionDir)
+    .filter((f) => f.endsWith(".jsonl"))
+    .sort()
+    .at(-1);
+  if (newest === undefined) return "no session file yet";
+  const text = readFileSync(join(sessionDir, newest), "utf8");
+  let messages = 0;
+  let calls = 0;
+  let last = "";
+  for (const line of text.split("\n")) {
+    if (!line.includes('"assistant"')) continue;
+    try {
+      const m = (JSON.parse(line) as { message?: { role?: unknown; content?: unknown } }).message;
+      if (m?.role !== "assistant") continue;
+      messages++;
+      for (const part of Array.isArray(m.content) ? (m.content as { type?: string; name?: string }[]) : []) {
+        if (part.type === "toolCall") {
+          calls++;
+          last = String(part.name ?? "");
+        }
+      }
+    } catch {
+      // A line cut by a read in the middle of a write is not a message yet.
+    }
+  }
+  return `${messages} assistant messages, ${calls} tool calls${last ? ` (last: ${last})` : ""}, session ${Math.round(text.length / 1024)} KB`;
+}
+
+/**
+ * True when the last assistant message of the newest session file was cut at the output limit, or
+ * held thinking and no text. Such a message wrote no record, and a nudge must say not to think more.
+ */
+export function lastTurnCut(sessionDir: string): boolean {
+  if (lastStopReason(sessionDir) === "length") return true;
+  if (!isDir(sessionDir)) return false;
+  const newest = readdirSync(sessionDir)
+    .filter((f) => f.endsWith(".jsonl"))
+    .sort()
+    .at(-1);
+  if (newest === undefined) return false;
+  let thoughtOnly = false;
+  for (const line of readFileSync(join(sessionDir, newest), "utf8").split("\n")) {
+    if (!line.includes('"assistant"')) continue;
+    try {
+      const m = (JSON.parse(line) as { message?: { role?: unknown; content?: unknown } }).message;
+      if (m?.role !== "assistant") continue;
+      const parts = Array.isArray(m.content) ? (m.content as { type?: string; text?: string }[]) : [];
+      const hasText = parts.some((p) => p.type === "text" && String(p.text ?? "").trim() !== "");
+      const hasCall = parts.some((p) => p.type === "toolCall");
+      thoughtOnly = !hasText && !hasCall && parts.some((p) => p.type === "thinking");
+    } catch {
+      // A line cut by a read in the middle of a write is not a message yet.
+    }
+  }
+  return thoughtOnly;
+}
+
+/**
+ * Why the last assistant message of the newest session file ended (`stop`, `toolUse`, `length`...).
+ * Empty when there is no session file or no assistant message.
+ */
+export function lastStopReason(sessionDir: string): string {
+  if (!isDir(sessionDir)) return "";
+  const files = readdirSync(sessionDir)
+    .filter((f) => f.endsWith(".jsonl"))
+    .sort();
+  const newest = files.at(-1);
+  if (newest === undefined) return "";
+  let reason = "";
+  for (const text of readFileSync(join(sessionDir, newest), "utf8").split("\n")) {
+    if (!text.includes('"assistant"')) continue;
+    try {
+      const m = (JSON.parse(text) as { message?: { role?: unknown; stopReason?: unknown } }).message;
+      if (m?.role === "assistant") reason = typeof m.stopReason === "string" ? m.stopReason : "";
+    } catch {
+      // A line that is not JSON is not a message.
+    }
+  }
+  return reason;
 }
 
 function ownRecord(sessionDir: string, record: string): string | null {
@@ -1229,10 +1339,20 @@ async function runPhases(cast: Cast, args: DriverArgs, mission: string, skills: 
     investigate(cast.challenger, args, mission, skills, fals, cast.kinds.challenger),
   ]);
   restoreRecords(ws);
-  if (!ok.every(Boolean)) {
-    log(ws, "an investigation left no record; recording no-output");
+  if (!ok.some(Boolean)) {
+    log(ws, "no investigation left a record; recording no-output");
     return 1;
   }
+  // One investigation without a record leaves the other, and the rollouts, to adjudicate from. The
+  // reviewer reads both record files, so the missing one is written as a stub that says it is missing.
+  INVESTIGATIONS.forEach(([name, , , record], i) => {
+    if (ok[i]) return;
+    writeJsonFs(join(ws, record), {
+      missing: true,
+      reason: `the ${name} investigation ended with no record of its own: adjudicate from the other record and the rollouts alone`,
+    });
+    log(ws, `${name}: no record of its own; the adjudication runs on the other record`);
+  });
 
   const reviewer = cast.reviewer();
   const finish = await adjudicate(reviewer, args, skills, cast.kinds.reviewer);

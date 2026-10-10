@@ -15,6 +15,9 @@ afterEach(() => rig.cleanup());
 
 const MODEL = "claude-haiku-4-5-20251001";
 const ARGS = ["--provider", "claude-code", "--model", MODEL, "--env", "none", "--no-skills"];
+
+/** The happy rules without the challenger's: its investigation leaves no record, so a failing checker leaves the task nothing to adjudicate. */
+const noFalsification = () => happyRules(rig.ws).filter((r) => r.match !== "# Falsification");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The value after `flag` in a recorded argv, or undefined. */
@@ -253,7 +256,9 @@ describe("sessions and transcripts", () => {
     const rule = writeRule(rig.ws, "# Discrimination", "ledger_elim.json", ELIM);
     (rule.action as { toolUses?: unknown }).toolUses = [];
     rig.script([rule, ...happyRules(rig.ws).filter((r) => r.match !== "# Discrimination")]);
-    expect(await rig.run(ARGS)).toBe(1);
+    // The other investigation is fine, so the run goes on to adjudicate: on a stub that says this record is missing.
+    expect(await rig.run(ARGS)).toBe(0);
+    expect(JSON.parse(readFileSync(join(rig.ws, "ledger_elim.json"), "utf8")).missing).toBe(true);
     expect(rig.log()).toContain("no ledger_elim.json of its own after nudge");
   });
 });
@@ -295,7 +300,7 @@ describe("the saved copies in Claude Code's configuration directory", () => {
   });
 
   test("the copies are moved when the task fails, too", async () => {
-    rig.script([{ match: "# Discrimination", action: { result: { is_error: true, text: "Invalid API key" }, exit: 1 } }, ...happyRules(rig.ws)]);
+    rig.script([{ match: "# Discrimination", action: { result: { is_error: true, text: "Invalid API key" }, exit: 1 } }, ...noFalsification()]);
     expect(await rig.run(ARGS)).toBe(1);
     expect(readdirSync(join(rig.configDir, "projects"))).toEqual([]);
     const id = sessionOf(callsWith("# Discrimination")[0]!).id;
@@ -434,7 +439,7 @@ describe("retries", () => {
   });
 
   test("a rate limit that never clears gives up after the backoff is used", async () => {
-    rig.script([{ match: "# Discrimination", action: { result: overloaded, exit: 1 } }, ...happyRules(rig.ws)]);
+    rig.script([{ match: "# Discrimination", action: { result: overloaded, exit: 1 } }, ...noFalsification()]);
     expect(await rig.run(ARGS)).toBe(1);
     // The first attempt and one retry per backoff entry.
     expect(callsWith("# Discrimination")).toHaveLength(4);
@@ -443,7 +448,7 @@ describe("retries", () => {
   test("a failure that is not transient is not retried", async () => {
     rig.script([
       { match: "# Discrimination", action: { result: { is_error: true, text: "Invalid API key" }, exit: 1 } },
-      ...happyRules(rig.ws),
+      ...noFalsification(),
     ]);
     expect(await rig.run(ARGS)).toBe(1);
     expect(callsWith("# Discrimination")).toHaveLength(1);
@@ -542,11 +547,17 @@ describe("a turn that hangs", () => {
     }
   }
 
+  test("driver.log says the turn is alive while it hangs", async () => {
+    rig.script([{ match: "# Discrimination", action: { hang: true } }, ...noFalsification()]);
+    await rig.run([...ARGS, "--turn-timeout", "2", "--nudge-timeout", "2"], { VERIHARNESS_PROGRESS_SEC: "0.4" });
+    expect(rig.log()).toMatch(/\[elim\] claude turn running \d+s of 2s; transcript \+\d+ KB/);
+  }, 60_000);
+
   test("is killed at its budget with every process it started", async () => {
     const prefix = join(rig.root, "grandchild");
     rig.script([
       { match: "# Discrimination", action: { hang: true, grandchild: prefix } },
-      ...happyRules(rig.ws),
+      ...noFalsification(),
     ]);
     const started = Date.now();
     const code = await rig.run([...ARGS, "--turn-timeout", "2", "--nudge-timeout", "2"]);
