@@ -74,6 +74,7 @@ describe("veriharness batch", () => {
     const m = manifest(f.out);
     expect(m.budget).toBe(250);
     expect(m.budgetSource).toBe("explicit");
+    expect(m.shared).toEqual(["CHANGELOG.md"]);
     expect(m.window).toBeUndefined();
     expect(m.split).toBe(RULE);
     expect(m.batches).toEqual([
@@ -210,6 +211,8 @@ describe("veriharness batch", () => {
     // spec 16 + two items of 360 = 736 characters, 205 tokens: the reference adds nothing.
     expect(m.batches[0]).toEqual({ name: "b01", items: ["7", "8"], estTokens: 205, overBudget: false });
     expect(m.reference).toEqual(["corpus.md"]);
+    // The manifest says which files were counted (shared) and which were not (reference).
+    expect(m.shared).toEqual([]);
   });
 
   test("a reference folder is copied whole", async () => {

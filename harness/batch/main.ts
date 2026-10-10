@@ -190,6 +190,8 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Backend
       overheadTokens: options.overheadTokens,
       itemTokens: options.itemTokens,
       split: splitRaw,
+      // Shared files are read whole by the worker, so the estimate counts them; reference files are searched, so it does not.
+      shared: shared.map((p) => basename(p)),
       reference: reference.map((p) => basename(p)),
       batches: batches.map((b) => ({ name: b.name, items: b.items.map((i) => i.id), estTokens: b.estTokens, overBudget: b.overBudget })),
     };
