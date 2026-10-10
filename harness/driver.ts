@@ -892,8 +892,9 @@ async function investigate(
 }
 
 /**
- * What the newest session file says about a running turn: assistant messages, tool calls, the last tool
- * and the size. It is the only thing that moves during a turn, so the driver logs it as a heartbeat.
+ * What the newest session file says about a running turn: assistant messages, tool calls, the last tool,
+ * the compactions and the size. It is the only thing that moves during a turn, so the driver logs it as a
+ * heartbeat. A compaction drops the older turns, so an agent that compacted may no longer hold its brief.
  */
 export function sessionProgress(sessionDir: string): string {
   if (!isDir(sessionDir)) return "no session file yet";
@@ -905,8 +906,19 @@ export function sessionProgress(sessionDir: string): string {
   const text = readFileSync(join(sessionDir, newest), "utf8");
   let messages = 0;
   let calls = 0;
+  let compactions = 0;
   let last = "";
   for (const line of text.split("\n")) {
+    if (line.includes('"compaction"')) {
+      try {
+        if ((JSON.parse(line) as { type?: unknown }).type === "compaction") {
+          compactions++;
+          continue;
+        }
+      } catch {
+        // A line cut by a read in the middle of a write is not an event yet.
+      }
+    }
     if (!line.includes('"assistant"')) continue;
     try {
       const m = (JSON.parse(line) as { message?: { role?: unknown; content?: unknown } }).message;
@@ -922,7 +934,8 @@ export function sessionProgress(sessionDir: string): string {
       // A line cut by a read in the middle of a write is not a message yet.
     }
   }
-  return `${messages} assistant messages, ${calls} tool calls${last ? ` (last: ${last})` : ""}, session ${Math.round(text.length / 1024)} KB`;
+  const compacted = compactions > 0 ? `, compacted ${compactions} time${compactions === 1 ? "" : "s"}` : "";
+  return `${messages} assistant messages, ${calls} tool calls${last ? ` (last: ${last})` : ""}${compacted}, session ${Math.round(text.length / 1024)} KB`;
 }
 
 /**

@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.2] - 2026-10-10
+
+### Fixed
+- The driver line for an investigation that left no record names the compactions of its session
+  (`compacted 3 times`), as the worker record already does. A challenger that compacted three times
+  lost the ledger format and wrote another shape in another folder; the line gave message and tool
+  counts and no sign of the cause.
+
 ## [0.12.1] - 2026-10-10
 
 ### Fixed

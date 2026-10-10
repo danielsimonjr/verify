@@ -463,6 +463,24 @@ describe("sessionProgress", () => {
     expect(sessionProgress(dir)).toMatch(/^2 assistant messages, 2 tool calls \(last: grep\), session \d+ KB$/);
   });
 
+  test("names the compactions: an agent that compacted lost the turns it had read, and the line says so", () => {
+    const dir = join(scratch, "progress-compacted");
+    mkdirSync(dir);
+    const compaction = JSON.stringify({ type: "compaction", id: "c1", summary: "earlier turns" });
+    writeFileSync(
+      join(dir, "s.jsonl"),
+      [msg([{ type: "toolCall", name: "read" }]), compaction, msg([{ type: "toolCall", name: "bash" }]), compaction].join("\n") + "\n",
+    );
+    expect(sessionProgress(dir)).toMatch(/^2 assistant messages, 2 tool calls \(last: bash\), compacted 2 times, session \d+ KB$/);
+  });
+
+  test("a message that only mentions the word compaction is still a message, and is no compaction", () => {
+    const dir = join(scratch, "progress-word");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "s.jsonl"), msg([{ type: "text", text: 'the "compaction" event drops turns' }]) + "\n");
+    expect(sessionProgress(dir)).toMatch(/^1 assistant messages, 0 tool calls, session \d+ KB$/);
+  });
+
   test("says so when there is no session file yet", () => {
     expect(sessionProgress(join(scratch, "nowhere"))).toBe("no session file yet");
     const dir = join(scratch, "empty-progress");
