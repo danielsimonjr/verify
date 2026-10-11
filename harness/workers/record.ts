@@ -39,6 +39,8 @@ export type WorkerError =
   | "length"
   /** The last turn held thinking and no text: the model spent its output on thought. */
   | "thinking-only"
+  /** The model was offered tools and made no call: whatever it answered, it read nothing. */
+  | "no-tool-calls"
   /** The deliverable parsed but does not fit the `--schema` file. */
   | "schema"
   /** The agent compacted its context: the answer rests on turns it no longer held. */

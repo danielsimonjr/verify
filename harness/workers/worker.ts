@@ -335,6 +335,10 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     const judge = (r: RunResult, stdout: string) => {
       const stats = claude ? claudeStreamStats(stdout) : piStreamStats(stdout);
       let error = runError(r, claude, stats, overTurns);
+      // A pi session that was offered tools and made no call read nothing, so its answer is invented
+      // whether or not it fits the schema. The rule covers the pi lane, where a small model was seen to
+      // do this; the claude lane has not shown the failure, so it is not held to it.
+      if (error === null && !claude && stats.tools === 0 && offered.tools.trim() !== "") error = "no-tool-calls";
       let parsed: ReturnType<typeof parseJsonDeliverable> = null;
       let problems: string[] = [];
       if (error === null && isJson) {

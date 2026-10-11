@@ -4,6 +4,21 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.8] - 2026-10-11
+
+### Fixed
+- A pi worker that made no tool call no longer completes. A small local model was seen to answer at
+  once, or after one nudge, with a report that fits the schema and holds invented values: 4 of 9
+  rollouts in one run had 0 tool calls and a peak context of about 1.2 k to 2.2 k tokens, and the
+  harness reported all four as complete. The schema in the charter and the schema nudge of 0.12.7
+  made such an answer pass the check. The rollout now ends with the new error `no-tool-calls`; the
+  text is kept as `deliverables/<name>.partial.txt` and no deliverable is written.
+
+### Added
+- Error `no-tool-calls`: a pi session that was offered tools and ended with none. It is never nudged,
+  and `--retries` runs it again from a fresh session. A job with no tool offered, and a Claude Code
+  worker, are not held to the rule.
+
 ## [0.12.7] - 2026-10-11
 
 ### Fixed

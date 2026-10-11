@@ -63,7 +63,7 @@ function keepAttempt(job: WorkerJob, attempt: number): void {
   }
 }
 
-const RETRYABLE = new Set(["no-result", "no-json", "thinking-only", "length", "schema"]);
+const RETRYABLE = new Set(["no-result", "no-json", "thinking-only", "length", "schema", "no-tool-calls"]);
 
 interface Batch {
   name: string;

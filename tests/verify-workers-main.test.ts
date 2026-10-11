@@ -287,6 +287,13 @@ describe("veriharness workers", () => {
     expect(r.lines[0]).toMatchObject({ error: null, attempts: 3 });
   });
 
+  test("--retries runs a rollout again when the worker made no tool call", async () => {
+    const f = fake((j) => ok(j, (j.attempt ?? 1) < 2 ? "no-tool-calls" : null));
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--retries", "1"], f);
+    expect(f.calls).toHaveLength(2);
+    expect(r.lines[0]).toMatchObject({ error: null, attempts: 2 });
+  });
+
   test("each retry is told the seconds of the attempts before it, so the record can total them", async () => {
     const f = fake((j) => ok(j, (j.attempt ?? 1) < 3 ? "no-json" : null));
     const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--retries", "2"], f);

@@ -335,10 +335,15 @@ describe("runWorker", () => {
   });
 
   test("a nudge that ends without an answer leaves the error of the nudge and the text it did write", async () => {
-    const f = sequence({ stdout: THOUGHT }, { stdout: turns([[{ type: "text", text: "Still no JSON." }], "stop"]) });
+    // The first session read a file, so the end it came to is the answer's, not the lack of work.
+    const call =
+      turns([[{ type: "toolCall", id: "c1", name: "read", arguments: { path: "spec/task.md" } }], "toolUse"]) +
+      JSON.stringify({ type: "tool_execution_end", toolCallId: "c1", toolName: "read", result: { content: [] }, isError: false }) +
+      "\n";
+    const f = sequence({ stdout: call + THOUGHT }, { stdout: turns([[{ type: "text", text: "Still no JSON." }], "stop"]) });
     const rec = await runWorker(job({ nudgeTimeoutSec: 90 }), { run: f.run });
     expect(f.calls).toHaveLength(2);
-    expect(rec).toMatchObject({ error: "no-json", nudged: true });
+    expect(rec).toMatchObject({ error: "no-json", nudged: true, tools: 1 });
   });
 
   test("no nudge for a stop, a turn cap, a usage limit, a start failure, or when the nudge is off", async () => {
@@ -367,9 +372,18 @@ describe("runWorker", () => {
     properties: { rows: { type: "array", items: { type: "object", required: ["line", "verdict"] } } },
   };
   const answer = (text: string) => turns([[{ type: "text", text }], "stop"]);
+  /** An answer after one tool call: a worker that read something. */
+  const worked = (text: string) => {
+    const [call, final] = [
+      turns([[{ type: "toolCall", id: "c1", name: "read", arguments: { path: "spec/task.md" } }], "toolUse"]),
+      turns([[{ type: "text", text }], "stop"]),
+    ];
+    const ran = JSON.stringify({ type: "tool_execution_end", toolCallId: "c1", toolName: "read", result: { content: [{ type: "text", text: "ok" }] }, isError: false }) + "\n";
+    return call + ran + final;
+  };
 
   test("an answer that fails the schema is sent back once, in the same session, with the errors", async () => {
-    const f = sequence({ stdout: answer('{"rows": [{"line": 7}]}') }, { stdout: answer('{"rows": [{"line": 7, "verdict": "LOGGED"}]}') });
+    const f = sequence({ stdout: worked('{"rows": [{"line": 7}]}') }, { stdout: answer('{"rows": [{"line": 7, "verdict": "LOGGED"}]}') });
     const rec = await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
     expect(f.calls).toHaveLength(2);
     expect(f.calls[1]!.args).toContain("-c");
@@ -380,7 +394,7 @@ describe("runWorker", () => {
   });
 
   test("an answer that still fails the schema after the nudge is schema, with the errors of the last answer", async () => {
-    const f = sequence({ stdout: answer('{"rows": [{"line": 7}]}') }, { stdout: answer('{"rows": [{"verdict": "LOGGED"}]}') });
+    const f = sequence({ stdout: worked('{"rows": [{"line": 7}]}') }, { stdout: answer('{"rows": [{"verdict": "LOGGED"}]}') });
     const rec = await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
     expect(f.calls).toHaveLength(2);
     expect(rec).toMatchObject({ error: "schema", nudged: true });
@@ -390,7 +404,7 @@ describe("runWorker", () => {
   });
 
   test("a schema error is not sent back when the nudge is off, or for a claude worker, which has no session", async () => {
-    const off = sequence({ stdout: answer('{"rows": [{"line": 7}]}') });
+    const off = sequence({ stdout: worked('{"rows": [{"line": 7}]}') });
     expect((await runWorker(job({ schema: LINE_SCHEMA }), { run: off.run })).error).toBe("schema");
     expect(off.calls).toHaveLength(1);
     const claude = sequence({ stdout: CLAUDE_STREAM });
@@ -399,9 +413,38 @@ describe("runWorker", () => {
     expect(claude.calls).toHaveLength(1);
   });
 
+  test("a pi session that made no tool call is no-tool-calls, whatever it answered: nothing is nudged and no report is written", async () => {
+    const text = '{"rows": [{"line": 7, "verdict": "LOGGED"}]}';
+    const f = sequence({ stdout: answer(text) });
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(rec).toMatchObject({ error: "no-tool-calls", tools: 0, nudged: false });
+    expect(f.calls).toHaveLength(1);
+    expect(existsSync(rollout("deliverables", "report.json"))).toBe(false);
+    expect(readFileSync(rollout("deliverables", "report.json.partial.txt"), "utf8")).toBe(text);
+  });
+
+  test("no-tool-calls also covers a text that is not JSON, and an answer that fails the schema", async () => {
+    for (const text of ["I will read the files now.", '{"name": "read", "parameters": {"path": "spec/task.md"}}']) {
+      const rec = await runWorker(job({ schema: LINE_SCHEMA }), { run: fakeRun(answer(text)).run });
+      expect(rec.error).toBe("no-tool-calls");
+    }
+  });
+
+  test("a job that offers no tool is not held to a tool call", async () => {
+    const rec = await runWorker(job({ tools: "" }), { run: fakeRun(answer('{"rows": []}')).run });
+    expect(rec.error).toBeNull();
+  });
+
+  test("a timeout with no tool call stays a timeout, and the claude worker is not held to the rule", async () => {
+    const t = await runWorker(job(), { run: fakeRun(answer("hmm"), { status: null, timedOut: true }).run });
+    expect(t.error).toBe("timeout");
+    const j = job({ model: { provider: "claude-code", model: "claude-haiku-5-5" }, piProvider: undefined });
+    expect((await runWorker(j, { run: fakeRun(CLAUDE_STREAM).run })).error).toBeNull();
+  });
+
   test("the nudge for a schema error lists at most eight errors and says how many more", async () => {
     const rows = Array.from({ length: 12 }, (_, i) => ({ line: i }));
-    const f = sequence({ stdout: answer(JSON.stringify({ rows })) }, { stdout: answer(JSON.stringify({ rows: rows.map((r) => ({ ...r, verdict: "LOGGED" })) })) });
+    const f = sequence({ stdout: worked(JSON.stringify({ rows })) }, { stdout: answer(JSON.stringify({ rows: rows.map((r) => ({ ...r, verdict: "LOGGED" })) })) });
     await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
     const message = f.calls[1]!.args.at(-1)!;
     expect(message.split("\n").filter((l) => l.startsWith("- "))).toHaveLength(8);

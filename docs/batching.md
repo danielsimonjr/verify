@@ -193,6 +193,7 @@ model, leave the digest fields out.
 | `no-json` | A `.json` deliverable, and the final text holds no JSON. |
 | `length` | The last turn ended at the output-token limit, so its text is cut. |
 | `thinking-only` | The last turn held thinking and no text: the model spent its output on thought. |
+| `no-tool-calls` | A pi worker was offered tools and made no tool call. Its answer, whatever it says, rests on nothing it read. |
 | `schema` | The deliverable is JSON but does not fit the `--schema` file. |
 | `compacted` | The agent compacted its context. The deliverable is kept; see `--allow-compaction`. |
 
@@ -211,8 +212,8 @@ schema is never passed by a part that the check skipped.
 ## Retries
 
 `--retries N` runs a rollout again, up to N more times, when its error is `no-result`, `no-json`,
-`thinking-only`, `length` or `schema`: the model's output was wrong or empty, and a second try can
-differ. A `timeout`, a `usage-limit`, a `stopped` and a `max-turns` are never repeated. Each printed
+`thinking-only`, `length`, `schema` or `no-tool-calls`: the model's output was wrong or empty, and a
+second try can differ. A `timeout`, a `usage-limit`, a `stopped` and a `max-turns` are never repeated. Each printed
 line and each `worker.json` has `attempts`. A retry runs in the same rollout folder, so the harness first
 moves the stream and the record of the attempt before it to `trajectory/attempt-N/`. A rollout that
 took three tries shows all three. `seconds` is the time of the last attempt; `totalSeconds` is the time of
