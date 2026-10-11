@@ -104,6 +104,20 @@ describe("workerArgs", () => {
     expect(plain[plain.indexOf("--system-prompt") + 1]).toBe(WORKER_CHARTER);
   });
 
+  test("with --ids the charter names the array, the id field and the ids of the batch", () => {
+    const ids = { array: "rows", field: "line", expected: ["6857", "6858", "6867"] };
+    const { cmd } = workerArgs(job({ ids }), join(root, "home"));
+    const charter = cmd[cmd.indexOf("--system-prompt") + 1]!;
+    expect(charter.startsWith(WORKER_CHARTER)).toBe(true);
+    expect(charter).toContain("`rows`");
+    expect(charter).toContain("`line`");
+    expect(charter).toContain("6857, 6858, 6867");
+    const both = workerArgs(job({ ids, schema: { type: "object" } }), join(root, "home")).cmd;
+    const text = both[both.indexOf("--system-prompt") + 1]!;
+    expect(text.indexOf("JSON Schema")).toBeGreaterThan(-1);
+    expect(text.indexOf("6857, 6858, 6867")).toBeGreaterThan(text.indexOf("JSON Schema"));
+  });
+
   test("a nudge turn offers no tools; the first turn does", () => {
     const first = workerArgs(job({ nudgeTimeoutSec: 90 }), join(root, "home")).cmd;
     expect(first[first.indexOf("--tools") + 1]).toBe("read,grep,find,ls");
@@ -334,7 +348,7 @@ describe("runWorker", () => {
     expect(rec).toMatchObject({ error: null, nudged: true });
   });
 
-  test("a nudge that ends without an answer leaves the error of the nudge and the text it did write", async () => {
+  test("nudges that end without an answer leave the error of the last one and the text it did write", async () => {
     // The first session read a file, so the end it came to is the answer's, not the lack of work.
     const call =
       turns([[{ type: "toolCall", id: "c1", name: "read", arguments: { path: "spec/task.md" } }], "toolUse"]) +
@@ -342,8 +356,11 @@ describe("runWorker", () => {
       "\n";
     const f = sequence({ stdout: call + THOUGHT }, { stdout: turns([[{ type: "text", text: "Still no JSON." }], "stop"]) });
     const rec = await runWorker(job({ nudgeTimeoutSec: 90 }), { run: f.run });
-    expect(f.calls).toHaveLength(2);
-    expect(rec).toMatchObject({ error: "no-json", nudged: true, tools: 1 });
+    // Thought alone is sent back as a cut, and prose as a format error: two kinds, so two nudges. The
+    // third answer is the same prose, which is a kind that was sent, so the session ends.
+    expect(f.calls).toHaveLength(3);
+    expect(rec).toMatchObject({ error: "no-json", nudged: true, nudges: 2, tools: 1 });
+    expect(readFileSync(rollout("deliverables", "report.json.txt"), "utf8")).toBe("Still no JSON.");
   });
 
   test("no nudge for a stop, a turn cap, a usage limit, a start failure, or when the nudge is off", async () => {
@@ -496,6 +513,50 @@ describe("runWorker", () => {
       const rec = await runWorker(job({ ids: IDS }), { run: fakeRun(worked(text)).run });
       expect(rec.error).toBe("ids");
     }
+  });
+
+  test("a session is nudged once for each kind of failure: format, then schema, then ids", async () => {
+    const f = sequence(
+      { stdout: worked("I will report now.") },
+      { stdout: answer('{"rows": [{"line": 7}]}') },
+      { stdout: answer(report(0, 1, 2)) },
+      { stdout: answer(report(7, 8, 9)) },
+    );
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, ids: IDS, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(4);
+    const said = f.calls.slice(1).map((c) => c.args.at(-1)!);
+    expect(said[0]).toContain("did not hold the answer in the format");
+    expect(said[1]).toContain("missing property 'verdict'");
+    expect(said[2]).toContain("missing from rows: 7, 8, 9");
+    for (const call of f.calls.slice(1)) expect(call.args).toContain("-c");
+    expect(rec).toMatchObject({ error: null, nudged: true, nudges: 3, tools: 1 });
+    expect(existsSync(rollout("deliverables", "report.json.ids-errors.txt"))).toBe(false);
+  });
+
+  test("one kind of failure is sent back once: ids that are wrong twice end the session as ids", async () => {
+    const f = sequence({ stdout: worked(report(7, 8)) }, { stdout: answer(report(7, 7, 8)) }, { stdout: answer(report(7, 8, 9)) });
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, ids: IDS, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(2);
+    expect(rec).toMatchObject({ error: "ids", nudged: true, nudges: 1 });
+  });
+
+  test("a timeout nudge and a format nudge are two kinds: a session that needs both gets both", async () => {
+    const f = sequence(
+      { stdout: worked("Rows 1 to 4 are logged."), extra: { status: null, timedOut: true } },
+      { stdout: answer("Still working.") },
+      { stdout: answer(report(7, 8, 9)) },
+    );
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, ids: IDS, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(3);
+    expect(f.calls[1]!.args.at(-1)).toContain("Time is nearly up");
+    expect(f.calls[2]!.args.at(-1)).toContain("did not hold the answer in the format");
+    expect(rec).toMatchObject({ error: null, nudges: 2 });
+  });
+
+  test("the record counts the nudges: none for a session that needed none", async () => {
+    const rec = await runWorker(job({ nudgeTimeoutSec: 90 }), { run: fakeRun(PI_STREAM).run });
+    expect(rec).toMatchObject({ nudged: false, nudges: 0 });
+    expect(record().nudges).toBe(0);
   });
 
   const ROWS_SCHEMA = {

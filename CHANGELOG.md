@@ -4,6 +4,20 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.10] - 2026-10-11
+
+### Fixed
+- A `workers` session got one nudge in all. An answer that was put right by a nudge could fail the next
+  check with no second chance: in one run, 26 of 60 attempts ended as `ids` after their only nudge was
+  spent on a format or a schema error, and the ids nudge fixed 6 of the 7 sessions that got it. A session
+  is now sent back once for each kind of failure (time, cut, format, schema, ids), five at most.
+- With `--ids`, the worker charter lists the array, the id field and the ids of the batch. In that run
+  the wrong ids were the number of the record in the model's list (0 to 11) and the line numbers of
+  another file of the task, in 7 of 9 final reports.
+
+### Added
+- `worker.json` has `nudges`, the number of messages sent. `nudged` stays and is true when it is above 0.
+
 ## [0.12.9] - 2026-10-11
 
 ### Added

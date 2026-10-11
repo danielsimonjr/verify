@@ -67,8 +67,10 @@ export interface WorkerRecord {
   toolErrors: number;
   /** The failed tool calls by class, read from each call's own result text. They add up to `toolErrors`. */
   toolErrorKinds: ToolErrorKinds;
-  /** A nudge turn ran after the first session ended without an answer. */
+  /** A nudge turn ran after the first session ended without a good answer. */
   nudged: boolean;
+  /** Nudge turns that ran: one for each kind of failure the session had (time, cut, format, schema, ids). */
+  nudges: number;
   /** Runs of this rollout, the first one included: a retry replaces the stream, so the count says it happened. */
   attempts: number;
   form: DeliverableForm | null;

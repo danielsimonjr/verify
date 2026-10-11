@@ -154,15 +154,18 @@ function nudgeSchema(problems: readonly string[]): string {
   ].join("\n");
 }
 
+/** The ways an answer can fail that a nudge can put right. A session is sent back once for each. */
+type NudgeKind = "time" | "cut" | "format" | "schema" | "ids";
+
 /**
- * The nudge message for a session that ended with `error`, or null when a nudge cannot help.
- * `problems`: what the schema found in an answer that parsed.
+ * The nudge for a session that ended with `error`, or null when a nudge cannot help.
+ * `problems`: what the schema or the ids check found in an answer that parsed.
  */
-function nudgeFor(error: WorkerError, problems: readonly string[] = []): string | null {
-  if (error === "timeout") return NUDGE_TIME;
-  if (error === "length" || error === "thinking-only") return NUDGE_CUT;
-  if (error === "no-result" || error === "no-json") return NUDGE_FORMAT;
-  if ((error === "schema" || error === "ids") && problems.length > 0) return nudgeSchema(problems);
+function nudgeFor(error: WorkerError, problems: readonly string[] = []): { kind: NudgeKind; message: string } | null {
+  if (error === "timeout") return { kind: "time", message: NUDGE_TIME };
+  if (error === "length" || error === "thinking-only") return { kind: "cut", message: NUDGE_CUT };
+  if (error === "no-result" || error === "no-json") return { kind: "format", message: NUDGE_FORMAT };
+  if ((error === "schema" || error === "ids") && problems.length > 0) return { kind: error, message: nudgeSchema(problems) };
   return null;
 }
 
@@ -188,19 +191,25 @@ export const WORKER_CHARTER = [
 
 /**
  * The charter of one job. A job with a schema states it here: the charter is the one text that every
- * turn and every compaction keeps, so a model that has lost the task text still has the format.
+ * turn and every compaction keeps, so a model that has lost the task text still has the format. A job
+ * with `ids` states the ids of its batch the same way: a model that is not told them has used the
+ * number of the record in its list, or a line number from another file of the task.
  */
-export function workerCharter(schema?: unknown): string {
-  if (schema === undefined) return WORKER_CHARTER;
-  return [
-    WORKER_CHARTER,
-    "Your final message is one JSON value that fits this JSON Schema, and nothing else:",
-    "",
-    "```json",
-    JSON.stringify(schema, null, 2),
-    "```",
-    "",
-  ].join("\n");
+export function workerCharter(schema?: unknown, ids?: WorkerIds): string {
+  if (schema === undefined && ids === undefined) return WORKER_CHARTER;
+  const parts = [WORKER_CHARTER];
+  if (schema !== undefined) {
+    parts.push("Your final message is one JSON value that fits this JSON Schema, and nothing else:", "", "```json", JSON.stringify(schema, null, 2), "```", "");
+  }
+  if (ids !== undefined) {
+    parts.push(
+      `In your final message, \`${ids.array}\` has one record for each of these ids, and no other record. The \`${ids.field}\` of a record is its id. Use each id once:`,
+      "",
+      ids.expected.join(", "),
+      "",
+    );
+  }
+  return parts.join("\n");
 }
 
 /** The command, stdin and environment of one worker. `home` is the pi home of a local model. */
@@ -240,7 +249,7 @@ export function workerArgs(
     // pi's default prompt names the pi docs under the harness checkout; a model takes that path for the
     // task's own and prefixes every file it reads with it.
     "--system-prompt",
-    workerCharter(job.schema),
+    workerCharter(job.schema, job.ids),
     // A job with a nudge saves its session in the temp copy, so the nudge can continue it.
     ...(job.nudgeTimeoutSec === undefined ? ["--no-session"] : ["--session-dir", join(home, "session")]),
     "--mode",
@@ -405,21 +414,23 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     let r = await exec(undefined, job.timeoutSec);
     let stdout = r.stdout;
     let verdict = judge(r, stdout);
-    // A session that ends without an answer is asked once for it, in the same session: a timeout or a
-    // turn of thought alone otherwise throws away everything the worker found. Claude Code workers do not
-    // save a session, so only pi workers get the nudge.
-    let nudged = false;
-    const failing: WorkerError | null = verdict.error ?? (verdict.problems.length > 0 ? verdict.problemKind : null);
-    const message =
-      job.nudgeTimeoutSec !== undefined && !claude && !overTurns && !r.aborted && !r.error && failing !== null
-        ? nudgeFor(failing, verdict.problems)
-        : null;
-    if (message !== null) {
-      nudged = true;
-      r = await exec(message, job.nudgeTimeoutSec!);
+    // A session that ends without a good answer is sent back for it, in the same session: a timeout or a
+    // turn of thought alone otherwise throws away everything the worker found. It is sent back once for
+    // each kind of failure, not once in all: an answer that is put right can still fail the next check
+    // (a model that answered in prose, then in the wrong shape, then with the wrong ids). A kind is never
+    // sent twice, so the loop ends. Claude Code workers do not save a session, so only pi workers get it.
+    const nudgeSec = job.nudgeTimeoutSec;
+    const sentFor = new Set<NudgeKind>();
+    while (nudgeSec !== undefined && !claude && !overTurns && !r.aborted && !r.error) {
+      const failing: WorkerError | null = verdict.error ?? (verdict.problems.length > 0 ? verdict.problemKind : null);
+      const nudge = failing === null ? null : nudgeFor(failing, verdict.problems);
+      if (nudge === null || sentFor.has(nudge.kind)) break;
+      sentFor.add(nudge.kind);
+      r = await exec(nudge.message, nudgeSec);
       stdout += r.stdout;
       verdict = judge(r, stdout);
     }
+    const nudges = sentFor.size;
     const seconds = Math.round((Date.now() - started) / 1000);
     writeFileSync(streamPath, stdout, "utf8");
 
@@ -459,7 +470,8 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       compactions: stats.compactions,
       toolErrors: stats.toolErrors,
       toolErrorKinds: stats.toolErrorKinds,
-      nudged,
+      nudged: nudges > 0,
+      nudges,
       attempts: job.attempt ?? 1,
       form,
       error,

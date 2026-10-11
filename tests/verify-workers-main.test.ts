@@ -27,7 +27,7 @@ function batchRoot(names: string[], prompt = true): string {
 }
 
 function ok(job: WorkerJob, error: WorkerRecord["error"] = null): WorkerRecord {
-  return { rollout: job.rollout, exit: 0, seconds: 1, totalSeconds: (job.priorSeconds ?? 0) + 1, turns: 1, tools: 0, peakContext: 1, outputTokens: 1, compactions: 0, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0 }, nudged: false, attempts: job.attempt ?? 1, form: error ? null : "pure", error, model: { provider: job.model.provider, name: job.model.model } };
+  return { rollout: job.rollout, exit: 0, seconds: 1, totalSeconds: (job.priorSeconds ?? 0) + 1, turns: 1, tools: 0, peakContext: 1, outputTokens: 1, compactions: 0, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0 }, nudged: false, nudges: 0, attempts: job.attempt ?? 1, form: error ? null : "pure", error, model: { provider: job.model.provider, name: job.model.model } };
 }
 
 /** A runWorker fake: records each call, the largest number in flight, and the order of starts and ends. */

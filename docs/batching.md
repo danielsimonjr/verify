@@ -218,10 +218,13 @@ can cover other rows than the batch's, or only some of them. `--ids ARRAY.FIELD`
 the deliverable and the field of each record that holds its id. `--ids rows.line` checks that every
 record of `rows` has a `line`, and that the `line` values are the item ids of the batch, each once. The
 ids come from `manifest.json` of the batch root, so the option needs a root that `batch` made. A number
-and a string with the same digits are the same id. The order of the records is not checked.
+and a string with the same digits are the same id. The order of the records is not checked. The
+worker charter lists the array, the id field and the ids of the batch, so the model has them in
+every turn, and after a compaction.
 
 The check runs after the schema check, and only when the schema passes. A deliverable that fails it ends
-as `ids`, and a pi worker is sent the error once, in the same session, as for a schema error. The
+as `ids`, and a pi worker is sent the error once, in the same session, as for a schema error (see
+Nudge). The
 message lists the ids that are missing, the ids that are not in the batch and the ids that are
 repeated, up to twelve of each.
 
@@ -239,14 +242,22 @@ all of them.
 
 Three things end a pi session with no answer: the time limit, a last turn of thought alone, and a
 last turn cut at the output limit. A fourth is a final message without the JSON. A fifth is an answer
-that parses and does not fit the `--schema` file. Each one used to throw away what the worker had
-found. `workers` now continues the same session once with a short message: stop investigating, do not
-think further, write the answer now. The message depends on the cause; for a schema error it lists
-the errors (the first eight). A nudge turn offers no tools (`--no-tools`): a chat template such as
-llama3.1's tells a model that holds tools to answer with a function call, so a nudge that left the
-tools on was answered with more tool calls. The nudge has its own budget: `--nudge-timeout S` (default 300; 0 turns it off). The record
-has `nudged: true`, and `agent.jsonl` holds both sessions. A nudge needs a saved session, so a
-Claude Code worker has none, and `--nudge-timeout` with `--provider claude-code` is an input error.
+that parses and does not fit the `--schema` file, and a sixth is an answer that fits it and has the
+wrong `--ids`. Each one used to throw away what the worker had found. `workers` now continues the same
+session with a short message: stop investigating, do not think further, write the answer now. The
+message depends on the cause; for a schema or an ids error it lists the errors (the first eight).
+
+A session is sent back once for each kind of failure: `time`, `cut`, `format`, `schema` and `ids`. An
+answer that is put right can fail the next check. A model that answered in prose, then in the wrong
+shape, then with the wrong ids needs three messages, and one message for all three kinds leaves the
+last check with no chance. A kind is never sent twice, so a session gets five messages at most.
+
+A nudge turn offers no tools (`--no-tools`): a chat template such as llama3.1's tells a model that
+holds tools to answer with a function call, so a nudge that left the tools on was answered with more
+tool calls. Each nudge has its own budget: `--nudge-timeout S` (default 300; 0 turns it off). The
+record has `nudged: true` and `nudges`, the number of messages sent, and `agent.jsonl` holds every
+session. A nudge needs a saved session, so a Claude Code worker has none, and `--nudge-timeout` with
+`--provider claude-code` is an input error.
 
 ## Turn cap
 
