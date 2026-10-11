@@ -221,10 +221,13 @@ all of them.
 ## Nudge
 
 Three things end a pi session with no answer: the time limit, a last turn of thought alone, and a
-last turn cut at the output limit. A fourth is a final message without the JSON. Each one used to
-throw away what the worker had found. `workers` now continues the same session once with a short
-message: stop investigating, do not think further, write the answer now. The message depends on the
-cause. The nudge has its own budget: `--nudge-timeout S` (default 300; 0 turns it off). The record
+last turn cut at the output limit. A fourth is a final message without the JSON. A fifth is an answer
+that parses and does not fit the `--schema` file. Each one used to throw away what the worker had
+found. `workers` now continues the same session once with a short message: stop investigating, do not
+think further, write the answer now. The message depends on the cause; for a schema error it lists
+the errors (the first eight). A nudge turn offers no tools (`--no-tools`): a chat template such as
+llama3.1's tells a model that holds tools to answer with a function call, so a nudge that left the
+tools on was answered with more tool calls. The nudge has its own budget: `--nudge-timeout S` (default 300; 0 turns it off). The record
 has `nudged: true`, and `agent.jsonl` holds both sessions. A nudge needs a saved session, so a
 Claude Code worker has none, and `--nudge-timeout` with `--provider claude-code` is an input error.
 

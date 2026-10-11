@@ -166,6 +166,14 @@ pi receives a generated `models.json` under the task's `.pi/` directory (`PI_COD
 
 Sampling options you set are copied into that model's `samplingParams`, which is how temperature reaches the agent loop.
 
+### The tool list and the chat template
+
+The Ollama template of llama3.1 prints the tool list with the last user message only. After the first
+tool round the model sees no tool list. A user message at the end of the chat (a nudge) makes the
+template tell the model to answer with a function call. For that reason the harness sends a nudge turn
+with `--no-tools`. Another model may have a template with the same limit. Read it with
+`ollama show --template <tag>` before you trust a long tool session on that model.
+
 ### The `find` and `grep` tools
 
 pi's `find` tool runs `fd`, and `grep` runs `rg`. pi downloads each binary the first time a tool needs

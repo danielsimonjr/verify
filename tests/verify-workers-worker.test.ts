@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { RunOptions, RunResult } from "../harness/grade/proc.ts";
 import { claudeStreamStats } from "../harness/workers/record.ts";
 import type { PiTools } from "../harness/model/pitools.ts";
-import { runWorker as runWorkerReal, workerArgs, type WorkerDeps, type WorkerJob } from "../harness/workers/worker.ts";
+import { runWorker as runWorkerReal, workerArgs, WORKER_CHARTER, type WorkerDeps, type WorkerJob } from "../harness/workers/worker.ts";
 
 /** No binaries to provide: a test must not start pi's downloader. */
 const noTools: PiTools = { provide: async (tools) => ({ tools, dropped: [] }), seed: () => {} };
@@ -92,6 +92,26 @@ describe("workerArgs", () => {
     expect(charter).toContain("relative");
     expect(charter).not.toContain("pi documentation");
     expect(cmd.indexOf("--system-prompt")).toBeLessThan(cmd.indexOf("--tools"));
+  });
+
+  test("the charter carries the schema of the deliverable, so the format is in every turn and survives a compaction", () => {
+    const schema = { type: "object", required: ["rows"], properties: { rows: { type: "array", items: { required: ["line", "verdict"] } } } };
+    const { cmd } = workerArgs(job({ schema }), join(root, "home"));
+    const charter = cmd[cmd.indexOf("--system-prompt") + 1]!;
+    expect(charter.startsWith(WORKER_CHARTER)).toBe(true);
+    for (const word of ["JSON Schema", '"required"', '"verdict"', '"line"']) expect(charter).toContain(word);
+    const plain = workerArgs(job(), join(root, "home")).cmd;
+    expect(plain[plain.indexOf("--system-prompt") + 1]).toBe(WORKER_CHARTER);
+  });
+
+  test("a nudge turn offers no tools; the first turn does", () => {
+    const first = workerArgs(job({ nudgeTimeoutSec: 90 }), join(root, "home")).cmd;
+    expect(first[first.indexOf("--tools") + 1]).toBe("read,grep,find,ls");
+    expect(first).not.toContain("--no-tools");
+    const nudge = workerArgs(job({ nudgeTimeoutSec: 90 }), join(root, "home"), "Write the answer.").cmd;
+    expect(nudge).toContain("--no-tools");
+    expect(nudge).not.toContain("--tools");
+    expect(nudge).toContain("-c");
   });
 
   test("claude args", () => {
@@ -339,6 +359,53 @@ describe("runWorker", () => {
     const claude = sequence({ stdout: "" });
     await runWorker(job({ model: { provider: "claude-code", model: "claude-haiku-5-5" }, piProvider: undefined, nudgeTimeoutSec: 90 }), { run: claude.run });
     expect(claude.calls).toHaveLength(1);
+  });
+
+  const LINE_SCHEMA = {
+    type: "object",
+    required: ["rows"],
+    properties: { rows: { type: "array", items: { type: "object", required: ["line", "verdict"] } } },
+  };
+  const answer = (text: string) => turns([[{ type: "text", text }], "stop"]);
+
+  test("an answer that fails the schema is sent back once, in the same session, with the errors", async () => {
+    const f = sequence({ stdout: answer('{"rows": [{"line": 7}]}') }, { stdout: answer('{"rows": [{"line": 7, "verdict": "LOGGED"}]}') });
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls[1]!.args).toContain("-c");
+    expect(f.calls[1]!.args).toContain("--no-tools");
+    expect(f.calls[1]!.args.at(-1)).toContain("$.rows[0]: missing property 'verdict'");
+    expect(rec).toMatchObject({ error: null, nudged: true, form: "pure" });
+    expect(existsSync(rollout("deliverables", "report.json.schema-errors.txt"))).toBe(false);
+  });
+
+  test("an answer that still fails the schema after the nudge is schema, with the errors of the last answer", async () => {
+    const f = sequence({ stdout: answer('{"rows": [{"line": 7}]}') }, { stdout: answer('{"rows": [{"verdict": "LOGGED"}]}') });
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(2);
+    expect(rec).toMatchObject({ error: "schema", nudged: true });
+    const errors = readFileSync(rollout("deliverables", "report.json.schema-errors.txt"), "utf8");
+    expect(errors).toContain("$.rows[0]: missing property 'line'");
+    expect(errors).not.toContain("missing property 'verdict'");
+  });
+
+  test("a schema error is not sent back when the nudge is off, or for a claude worker, which has no session", async () => {
+    const off = sequence({ stdout: answer('{"rows": [{"line": 7}]}') });
+    expect((await runWorker(job({ schema: LINE_SCHEMA }), { run: off.run })).error).toBe("schema");
+    expect(off.calls).toHaveLength(1);
+    const claude = sequence({ stdout: CLAUDE_STREAM });
+    const j = job({ model: { provider: "claude-code", model: "claude-haiku-5-5" }, piProvider: undefined, schema: { type: "object", required: ["nope"] }, nudgeTimeoutSec: 90 });
+    expect((await runWorker(j, { run: claude.run })).error).toBe("schema");
+    expect(claude.calls).toHaveLength(1);
+  });
+
+  test("the nudge for a schema error lists at most eight errors and says how many more", async () => {
+    const rows = Array.from({ length: 12 }, (_, i) => ({ line: i }));
+    const f = sequence({ stdout: answer(JSON.stringify({ rows })) }, { stdout: answer(JSON.stringify({ rows: rows.map((r) => ({ ...r, verdict: "LOGGED" })) })) });
+    await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
+    const message = f.calls[1]!.args.at(-1)!;
+    expect(message.split("\n").filter((l) => l.startsWith("- "))).toHaveLength(8);
+    expect(message).toContain("and 4 more");
   });
 
   const ROWS_SCHEMA = {

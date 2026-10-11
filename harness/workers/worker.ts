@@ -96,11 +96,30 @@ const NUDGE_TIME = "Time is nearly up. Stop investigating and do not read any mo
 const NUDGE_CUT = "Your last message ended without an answer: it was cut off or held only thinking. Do not think further. Write your final answer now, in the format the task asked for, as the text of your next message.";
 const NUDGE_FORMAT = "Your last message did not hold the answer in the format the task asked for. Write your final answer now, in that format, as the text of your next message.";
 
-/** The nudge message for a session that ended with `error`, or null when a nudge cannot help. */
-function nudgeFor(error: WorkerError): string | null {
+/** Most errors a schema nudge lists: a model that was given more would lose the first ones. */
+const NUDGE_SCHEMA_LISTED = 8;
+
+/** The message that sends an answer back with the errors the schema found in it. */
+function nudgeSchema(problems: readonly string[]): string {
+  const shown = problems.slice(0, NUDGE_SCHEMA_LISTED).map((p) => `- ${p.slice(0, 200)}`);
+  const more = problems.length - shown.length;
+  return [
+    "Your answer does not fit the format the task asked for:",
+    ...shown,
+    ...(more > 0 ? [`(and ${more} more)`] : []),
+    "Write the corrected answer now, as the text of your next message, and nothing else.",
+  ].join("\n");
+}
+
+/**
+ * The nudge message for a session that ended with `error`, or null when a nudge cannot help.
+ * `problems`: what the schema found in an answer that parsed.
+ */
+function nudgeFor(error: WorkerError, problems: readonly string[] = []): string | null {
   if (error === "timeout") return NUDGE_TIME;
   if (error === "length" || error === "thinking-only") return NUDGE_CUT;
   if (error === "no-result" || error === "no-json") return NUDGE_FORMAT;
+  if (error === "schema" && problems.length > 0) return nudgeSchema(problems);
   return null;
 }
 
@@ -123,6 +142,23 @@ export const WORKER_CHARTER = [
   "- When the task asks for a final answer in a given format, your final message is that answer and nothing else.",
   "",
 ].join("\n");
+
+/**
+ * The charter of one job. A job with a schema states it here: the charter is the one text that every
+ * turn and every compaction keeps, so a model that has lost the task text still has the format.
+ */
+export function workerCharter(schema?: unknown): string {
+  if (schema === undefined) return WORKER_CHARTER;
+  return [
+    WORKER_CHARTER,
+    "Your final message is one JSON value that fits this JSON Schema, and nothing else:",
+    "",
+    "```json",
+    JSON.stringify(schema, null, 2),
+    "```",
+    "",
+  ].join("\n");
+}
 
 /** The command, stdin and environment of one worker. `home` is the pi home of a local model. */
 export function workerArgs(
@@ -161,13 +197,14 @@ export function workerArgs(
     // pi's default prompt names the pi docs under the harness checkout; a model takes that path for the
     // task's own and prefixes every file it reads with it.
     "--system-prompt",
-    WORKER_CHARTER,
+    workerCharter(job.schema),
     // A job with a nudge saves its session in the temp copy, so the nudge can continue it.
     ...(job.nudgeTimeoutSec === undefined ? ["--no-session"] : ["--session-dir", join(home, "session")]),
     "--mode",
     "json",
-    "--tools",
-    job.tools,
+    // A nudge asks for the answer, and a model that is offered tools is told by some chat templates
+    // (llama3.1's) to answer with a function call. The first turn keeps the tools.
+    ...(nudge === undefined ? ["--tools", job.tools] : ["--no-tools"]),
     "--provider",
     job.piProvider?.id ?? job.model.provider,
     "--model",
@@ -299,11 +336,13 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       const stats = claude ? claudeStreamStats(stdout) : piStreamStats(stdout);
       let error = runError(r, claude, stats, overTurns);
       let parsed: ReturnType<typeof parseJsonDeliverable> = null;
+      let problems: string[] = [];
       if (error === null && isJson) {
         parsed = parseJsonDeliverable(stats.finalText);
         if (parsed === null) error = "no-json";
+        else if (job.schema !== undefined) problems = validateSchema(parsed.value, job.schema);
       }
-      return { stats, error, parsed };
+      return { stats, error, parsed, problems };
     };
 
     if (!claude) mkdirSync(join(home, "session"), { recursive: true });
@@ -315,7 +354,11 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     // turn of thought alone otherwise throws away everything the worker found. Claude Code workers do not
     // save a session, so only pi workers get the nudge.
     let nudged = false;
-    const message = job.nudgeTimeoutSec !== undefined && !claude && !overTurns && !r.aborted && !r.error ? nudgeFor(verdict.error) : null;
+    const failing: WorkerError | null = verdict.error ?? (verdict.problems.length > 0 ? "schema" : null);
+    const message =
+      job.nudgeTimeoutSec !== undefined && !claude && !overTurns && !r.aborted && !r.error && failing !== null
+        ? nudgeFor(failing, verdict.problems)
+        : null;
     if (message !== null) {
       nudged = true;
       r = await exec(message, job.nudgeTimeoutSec!);
@@ -325,7 +368,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     const seconds = Math.round((Date.now() - started) / 1000);
     writeFileSync(streamPath, stdout, "utf8");
 
-    const { stats, parsed } = verdict;
+    const { stats, parsed, problems } = verdict;
     let error = verdict.error;
     let form: DeliverableForm | null = null;
     const target = join(out, "deliverables", job.deliverable);
@@ -338,7 +381,6 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       if (parsed) {
         form = parsed.form;
         writeFileSync(target, JSON.stringify(parsed.value, null, 2) + "\n", "utf8");
-        const problems = job.schema === undefined ? [] : validateSchema(parsed.value, job.schema);
         if (problems.length > 0) {
           error = "schema";
           writeFileSync(`${target}.schema-errors.txt`, problems.join("\n") + "\n", "utf8");

@@ -181,10 +181,13 @@ veriharness workers DIR --provider P --model M [--base-url U] [--context-size N|
 2. It starts one session in that folder:
    - pi workers: the pi command of the driver (`piCommandFor`), with `-p`, `--no-context-files`,
      `--no-extensions`, `--no-prompt-templates`, `--no-skills`, `--no-session`, `--system-prompt`
-     (`WORKER_CHARTER` in `workers/worker.ts`), `--mode json` and `--tools LIST`. A local model gets its own
-     pi home with the `models.json` that `buildPiProvider` and `materializePiHome` write.
-     pi's default system prompt is not used: it names the pi docs under the harness checkout, and a
-     model takes that path for the task's own.
+     (`workerCharter` in `workers/worker.ts`: `WORKER_CHARTER`, and the `--schema` text when the job has
+     one), `--mode json` and `--tools LIST`. A nudge turn has `--no-tools` instead of `--tools`. A local
+     model gets its own pi home with the `models.json` that `buildPiProvider` and `materializePiHome`
+     write. pi's default system prompt is not used: it names the pi docs under the harness checkout, and
+     a model takes that path for the task's own. The schema is in the charter because the charter is
+     the one text that every turn and every compaction keeps: a worker that compacted its context
+     once wrote its report with other field names than the task named.
    - Before the first worker starts, the harness provides the binaries behind the pi tools `find`
      (`fd`) and `grep` (`rg`) once, in one process (`model/pitools.ts`), and copies them into each
      pi home. pi downloads a binary on first use, and its parallel tool calls race on that download.
@@ -226,8 +229,9 @@ tokens. `compactions` counts the context compactions of the agent: above 0, the 
 turns it no longer held. `error` is one of `timeout`, `no-result`, `no-json`, `start-failed`,
 `usage-limit`, `truncated`, `stopped`, `max-turns`, `length`, `thinking-only`, `schema`, `compacted` or null.
 `toolErrors` counts failed tool calls, and `toolErrorKinds` splits them into `invalid`, `missing` and `other` by
-the text of each result. `nudged` is true when a pi session that ended without an answer
-was continued once with a short message (`--nudge-timeout`, default 300 s; 0 turns it off). `length` is a last
+the text of each result. `nudged` is true when a pi session that ended without an answer, or with
+an answer that does not fit the schema, was continued once with a short message
+(`--nudge-timeout`, default 300 s; 0 turns it off). `length` is a last
 turn cut at the output limit; `thinking-only` is a last turn of thought with no text; `schema` is a
 deliverable that parses and does not fit the `--schema` file. A rollout with an error keeps the last
 text of the worker as `deliverables/<name>.partial.txt`. `droppedTools` is present only when the

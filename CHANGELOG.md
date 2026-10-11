@@ -4,6 +4,23 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.7] - 2026-10-11
+
+### Fixed
+- A nudge turn no longer offers tools. A nudge asks a worker for its answer. The llama3.1 chat
+  template, given tools with the last user message, tells the model to respond with a function call,
+  so a nudged 8b model made more tool calls, wrapped its answer in `{"name": ..., "parameters": ...}`
+  or ran out of the nudge time (3 of 3 nudged rollouts in one run). The first turn keeps the tools; a
+  nudge has `--no-tools`.
+- The charter of a worker that has a `--schema` file carries the schema. A model that compacted its
+  context wrote its report from its own summary, which had lost the field names (`line`, `verdict`),
+  and used others. The charter is the one text that every turn and every compaction keeps.
+
+### Added
+- An answer that parses and does not fit the schema is sent back once, in the same session, with the
+  errors the schema found (the first eight). Before, a schema error was only retried from a fresh
+  session, which lost what the worker had found.
+
 ## [0.12.6] - 2026-10-11
 
 ### Fixed
