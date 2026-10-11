@@ -43,6 +43,8 @@ export type WorkerError =
   | "no-tool-calls"
   /** The deliverable parsed but does not fit the `--schema` file. */
   | "schema"
+  /** The deliverable fits the schema, and its ids are not the ids of the batch (`--ids`). */
+  | "ids"
   /** The agent compacted its context: the answer rests on turns it no longer held. */
   | "compacted"
   | null;

@@ -82,6 +82,11 @@ export interface WorkerJob {
   /** A JSON Schema the deliverable must fit; a parsed value that does not fit ends as `schema`. */
   schema?: unknown;
   /**
+   * The ids the deliverable must cover: the records of its array `array` each have an id in `field`, and
+   * those ids are `expected`, each once. A deliverable that fits the schema and does not ends as `ids`.
+   */
+  ids?: WorkerIds;
+  /**
    * Seconds for one nudge turn. Set: a pi session that ends without an answer (a timeout, a turn of
    * thought alone, a cut, no JSON) is continued once with a short message that asks for the answer
    * now. The session is saved in the temp copy for that. Absent: no nudge, and `--no-session`.
@@ -89,6 +94,44 @@ export interface WorkerJob {
   nudgeTimeoutSec?: number;
   /** Accept a rollout whose agent compacted its context. Otherwise it ends as `compacted`. */
   allowCompaction?: boolean;
+}
+
+/** Where a deliverable holds the ids of its records, and the ids it must hold. */
+export interface WorkerIds {
+  array: string;
+  field: string;
+  expected: readonly string[];
+}
+
+/** Most ids one error line names: a longer list would bury the line, and the nudge. */
+const IDS_LISTED = 12;
+
+/** The errors of the ids of a deliverable against the ids of its batch; none when they are the same set. */
+function idProblems(value: unknown, ids: WorkerIds): string[] {
+  const list = value !== null && typeof value === "object" ? (value as Record<string, unknown>)[ids.array] : undefined;
+  if (!Array.isArray(list)) return [`$.${ids.array}: the deliverable has no array '${ids.array}'`];
+  const seen = new Map<string, number>();
+  let without = 0;
+  for (const record of list) {
+    const raw = record !== null && typeof record === "object" ? (record as Record<string, unknown>)[ids.field] : undefined;
+    if (typeof raw !== "string" && typeof raw !== "number") {
+      without++;
+      continue;
+    }
+    seen.set(String(raw), (seen.get(String(raw)) ?? 0) + 1);
+  }
+  const show = (xs: string[]): string => xs.slice(0, IDS_LISTED).join(", ") + (xs.length > IDS_LISTED ? ` (and ${xs.length - IDS_LISTED} more)` : "");
+  const expected = new Set(ids.expected);
+  const missing = ids.expected.filter((id) => !seen.has(id));
+  const extra = [...seen.keys()].filter((id) => !expected.has(id));
+  const repeated = [...seen].filter(([, n]) => n > 1).map(([id]) => id);
+  const out: string[] = [];
+  if (without > 0) out.push(`${without} record(s) of '${ids.array}' have no '${ids.field}' that is a string or a number`);
+  if (missing.length > 0) out.push(`ids missing from ${ids.array}: ${show(missing)}`);
+  if (extra.length > 0) out.push(`ids not in the batch: ${show(extra)}`);
+  if (repeated.length > 0) out.push(`ids repeated: ${show(repeated)}`);
+  if (out.length > 0) out.push(`the batch has ${ids.expected.length} ids: ${show([...ids.expected])}`);
+  return out;
 }
 
 /** Why a session ended without an answer decides what the nudge says. */
@@ -99,7 +142,7 @@ const NUDGE_FORMAT = "Your last message did not hold the answer in the format th
 /** Most errors a schema nudge lists: a model that was given more would lose the first ones. */
 const NUDGE_SCHEMA_LISTED = 8;
 
-/** The message that sends an answer back with the errors the schema found in it. */
+/** The message that sends an answer back with the errors the schema or the ids check found in it. */
 function nudgeSchema(problems: readonly string[]): string {
   const shown = problems.slice(0, NUDGE_SCHEMA_LISTED).map((p) => `- ${p.slice(0, 200)}`);
   const more = problems.length - shown.length;
@@ -119,7 +162,7 @@ function nudgeFor(error: WorkerError, problems: readonly string[] = []): string 
   if (error === "timeout") return NUDGE_TIME;
   if (error === "length" || error === "thinking-only") return NUDGE_CUT;
   if (error === "no-result" || error === "no-json") return NUDGE_FORMAT;
-  if (error === "schema" && problems.length > 0) return nudgeSchema(problems);
+  if ((error === "schema" || error === "ids") && problems.length > 0) return nudgeSchema(problems);
   return null;
 }
 
@@ -341,12 +384,20 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       if (error === null && !claude && stats.tools === 0 && offered.tools.trim() !== "") error = "no-tool-calls";
       let parsed: ReturnType<typeof parseJsonDeliverable> = null;
       let problems: string[] = [];
+      let problemKind: "schema" | "ids" = "schema";
       if (error === null && isJson) {
         parsed = parseJsonDeliverable(stats.finalText);
         if (parsed === null) error = "no-json";
-        else if (job.schema !== undefined) problems = validateSchema(parsed.value, job.schema);
+        else {
+          if (job.schema !== undefined) problems = validateSchema(parsed.value, job.schema);
+          // The ids are checked when the shape is right: a record that has the wrong type has no id to read.
+          if (problems.length === 0 && job.ids !== undefined) {
+            problems = idProblems(parsed.value, job.ids);
+            problemKind = "ids";
+          }
+        }
       }
-      return { stats, error, parsed, problems };
+      return { stats, error, parsed, problems, problemKind };
     };
 
     if (!claude) mkdirSync(join(home, "session"), { recursive: true });
@@ -358,7 +409,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     // turn of thought alone otherwise throws away everything the worker found. Claude Code workers do not
     // save a session, so only pi workers get the nudge.
     let nudged = false;
-    const failing: WorkerError | null = verdict.error ?? (verdict.problems.length > 0 ? "schema" : null);
+    const failing: WorkerError | null = verdict.error ?? (verdict.problems.length > 0 ? verdict.problemKind : null);
     const message =
       job.nudgeTimeoutSec !== undefined && !claude && !overTurns && !r.aborted && !r.error && failing !== null
         ? nudgeFor(failing, verdict.problems)
@@ -372,7 +423,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     const seconds = Math.round((Date.now() - started) / 1000);
     writeFileSync(streamPath, stdout, "utf8");
 
-    const { stats, parsed, problems } = verdict;
+    const { stats, parsed, problems, problemKind } = verdict;
     let error = verdict.error;
     let form: DeliverableForm | null = null;
     const target = join(out, "deliverables", job.deliverable);
@@ -386,8 +437,8 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
         form = parsed.form;
         writeFileSync(target, JSON.stringify(parsed.value, null, 2) + "\n", "utf8");
         if (problems.length > 0) {
-          error = "schema";
-          writeFileSync(`${target}.schema-errors.txt`, problems.join("\n") + "\n", "utf8");
+          error = problemKind;
+          writeFileSync(`${target}.${problemKind}-errors.txt`, problems.join("\n") + "\n", "utf8");
         }
       } else {
         writeFileSync(target, stats.finalText, "utf8");

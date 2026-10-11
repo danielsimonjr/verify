@@ -195,11 +195,13 @@ model, leave the digest fields out.
 | `thinking-only` | The last turn held thinking and no text: the model spent its output on thought. |
 | `no-tool-calls` | A pi worker was offered tools and made no tool call. Its answer, whatever it says, rests on nothing it read. |
 | `schema` | The deliverable is JSON but does not fit the `--schema` file. |
+| `ids` | The deliverable fits the schema, and the ids of its records are not the ids of the batch (`--ids`). |
 | `compacted` | The agent compacted its context. The deliverable is kept; see `--allow-compaction`. |
 
 When a rollout ends with an error and its last turn had text, the harness keeps that text as
 `deliverables/<name>.partial.txt`. A timeout, a cut or a stop no longer loses what the worker wrote.
-For `schema`, the file `deliverables/<name>.schema-errors.txt` lists each error with its path.
+For `schema`, the file `deliverables/<name>.schema-errors.txt` lists each error with its path. For `ids`,
+`deliverables/<name>.ids-errors.txt` lists the ids that are missing, not in the batch or repeated.
 
 ## Deliverable schema
 
@@ -209,11 +211,25 @@ not yet a deliverable: it must have the shape the task asked for. The check know
 `minimum`, `maximum` and `anyOf`. A schema that holds any other keyword is an input error, so a
 schema is never passed by a part that the check skipped.
 
+## Deliverable ids
+
+A schema checks types. It does not know which rows the batch holds, so a report that fits the schema
+can cover other rows than the batch's, or only some of them. `--ids ARRAY.FIELD` names the array of
+the deliverable and the field of each record that holds its id. `--ids rows.line` checks that every
+record of `rows` has a `line`, and that the `line` values are the item ids of the batch, each once. The
+ids come from `manifest.json` of the batch root, so the option needs a root that `batch` made. A number
+and a string with the same digits are the same id. The order of the records is not checked.
+
+The check runs after the schema check, and only when the schema passes. A deliverable that fails it ends
+as `ids`, and a pi worker is sent the error once, in the same session, as for a schema error. The
+message lists the ids that are missing, the ids that are not in the batch and the ids that are
+repeated, up to twelve of each.
+
 ## Retries
 
 `--retries N` runs a rollout again, up to N more times, when its error is `no-result`, `no-json`,
-`thinking-only`, `length`, `schema` or `no-tool-calls`: the model's output was wrong or empty, and a
-second try can differ. A `timeout`, a `usage-limit`, a `stopped` and a `max-turns` are never repeated. Each printed
+`thinking-only`, `length`, `schema`, `ids` or `no-tool-calls`: the model's output was wrong or empty,
+and a second try can differ. A `timeout`, a `usage-limit`, a `stopped` and a `max-turns` are never repeated. Each printed
 line and each `worker.json` has `attempts`. A retry runs in the same rollout folder, so the harness first
 moves the stream and the record of the attempt before it to `trajectory/attempt-N/`. A rollout that
 took three tries shows all three. `seconds` is the time of the last attempt; `totalSeconds` is the time of

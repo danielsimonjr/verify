@@ -451,6 +451,53 @@ describe("runWorker", () => {
     expect(message).toContain("and 4 more");
   });
 
+  const IDS = { array: "rows", field: "line", expected: ["7", "8", "9"] };
+  const row = (line: unknown) => ({ line, verdict: "LOGGED" });
+  const report = (...lines: unknown[]) => JSON.stringify({ rows: lines.map(row) });
+
+  test("--ids: a report with the ids of the batch, as numbers or strings, in any order, completes", async () => {
+    const f = sequence({ stdout: worked(report(9, "7", 8)) });
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, ids: IDS, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(rec).toMatchObject({ error: null, nudged: false });
+    expect(f.calls).toHaveLength(1);
+  });
+
+  test("--ids: a report with the wrong ids is sent back once with the missing and the unexpected ids", async () => {
+    const f = sequence({ stdout: worked(report(0, 1, 2)) }, { stdout: answer(report(7, 8, 9)) });
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, ids: IDS, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(2);
+    const message = f.calls[1]!.args.at(-1)!;
+    expect(message).toContain("missing from rows: 7, 8, 9");
+    expect(message).toContain("not in the batch: 0, 1, 2");
+    expect(rec).toMatchObject({ error: null, nudged: true });
+  });
+
+  test("--ids: ids that are still wrong after the nudge end as ids, with the errors beside the report", async () => {
+    const f = sequence({ stdout: worked(report(7, 8)) }, { stdout: answer(report(7, 7, 8, 9, 9)) });
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, ids: IDS, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(rec).toMatchObject({ error: "ids", nudged: true });
+    const errors = readFileSync(rollout("deliverables", "report.json.ids-errors.txt"), "utf8");
+    expect(errors).toContain("repeated: 7, 9");
+    expect(errors).not.toContain("missing from rows");
+    // The value is kept, as for a schema error.
+    expect(JSON.parse(readFileSync(rollout("deliverables", "report.json"), "utf8")).rows).toHaveLength(5);
+  });
+
+  test("--ids: a count that differs is reported as ids, and the schema error comes first when the shape is wrong", async () => {
+    const few = await runWorker(job({ schema: LINE_SCHEMA, ids: IDS }), { run: fakeRun(worked(report(7))).run });
+    expect(few.error).toBe("ids");
+    expect(readFileSync(rollout("deliverables", "report.json.ids-errors.txt"), "utf8")).toContain("missing from rows: 8, 9");
+    const shape = await runWorker(job({ schema: LINE_SCHEMA, ids: IDS }), { run: fakeRun(worked('{"rows": [{"line": 7}]}')).run });
+    expect(shape.error).toBe("schema");
+  });
+
+  test("--ids: a report without the array, or with a row that has no id, is ids", async () => {
+    for (const text of ['{"items": []}', '{"rows": [{"verdict": "LOGGED"}, {"line": 8, "verdict": "LOGGED"}, {"line": 9, "verdict": "LOGGED"}, {"line": 7, "verdict": "LOGGED"}]}']) {
+      const rec = await runWorker(job({ ids: IDS }), { run: fakeRun(worked(text)).run });
+      expect(rec.error).toBe("ids");
+    }
+  });
+
   const ROWS_SCHEMA = {
     type: "object",
     required: ["rows"],

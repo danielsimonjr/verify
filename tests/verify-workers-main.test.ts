@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import type { WorkerRecord } from "../harness/workers/record.ts";
 import { main } from "../harness/workers/main.ts";
@@ -292,6 +292,43 @@ describe("veriharness workers", () => {
     const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--retries", "1"], f);
     expect(f.calls).toHaveLength(2);
     expect(r.lines[0]).toMatchObject({ error: null, attempts: 2 });
+  });
+
+  test("--retries runs a rollout again when its ids are not the ids of the batch", async () => {
+    const f = fake((j) => ok(j, (j.attempt ?? 1) < 2 ? "ids" : null));
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--retries", "1"], f);
+    expect(f.calls).toHaveLength(2);
+    expect(r.lines[0]).toMatchObject({ error: null, attempts: 2 });
+  });
+
+  const withManifest = (names: string[], items: Record<string, string[]>) => {
+    const dir = batchRoot(names);
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify({ batches: names.map((name) => ({ name, items: items[name], estTokens: 100 })) }));
+    return dir;
+  };
+
+  test("--ids hands each job the ids of its batch from manifest.json", async () => {
+    const f = fake();
+    const dir = withManifest(["b01", "b02"], { b01: ["7", "8"], b02: ["9"] });
+    const r = await workers([dir, ...OLLAMA, "--count", "1", "--ids", "rows.line"], f);
+    expect(r.code).toBe(0);
+    const byBatch = Object.fromEntries(f.calls.map((c) => [basename(c.batchDir), c.ids]));
+    expect(byBatch).toEqual({
+      b01: { array: "rows", field: "line", expected: ["7", "8"] },
+      b02: { array: "rows", field: "line", expected: ["9"] },
+    });
+  });
+
+  test("--ids is a usage error for a value that is not ARRAY.FIELD", async () => {
+    const bad = await workers([withManifest(["b01"], { b01: ["7"] }), ...OLLAMA, "--ids", "rows"], fake());
+    expect(bad.code).toBe(2);
+    expect(bad.stderr).toContain("is not ARRAY.FIELD");
+  });
+
+  test("--ids without a manifest.json that lists the batch is a usage error", async () => {
+    const none = await workers([batchRoot(["b01"]), ...OLLAMA, "--ids", "rows.line"], fake());
+    expect(none.code).toBe(2);
+    expect(none.stderr).toContain("manifest.json");
   });
 
   test("each retry is told the seconds of the attempts before it, so the record can total them", async () => {

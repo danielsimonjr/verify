@@ -4,6 +4,20 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.9] - 2026-10-11
+
+### Added
+- `--ids ARRAY.FIELD` for `workers`. A deliverable can fit the schema and still cover other rows than
+  the batch's: in one run 3 of the 4 rollouts that completed had 4, 5 and 11 records for 10 and 12
+  rows, with ids such as 0, 1, 2. The option names the array and the id field of each record. The ids
+  must be the item ids of the batch in `manifest.json`, each once. A report that fails ends as the new
+  error `ids`, is sent back once with the missing, unexpected and repeated ids, and is retried by
+  `--retries`. `deliverables/<name>.ids-errors.txt` lists the errors.
+
+### Documentation
+- `docs/local-models.md`: the chat template decides whether a local model calls a tool at all, with
+  the measurement and a Modelfile that prints the tool list in the system block.
+
 ## [0.12.8] - 2026-10-11
 
 ### Fixed

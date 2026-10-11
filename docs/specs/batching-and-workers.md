@@ -228,13 +228,15 @@ Each rollout gets `trajectory/worker.json`:
 tokens. `compactions` counts the context compactions of the agent: above 0, the worker answered from
 turns it no longer held. `error` is one of `timeout`, `no-result`, `no-json`, `start-failed`,
 `usage-limit`, `truncated`, `stopped`, `max-turns`, `length`, `thinking-only`, `no-tool-calls`, `schema`,
-`compacted` or null.
+`ids`, `compacted` or null.
 `toolErrors` counts failed tool calls, and `toolErrorKinds` splits them into `invalid`, `missing` and `other` by
 the text of each result. `nudged` is true when a pi session that ended without an answer, or with
 an answer that does not fit the schema, was continued once with a short message
 (`--nudge-timeout`, default 300 s; 0 turns it off). `length` is a last
 turn cut at the output limit; `thinking-only` is a last turn of thought with no text; `schema` is a
-deliverable that parses and does not fit the `--schema` file; `no-tool-calls` is a pi session that was
+deliverable that parses and does not fit the `--schema` file; `ids` is a deliverable that fits the schema
+and whose record ids (`--ids ARRAY.FIELD`) are not the ids of the batch in `manifest.json`;
+`no-tool-calls` is a pi session that was
 offered tools and ended with no tool call, whatever its last turn says (it is never nudged: an answer that
 was not read from the files is not made right by a second message). A rollout with an error keeps the last
 text of the worker as `deliverables/<name>.partial.txt`. `droppedTools` is present only when the

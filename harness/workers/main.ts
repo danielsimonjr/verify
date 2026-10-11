@@ -38,7 +38,7 @@ const USAGE =
   "usage: veriharness workers DIR --provider P --model M [--base-url U] [--context-size N|auto]\n" +
   "         [--count N] [--tools LIST] [--deliverable NAME] [--prompt FILE] [--only NAME]...\n" +
   "         [--timeout S] [--max-turns N] [--max-parallel N] [--env none] [--temperature T] [--thinking L] [--max-tokens N]\n" +
-  "         [--schema FILE] [--retries N] [--nudge-timeout S] [--allow-compaction]\n";
+  "         [--schema FILE] [--ids ARRAY.FIELD] [--retries N] [--nudge-timeout S] [--allow-compaction]\n";
 
 /** What a test replaces: the local server fetch and the worker runner. */
 export interface WorkersDeps extends BackendDeps {
@@ -63,7 +63,7 @@ function keepAttempt(job: WorkerJob, attempt: number): void {
   }
 }
 
-const RETRYABLE = new Set(["no-result", "no-json", "thinking-only", "length", "schema", "no-tool-calls"]);
+const RETRYABLE = new Set(["no-result", "no-json", "thinking-only", "length", "schema", "ids", "no-tool-calls"]);
 
 interface Batch {
   name: string;
@@ -108,6 +108,8 @@ function optionalNumber(name: string, raw: string | undefined): number | undefin
 interface Estimate {
   estTokens: number;
   items: number;
+  /** The item ids of the batch, in manifest order. */
+  ids: string[];
 }
 
 /**
@@ -128,7 +130,7 @@ function readEstimates(root: string): { byBatch: Map<string, Estimate>; itemToke
     if (typeof m.budget === "number") budget = m.budget;
     for (const b of m.batches ?? []) {
       if (typeof b.name === "string" && typeof b.estTokens === "number" && Array.isArray(b.items)) {
-        byBatch.set(b.name, { estTokens: b.estTokens, items: b.items.length });
+        byBatch.set(b.name, { estTokens: b.estTokens, items: b.items.length, ids: b.items.map(String) });
       }
     }
   } catch {
@@ -192,6 +194,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
         thinking: { type: "string" },
         "max-tokens": { type: "string" },
         schema: { type: "string" },
+        ids: { type: "string" },
         retries: { type: "string" },
         "nudge-timeout": { type: "string" },
         "allow-compaction": { type: "boolean", default: false },
@@ -272,6 +275,16 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
       }
     }
 
+    // The ids a deliverable must cover come from the manifest of the batch root, so a batch the manifest
+    // does not name has none to check against.
+    let idsSpec: { array: string; field: string } | undefined;
+    if (values.ids !== undefined) {
+      const m = /^([A-Za-z_][\w-]*)\.([A-Za-z_][\w-]*)$/.exec(values.ids);
+      if (!m) throw new UsageError(`--ids '${values.ids}' is not ARRAY.FIELD: the array of the deliverable, then the field of each record that holds its id`);
+      idsSpec = { array: m[1]!, field: m[2]! };
+    }
+    const batchEstimates = idsSpec ? readEstimates(dir).byBatch : undefined;
+
     // Resolve the model once before the first worker: for a local model this also proves the server.
     const workerModel: WorkerModel = {
       provider,
@@ -304,6 +317,12 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
     const width = Math.max(2, String(count).length);
     jobsByBatch = batches.map((batch) => {
       const jobs: WorkerJob[] = [];
+      let ids: WorkerJob["ids"];
+      if (idsSpec) {
+        const expected = batchEstimates?.get(batch.name)?.ids;
+        if (!expected) throw new UsageError(`--ids needs the items of batch ${batch.name} in ${join(dir, "manifest.json")}, and it has none`);
+        ids = { ...idsSpec, expected };
+      }
       for (let i = 1; i <= count; i++) {
         const rollout = `r${String(i).padStart(width, "0")}`;
         if (isComplete(batch.dir, rollout)) {
@@ -320,6 +339,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
           timeoutSec,
           ...(maxTurns !== undefined ? { maxTurns } : {}),
           ...(schema !== undefined ? { schema } : {}),
+          ...(ids !== undefined ? { ids } : {}),
           ...(nudgeTimeoutSec !== undefined ? { nudgeTimeoutSec } : {}),
           ...(values["allow-compaction"] ? { allowCompaction: true } : {}),
           piProvider,

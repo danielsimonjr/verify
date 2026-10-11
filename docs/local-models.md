@@ -174,6 +174,59 @@ template tell the model to answer with a function call. For that reason the harn
 with `--no-tools`. Another model may have a template with the same limit. Read it with
 `ollama show --template <tag>` before you trust a long tool session on that model.
 
+The template also decides whether a worker calls a tool at all. With the shipped template, 10 of the
+18 attempts of one `llama3.1:8b` run made no tool call: the model answered at once, with a report that
+it had not read anything to write. With a derived tag whose template prints the tool list in the system
+block, 0 of 12 attempts made none, and 38 of 99 rows were right against 20 of 99. The weights, the
+prompt and the batches were the same. The harness reports such a session as `no-tool-calls`.
+
+A derived tag keeps the weights and replaces the template. This is the template text:
+
+```
+{{- if or .System .Tools }}<|start_header_id|>system<|end_header_id|>
+{{- if .System }}
+
+{{ .System }}
+{{- end }}
+{{- if .Tools }}
+
+You have access to the following functions. To call a function, respond with a JSON object in the format {"name": function name, "parameters": dictionary of argument name and its value}. Do not use variables. When you receive a tool call response, use the output to format an answer to the original user question.
+
+{{ range .Tools }}
+{{- . }}
+{{ end }}
+{{- end }}<|eot_id|>
+{{- end }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 }}
+{{- if eq .Role "user" }}<|start_header_id|>user<|end_header_id|>
+
+{{ .Content }}<|eot_id|>{{ if $last }}<|start_header_id|>assistant<|end_header_id|>
+
+{{ end }}
+{{- else if eq .Role "assistant" }}<|start_header_id|>assistant<|end_header_id|>
+{{- if .ToolCalls }}
+{{ range .ToolCalls }}
+{"name": "{{ .Function.Name }}", "parameters": {{ .Function.Arguments }}}{{ end }}
+{{- else }}
+
+{{ .Content }}
+{{- end }}{{ if not $last }}<|eot_id|>{{ end }}
+{{- else if eq .Role "tool" }}<|start_header_id|>ipython<|end_header_id|>
+
+{{ .Content }}<|eot_id|>{{ if $last }}<|start_header_id|>assistant<|end_header_id|>
+
+{{ end }}
+{{- end }}
+{{- end }}
+```
+
+The assistant branch keeps the `{"name": ..., "parameters": ...}` form of a tool call, so Ollama
+parses the calls of the model as before. Make the tag with the `/api/create` fields `from` and
+`template`, or with the lines `FROM <base>` and `TEMPLATE """..."""` of a Modelfile and
+`ollama create <tag> -f Modelfile`; set `num_ctx` in it when the base tag does not carry the window.
+It is a change to the Ollama host, so the host owner decides it.
+
 ### The `find` and `grep` tools
 
 pi's `find` tool runs `fd`, and `grep` runs `rg`. pi downloads each binary the first time a tool needs
