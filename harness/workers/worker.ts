@@ -334,6 +334,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       attempts: job.attempt ?? 1,
       form,
       error,
+      model: { provider: job.model.provider, name: job.model.model },
       ...(job.model.identity ? { modelIdentity: job.model.identity } : {}),
     };
     writeFileSync(join(out, "trajectory", "worker.json"), JSON.stringify(record) + "\n", "utf8");

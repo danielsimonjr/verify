@@ -148,6 +148,14 @@ describe("veriharness batch", () => {
     expect(manifest(f.out).model).toEqual({ provider: "ollama", name: "m", digest: "809799ae09ab0000", quantization: "Q4_K_M" });
   });
 
+  test("the manifest names a model that has no digest by provider and name", async () => {
+    const f = files();
+    const argv = [...base(f), "--provider", "claude-code", "--model", "claude-haiku-5-5", "--context-size", "65536"];
+    const r = await batch(argv);
+    expect(r.code).toBe(0);
+    expect(manifest(f.out).model).toEqual({ provider: "claude-code", name: "claude-haiku-5-5" });
+  });
+
   test("no budget", async () => {
     const f = files();
     const r = await batch(base(f));

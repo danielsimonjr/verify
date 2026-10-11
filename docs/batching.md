@@ -172,11 +172,12 @@ result said: `invalid` (the tool refused the arguments, for example none), `miss
 task does not have) and `other`. `workers` writes a stderr line when at least half of at least five
 calls failed, and the line names the class that occurred most.
 
-A local model is named by tag, and a tag can be re-created under the same name with other weights.
-`batch` therefore writes `model` into the manifest, and `workers` writes `modelIdentity` into each
-`worker.json`: the `digest` that the server lists for the tag and, when it lists one, the `quantization`.
-Two runs with the same name and a different digest ran different weights. A server that lists no digest
-leaves both fields out.
+`batch` writes `model` (`provider` and `name`) into the manifest, and `workers` writes the same pair as
+`model` into each `worker.json`. A local model is named by tag, and a tag can be re-created under the
+same name with other weights. For that reason `batch` adds the `digest` that the server lists for the tag
+and, when it lists one, the `quantization`; `workers` writes them as `modelIdentity`. Two runs with the
+same name and a different digest ran different weights. A server that lists no digest, and a Claude Code
+model, leave the digest fields out.
 
 `error` is null when the rollout is complete. Otherwise it is one of these values:
 

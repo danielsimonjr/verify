@@ -69,6 +69,8 @@ export interface WorkerRecord {
   attempts: number;
   form: DeliverableForm | null;
   error: WorkerError;
+  /** The provider and model name that ran this worker. */
+  model: { provider: string; name: string };
   /** The digest and quantization of the local model that ran, when its server listed them. */
   modelIdentity?: ModelIdentity;
 }

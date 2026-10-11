@@ -111,6 +111,13 @@ describe("runWorker", () => {
     expect(rec).toMatchObject({ rollout: "r01", exit: 0, turns: 3, tools: 1, peakContext: 24766, outputTokens: 404, form: "pure", error: null });
   });
 
+  test("the record names the provider and model of every worker, with or without a digest", async () => {
+    const rec = await runWorker(job({ model: { provider: "claude-code", model: "claude-haiku-5-5" } }), { run: fakeRun(PI_STREAM).run });
+    expect(rec.model).toEqual({ provider: "claude-code", name: "claude-haiku-5-5" });
+    expect(record().model).toEqual({ provider: "claude-code", name: "claude-haiku-5-5" });
+    expect("modelIdentity" in rec).toBe(false);
+  });
+
   test("the record names the weights the worker ran, so a re-created tag shows", async () => {
     const identity = { digest: "809799ae09ab0000", quantization: "Q4_K_M" };
     const rec = await runWorker(job({ model: { provider: "ollama", model: "m", identity } }), { run: fakeRun(PI_STREAM).run });

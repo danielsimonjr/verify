@@ -327,15 +327,23 @@ describe("the context window of each role", () => {
     expect(driverLog()).toContain("context: checker=ollama:m window=65536 source=loaded digest=809799ae09ab0000 quantization=Q4_K_M");
     const result = JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8"));
     const named = { provider: "ollama", model: "m", digest: "809799ae09ab0000", quantization: "Q4_K_M" };
-    expect(result.models).toEqual({ checker: named, challenger: named });
+    const claude = { provider: "claude-code", model: SONNET };
+    expect(result.models).toEqual({ checker: named, challenger: named, reviewer: claude, fixer: claude });
   });
 
-  test("a server that lists no digest leaves the context line and result.json as they were", async () => {
+  test("a server that lists no digest names each role by provider and model, with no digest", async () => {
     rig.script([...happyRules(rig.ws).slice(0, 2), ...piHappyRules(rig.ws).slice(2)]);
     const deps = { piCommand: [process.execPath, STUB_PI], fetch: ollamaAt(65536) };
     expect(await rig.run([...ARGS, ...LOCAL], {}, deps)).toBe(0);
     expect(driverLog()).not.toContain("digest=");
-    expect(JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8")).models).toBeUndefined();
+    const local = { provider: "ollama", model: "m" };
+    const claude = { provider: "claude-code", model: SONNET };
+    expect(JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8")).models).toEqual({
+      checker: local,
+      challenger: local,
+      reviewer: claude,
+      fixer: claude,
+    });
   });
 
   test("an explicit auto beats VERIHARNESS_CONTEXT_SIZE, as on batch and workers", async () => {

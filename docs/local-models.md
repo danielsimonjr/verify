@@ -79,6 +79,8 @@ context: checker=ollama:llama3.2:1b-64k window=65536 source=loaded digest=809799
 
 `digest` and `quantization` come from `GET /api/tags`. The same two values are in the manifest of `batch` (`model`), in each `worker.json` (`modelIdentity`) and in `result.json` of the driver (`models`, by role). Compare the digest of two runs before you compare their scores.
 
+Each line of `driver.log` starts with the local time and its offset from UTC, for example `[2026-10-11 06:56:02-05:00]`.
+
 The harness sends no `num_ctx` in its own requests, so it does not cause a reload. Another client of the same server can. When a role asks for a number and the model is loaded with a different window, the driver writes a warning and continues:
 
 ```

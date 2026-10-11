@@ -215,9 +215,21 @@ export function hasSessionFile(dir: string): boolean {
 
 let logLock = false;
 
+/**
+ * The time of a log line as local wall-clock time and its UTC offset: `2026-10-11 06:56:02-05:00`.
+ * A bare UTC stamp reads as local time next to every other record on the machine, so the offset is part of it.
+ * `offsetMinutes` is minutes east of UTC; it defaults to the offset of the machine at `at`.
+ */
+export function logStamp(at: Date, offsetMinutes: number = -at.getTimezoneOffset()): string {
+  const local = new Date(at.getTime() + offsetMinutes * 60_000).toISOString().replace("T", " ").slice(0, 19);
+  const abs = Math.abs(offsetMinutes);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${local}${offsetMinutes < 0 ? "-" : "+"}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
+
 /** Append one timestamped line to the task's `driver.log`. */
 export function log(ws: string, msg: string): void {
-  const line = `[${new Date().toISOString().replace("T", " ").slice(0, 19)}] ${msg}`;
+  const line = `[${logStamp(new Date())}] ${msg}`;
   while (logLock) {
     /* spin */
   }
@@ -1452,8 +1464,8 @@ interface Cast {
   /** A fresh session for a fixer on another model than the reviewer's; null continues the reviewer's session. */
   fixer: (() => Agent) | null;
   kinds: Record<Role, RuntimeKind>;
-  /** The local models by role, with the digest and quantization each ran: result.json carries it. */
-  models: Partial<Record<Role, { provider: string; model: string } & ModelIdentity>>;
+  /** The model of each role, with the digest and quantization of a local one: result.json carries it. */
+  models: Partial<Record<Role, { provider: string; model: string } & Partial<ModelIdentity>>>;
 }
 
 /**
@@ -1845,10 +1857,13 @@ export async function main(argv: string[] = process.argv.slice(2), deps: DriverD
     return pi.inNative(new Native(ws, nativeImage));
   };
 
+  // Every role is named by provider and model; a local model adds the digest and quantization its server listed.
   const models: Cast["models"] = {};
   for (const role of ROLES) {
     const p = kinds[role] === "pi" ? piRoles.get(roleKey(roles[role])) : undefined;
-    if (p?.identity && p.provider && p.model) models[role] = { provider: p.provider, model: p.model, ...p.identity };
+    const provider = p?.provider ?? roles[role].provider;
+    const model = p?.model ?? roles[role].model;
+    if (provider && model) models[role] = { provider, model, ...(p?.identity ?? {}) };
   }
 
   const cast: Cast = {

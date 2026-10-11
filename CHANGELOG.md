@@ -4,6 +4,18 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.5] - 2026-10-11
+
+### Fixed
+- Each line of `driver.log` starts with the local time and its offset from UTC
+  (`[2026-10-11 06:56:02-05:00]`). The stamp was UTC with no mark, so a log read five hours ahead of
+  every other record on the machine and a time quoted from it was taken as local time.
+- A model that has no digest is named in the records as well. `batch` writes `model` (`provider`,
+  `name`) into the manifest whenever it sized the batch from a model; `workers` writes `model` into each
+  `worker.json`; the driver writes every role into `models` in `result.json`. Before, only a local model
+  with a digest was named, and a run with every role on Claude Code left no model in any of the three
+  files. The digest and quantization are added only when the server lists them.
+
 ## [0.12.4] - 2026-10-10
 
 ### Added
