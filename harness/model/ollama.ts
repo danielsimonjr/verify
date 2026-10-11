@@ -38,6 +38,7 @@ import {
   type ChatRequest,
   type ChatResponse,
   type ModelBackend,
+  type ModelIdentity,
   type ProbeResult,
   type StreamEvent,
   type TokenUsage,
@@ -61,6 +62,21 @@ export function ollamaModelPresent(names: string[], wanted: string): boolean {
   if (!wanted.includes(":") && has(`${wanted}:latest`)) return true;
   if (wanted.endsWith(":latest") && has(wanted.slice(0, -":latest".length))) return true;
   return false;
+}
+
+/** The digest and quantization of the `/api/tags` entry that `wanted` names; undefined when it lists no digest. */
+export function parseOllamaIdentity(tags: unknown, wanted: string): ModelIdentity | undefined {
+  const models = Array.isArray((tags as { models?: unknown } | null)?.models) ? ((tags as { models: unknown[] }).models) : [];
+  for (const item of models) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const name = rec.name ?? rec.model;
+    if (typeof name !== "string" || !ollamaModelPresent([name], wanted)) continue;
+    if (typeof rec.digest !== "string" || rec.digest === "") return undefined;
+    const level = (rec.details as { quantization_level?: unknown } | undefined)?.quantization_level;
+    return { digest: rec.digest, ...(typeof level === "string" && level !== "" ? { quantization: level } : {}) };
+  }
+  return undefined;
 }
 
 export function parseOllamaNumCtx(parameters: unknown): number | undefined {
@@ -341,11 +357,13 @@ export class OllamaBackend implements ModelBackend {
       tools = parseOllamaToolCapability(rec.capabilities);
     }
     const running = await this.runningContext();
+    const identity = parseOllamaIdentity(tags.json, this.model);
     const capabilities: Capabilities = {
       tools,
       json: true,
       contextSize: running ?? numCtx,
       contextSource: running !== undefined ? "loaded" : numCtx !== undefined ? "num_ctx" : undefined,
+      ...(identity ? { identity } : {}),
     };
     this.capabilities = capabilities;
     return { model: this.model, capabilities, models: names };

@@ -71,6 +71,14 @@ context: checker=ollama:qwen3.5:9b-64k window=65536 source=loaded
 
 The source is `loaded` (from `GET /api/ps`), `num_ctx` (from `ollama show`), `n_ctx` (llama.cpp), `table` (a Claude Code model, from the table in `harness/config.ts`) or `explicit` (a number you passed). `model-check` reports the same two values as `window` and `windowSource`.
 
+A tag can be re-created under the same name with other weights, so the line also names the build when the server lists it:
+
+```
+context: checker=ollama:llama3.2:1b-64k window=65536 source=loaded digest=809799ae09ab quantization=Q4_K_M
+```
+
+`digest` and `quantization` come from `GET /api/tags`. The same two values are in the manifest of `batch` (`model`), in each `worker.json` (`modelIdentity`) and in `result.json` of the driver (`models`, by role). Compare the digest of two runs before you compare their scores.
+
 The harness sends no `num_ctx` in its own requests, so it does not cause a reload. Another client of the same server can. When a role asks for a number and the model is loaded with a different window, the driver writes a warning and continues:
 
 ```

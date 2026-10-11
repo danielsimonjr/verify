@@ -30,6 +30,7 @@ import { copyTree, rmrf } from "../fsutil.js";
 import { run, type RunResult } from "../grade/proc.js";
 import type { ContextSize } from "../model/config.js";
 import { materializePiHome, type PiProviderRecord } from "../model/pi.js";
+import type { ModelIdentity } from "../model/types.js";
 import { validateSchema } from "./schema.js";
 import {
   claudeStreamStats,
@@ -51,6 +52,8 @@ export interface WorkerModel {
   temperature?: number;
   thinking?: string;
   maxTokens?: number;
+  /** The weights the name stood for when the run began; the worker's record carries it. */
+  identity?: ModelIdentity;
 }
 
 /** One rollout to run: the batch, the rollout name, the prompt, the model and the limits. */
@@ -331,6 +334,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       attempts: job.attempt ?? 1,
       form,
       error,
+      ...(job.model.identity ? { modelIdentity: job.model.identity } : {}),
     };
     writeFileSync(join(out, "trajectory", "worker.json"), JSON.stringify(record) + "\n", "utf8");
     return record;

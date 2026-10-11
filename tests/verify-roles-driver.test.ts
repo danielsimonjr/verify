@@ -286,11 +286,11 @@ describe("the role options on the command line", () => {
 
 describe("the context window of each role", () => {
   /** An Ollama server with model `m` loaded at `running` tokens. */
-  function ollamaAt(running: number) {
+  function ollamaAt(running: number, tag: Record<string, unknown> = { name: "m" }) {
     return async (input: string | URL): Promise<Response> => {
       const path = new URL(String(input)).pathname;
       const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
-      if (path === "/api/tags") return json({ models: [{ name: "m" }] });
+      if (path === "/api/tags") return json({ models: [tag] });
       if (path === "/api/show") return json({ capabilities: ["completion", "tools"], parameters: "num_ctx 32768" });
       if (path === "/api/ps") return json({ models: [{ name: "m", context_length: running }] });
       return new Response("not found", { status: 404 });
@@ -316,6 +316,26 @@ describe("the context window of each role", () => {
     expect(text).toContain("context: challenger=ollama:m window=65536 source=loaded");
     expect(text).toContain(`context: reviewer=claude-code:${SONNET} window=1000000 source=table`);
     expect(text).toContain(`context: fixer=claude-code:${SONNET} window=1000000 source=table`);
+  });
+
+  test("a local role is named by digest and quantization in driver.log and result.json, so a re-created tag shows", async () => {
+    rig.script([...happyRules(rig.ws).slice(0, 2), ...piHappyRules(rig.ws).slice(2)]);
+    const tag = { name: "m", digest: "809799ae09ab0000", details: { quantization_level: "Q4_K_M" } };
+    const deps = { piCommand: [process.execPath, STUB_PI], fetch: ollamaAt(65536, tag) };
+    const code = await rig.run([...ARGS, ...LOCAL], {}, deps);
+    expect(code).toBe(0);
+    expect(driverLog()).toContain("context: checker=ollama:m window=65536 source=loaded digest=809799ae09ab0000 quantization=Q4_K_M");
+    const result = JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8"));
+    const named = { provider: "ollama", model: "m", digest: "809799ae09ab0000", quantization: "Q4_K_M" };
+    expect(result.models).toEqual({ checker: named, challenger: named });
+  });
+
+  test("a server that lists no digest leaves the context line and result.json as they were", async () => {
+    rig.script([...happyRules(rig.ws).slice(0, 2), ...piHappyRules(rig.ws).slice(2)]);
+    const deps = { piCommand: [process.execPath, STUB_PI], fetch: ollamaAt(65536) };
+    expect(await rig.run([...ARGS, ...LOCAL], {}, deps)).toBe(0);
+    expect(driverLog()).not.toContain("digest=");
+    expect(JSON.parse(readFileSync(join(rig.ws, "result.json"), "utf8")).models).toBeUndefined();
   });
 
   test("an explicit auto beats VERIHARNESS_CONTEXT_SIZE, as on batch and workers", async () => {

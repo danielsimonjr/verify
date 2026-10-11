@@ -200,6 +200,8 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Backend
       budget,
       budgetSource: window ? "half-window" : "explicit",
       ...(window ? { window: window.window, windowSource: window.source } : {}),
+      // A tag can be re-created under the same name; the digest says which weights this manifest was sized for.
+      ...(window?.identity ? { model: { provider: values.provider, name: values.model, ...window.identity } } : {}),
       charsPerToken: options.charsPerToken,
       overheadTokens: options.overheadTokens,
       itemTokens: options.itemTokens,

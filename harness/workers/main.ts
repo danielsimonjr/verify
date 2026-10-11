@@ -28,6 +28,7 @@ import { DEFAULT_LANE_MAX, LANES, claudeCodeWindow } from "../config.js";
 import { canonicalLocalProvider, parseContextSize, resolveLocalConfig, type BackendDeps } from "../model/config.js";
 import { prepareLocalProvider } from "../model/prepare.js";
 import type { PiProviderRecord } from "../model/pi.js";
+import { describeIdentity } from "../model/types.js";
 import { isMain } from "../runtime.js";
 import type { WorkerRecord } from "./record.js";
 import { unsupportedKeywords } from "./schema.js";
@@ -288,7 +289,10 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
       for (const warning of prepared.warnings) process.stderr.write(`workers: ${warning}\n`);
       const caps = prepared.probe.capabilities;
       const source = config.contextSize !== undefined ? "explicit" : caps.contextSource;
-      process.stderr.write(`workers: ${provider}:${prepared.model} window=${config.contextSize ?? caps.contextSize} source=${source}\n`);
+      process.stderr.write(
+        `workers: ${provider}:${prepared.model} window=${config.contextSize ?? caps.contextSize} source=${source}${describeIdentity(caps.identity)}\n`,
+      );
+      if (caps.identity) workerModel.identity = caps.identity;
       piProvider = prepared.piProvider;
       workerModel.model = prepared.model;
     } else if (claude) {

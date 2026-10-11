@@ -600,6 +600,37 @@ describe("llama.cpp backend", () => {
   });
 });
 
+describe("ollama model identity", () => {
+  const probeOf = async (tagEntry: Record<string, unknown>, wanted = "qwen") => {
+    const mock = scripted((hit) => {
+      if (hit.url.endsWith("/api/tags")) return jsonResponse({ models: [tagEntry] });
+      if (hit.url.endsWith("/api/show")) return jsonResponse({ capabilities: ["tools"], parameters: "num_ctx 32768\n" });
+      return jsonResponse({}, 404);
+    });
+    const backend = createBackend(
+      resolveLocalConfig({ provider: "ollama", model: wanted, retries: 0, timeoutMs: 1000, env: {} }),
+      { fetch: mock.fetch, retryDelayMs: 0 },
+    );
+    return backend.probe();
+  };
+
+  test("the probe names the digest and the quantization of the tag it found", async () => {
+    const p = await probeOf({ name: "qwen:latest", digest: "809799ae09ab0000", details: { quantization_level: "Q4_K_M" } });
+    expect(p.capabilities.identity).toEqual({ digest: "809799ae09ab0000", quantization: "Q4_K_M" });
+  });
+
+  test("a tag that Ollama lists without a digest gives no identity, and the probe still works", async () => {
+    const p = await probeOf({ name: "qwen:latest" });
+    expect(p.capabilities.identity).toBeUndefined();
+    expect(p.capabilities.contextSize).toBe(32768);
+  });
+
+  test("a digest without a quantization is still an identity", async () => {
+    const p = await probeOf({ name: "qwen:latest", digest: "abc123" });
+    expect(p.capabilities.identity).toEqual({ digest: "abc123" });
+  });
+});
+
 describe("preflight and pi registry", () => {
   test("known tool support skips the generation probe", async () => {
     const mock = scripted((hit) => {

@@ -111,6 +111,15 @@ describe("runWorker", () => {
     expect(rec).toMatchObject({ rollout: "r01", exit: 0, turns: 3, tools: 1, peakContext: 24766, outputTokens: 404, form: "pure", error: null });
   });
 
+  test("the record names the weights the worker ran, so a re-created tag shows", async () => {
+    const identity = { digest: "809799ae09ab0000", quantization: "Q4_K_M" };
+    const rec = await runWorker(job({ model: { provider: "ollama", model: "m", identity } }), { run: fakeRun(PI_STREAM).run });
+    expect(rec.modelIdentity).toEqual(identity);
+    expect(record().modelIdentity).toEqual(identity);
+    const bare = await runWorker(job(), { run: fakeRun(PI_STREAM).run });
+    expect("modelIdentity" in bare).toBe(false);
+  });
+
   test("totalSeconds adds the seconds of the attempts before to this attempt's own", async () => {
     const retry = await runWorker(job({ attempt: 2, priorSeconds: 50 }), { run: fakeRun(PI_STREAM).run });
     expect(retry.totalSeconds).toBe(50 + retry.seconds);

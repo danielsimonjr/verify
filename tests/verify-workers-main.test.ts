@@ -49,18 +49,18 @@ function fake(result: (job: WorkerJob) => WorkerRecord = (j) => ok(j), delayMs =
   return { runWorker, calls, events, peak: () => peak };
 }
 
-function ollamaLoaded(window = 65536) {
+function ollamaLoaded(window = 65536, tag: Record<string, unknown> = { name: "m" }) {
   return async (input: string | URL): Promise<Response> => {
     const path = new URL(String(input)).pathname;
     const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
-    if (path === "/api/tags") return json({ models: [{ name: "m" }] });
+    if (path === "/api/tags") return json({ models: [tag] });
     if (path === "/api/show") return json({ capabilities: ["completion", "tools"], parameters: "num_ctx 32768" });
     if (path === "/api/ps") return json({ models: [{ name: "m", context_length: window }] });
     return new Response("not found", { status: 404 });
   };
 }
 
-async function workers(argv: string[], f: ReturnType<typeof fake>) {
+async function workers(argv: string[], f: ReturnType<typeof fake>, serverFetch: ReturnType<typeof ollamaLoaded> = ollamaLoaded()) {
   const outReal = process.stdout.write.bind(process.stdout);
   const errReal = process.stderr.write.bind(process.stderr);
   let stdout = "";
@@ -68,7 +68,7 @@ async function workers(argv: string[], f: ReturnType<typeof fake>) {
   process.stdout.write = ((c: string | Uint8Array) => ((stdout += String(c)), true)) as typeof process.stdout.write;
   process.stderr.write = ((c: string | Uint8Array) => ((stderr += String(c)), true)) as typeof process.stderr.write;
   try {
-    const code = await main(argv, { runWorker: f.runWorker, fetch: ollamaLoaded(), retryDelayMs: 0 });
+    const code = await main(argv, { runWorker: f.runWorker, fetch: serverFetch, retryDelayMs: 0 });
     const lines = stdout.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l) as Record<string, unknown>);
     return { code, lines, stderr };
   } finally {
@@ -91,6 +91,21 @@ describe("veriharness workers", () => {
     expect(r.lines.at(-1)).toEqual({ summary: { complete: 4, errors: 0, skipped: 0 } });
     expect(f.calls[0]!.prompt).toBe("Do the work.\n");
     expect(f.calls[0]!.piProvider?.id).toBeDefined();
+  });
+
+  test("every job carries the digest and quantization of the model, and stderr names them", async () => {
+    const f = fake();
+    const tag = { name: "m", digest: "809799ae09ab0000", details: { quantization_level: "Q4_K_M" } };
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "2"], f, ollamaLoaded(65536, tag));
+    expect(r.code).toBe(0);
+    expect(f.calls.map((c) => c.model.identity)).toEqual([
+      { digest: "809799ae09ab0000", quantization: "Q4_K_M" },
+      { digest: "809799ae09ab0000", quantization: "Q4_K_M" },
+    ]);
+    expect(r.stderr).toContain("digest=809799ae09ab0000 quantization=Q4_K_M");
+    const bare = fake();
+    expect((await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1"], bare)).code).toBe(0);
+    expect(bare.calls[0]!.model.identity).toBeUndefined();
   });
 
   test("--max-turns reaches every job; no cap without it", async () => {

@@ -20,6 +20,7 @@
 
 import { StringDecoder } from "node:string_decoder";
 import { parseStream } from "../claude/stream.js";
+import type { ModelIdentity } from "../model/types.js";
 
 /** How the JSON sat in the last message: the whole text, one whole fence, or inside prose. */
 export type DeliverableForm = "pure" | "fenced" | "embedded";
@@ -68,6 +69,8 @@ export interface WorkerRecord {
   attempts: number;
   form: DeliverableForm | null;
   error: WorkerError;
+  /** The digest and quantization of the local model that ran, when its server listed them. */
+  modelIdentity?: ModelIdentity;
 }
 
 /** What an event stream says about a session. */

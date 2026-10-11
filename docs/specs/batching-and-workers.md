@@ -41,6 +41,10 @@ the table needs an explicit number.
 - `driver.log` has one line for each role: `context: ROLE=PROVIDER:MODEL window=N source=S`.
 - `model-check` adds `window` and `windowSource` to its JSON output.
 - `batch` writes `window` and `windowSource` into its manifest.
+- `batch` writes `model` (`provider`, `name`, `digest`, `quantization`) into its manifest when the server lists a
+  digest for the model; `workers` writes the same digest and quantization as `modelIdentity` in each `worker.json`;
+  the driver adds them to its `context:` line and writes `models` (by role) into `result.json`. A tag can be
+  re-created under one name, so the digest is what tells two runs apart.
 
 ### Mismatch warning
 
@@ -130,6 +134,7 @@ DIR/
 {
   "budget": 32768, "budgetSource": "half-window",
   "window": 65536, "windowSource": "loaded",
+  "model": {"provider": "ollama", "name": "qwen3.5:9b-64k", "digest": "809799ae09ab", "quantization": "Q4_K_M"},
   "charsPerToken": 3.6, "overheadTokens": 2000, "itemTokens": 0,
   "split": "heading:^### TODO line (\\d+)$", "reference": ["CHANGELOG.md"],
   "batches": [

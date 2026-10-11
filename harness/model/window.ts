@@ -23,6 +23,7 @@ import { isClaudeCodeProvider } from "../claude/provider.js";
 import { CLAUDE_CODE_WINDOWS, claudeCodeWindow } from "../config.js";
 import { createBackend, resolveLocalConfig, type BackendDeps, type ContextSize } from "./config.js";
 import { enforceContext } from "./prepare.js";
+import type { ModelIdentity } from "./types.js";
 
 /** Where a window came from: an explicit number, the server (loaded, num_ctx, n_ctx) or the Claude table. */
 export type WindowSource = "explicit" | "loaded" | "num_ctx" | "n_ctx" | "table";
@@ -31,6 +32,8 @@ export type WindowSource = "explicit" | "loaded" | "num_ctx" | "n_ctx" | "table"
 export interface ResolvedWindow {
   window: number;
   source: WindowSource;
+  /** The probed model's digest and quantization, when the server lists them. */
+  identity?: ModelIdentity;
 }
 
 /** The model whose window resolveWindow finds. */
@@ -52,9 +55,9 @@ export async function resolveWindow(m: WindowModel, deps: BackendDeps = {}): Pro
   });
   const probe = await createBackend(config, deps).probe();
   enforceContext(config, probe, []);
-  if (config.contextSize !== undefined) return { window: config.contextSize, source: "explicit" };
+  if (config.contextSize !== undefined) return { window: config.contextSize, source: "explicit", ...(probe.capabilities.identity ? { identity: probe.capabilities.identity } : {}) };
   // enforceContext throws when the probe reports no window, so both fields are set here.
-  return { window: probe.capabilities.contextSize!, source: probe.capabilities.contextSource! };
+  return { window: probe.capabilities.contextSize!, source: probe.capabilities.contextSource!, ...(probe.capabilities.identity ? { identity: probe.capabilities.identity } : {}) };
 }
 
 function tableWindow(m: WindowModel): ResolvedWindow {

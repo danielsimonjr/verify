@@ -94,6 +94,7 @@ alone exceed the budget, the command stops with exit code 2.
 {
   "budget": 32768, "budgetSource": "half-window",
   "window": 65536, "windowSource": "loaded",
+  "model": {"provider": "ollama", "name": "qwen3.5:9b-64k", "digest": "809799ae09ab", "quantization": "Q4_K_M"},
   "charsPerToken": 3.6, "overheadTokens": 2000, "itemTokens": 0,
   "split": "heading:^### TODO line (\\d+)$", "reference": ["CHANGELOG.md"],
   "batches": [{"name": "b01", "items": ["6857", "6858"], "estTokens": 29674, "overBudget": false}]
@@ -170,6 +171,12 @@ the summary line has it as `itemTokens`.
 result said: `invalid` (the tool refused the arguments, for example none), `missing` (a path or file the
 task does not have) and `other`. `workers` writes a stderr line when at least half of at least five
 calls failed, and the line names the class that occurred most.
+
+A local model is named by tag, and a tag can be re-created under the same name with other weights.
+`batch` therefore writes `model` into the manifest, and `workers` writes `modelIdentity` into each
+`worker.json`: the `digest` that the server lists for the tag and, when it lists one, the `quantization`.
+Two runs with the same name and a different digest ran different weights. A server that lists no digest
+leaves both fields out.
 
 `error` is null when the rollout is complete. Otherwise it is one of these values:
 

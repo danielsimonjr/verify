@@ -4,6 +4,16 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.4] - 2026-10-10
+
+### Added
+- A local model is named by its build, not by its tag alone. `model-check` reports the `digest` and
+  `quantization` that the server lists for the model (`GET /api/tags`). `batch` writes them into the
+  manifest as `model`, `workers` writes them into each `worker.json` as `modelIdentity` and names them
+  on its start line, and the driver adds them to each `context:` line and writes `models` (by role) into
+  `result.json`. A tag can be re-created under one name: two runs of `llama3.2:1b-64k` ran Q8_0 weights
+  and then Q4_K_M weights, and no record showed it. A server that lists no digest leaves the fields out.
+
 ## [0.12.3] - 2026-10-10
 
 ### Fixed

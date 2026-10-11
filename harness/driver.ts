@@ -60,6 +60,7 @@ import { Native, imageFor } from "./env/index.js";
 import { canonicalLocalProvider, materializePiHome, prepareLocalProvider, resolveLocalConfig, secondsToMs } from "./model/index.js";
 import type { ContextSize } from "./model/config.js";
 import type { FetchLike } from "./model/http.js";
+import { describeIdentity, type ModelIdentity } from "./model/types.js";
 import { ROLES, describeRoles, parseRoleOptions, resolveRoles, roleKey, sharedServerWarnings, type Role, type RoleModel } from "./roles.js";
 import { isBun, isMain, progressIntervalMs, runWithBudget } from "./runtime.js";
 import { isView } from "./views.js";
@@ -1451,6 +1452,8 @@ interface Cast {
   /** A fresh session for a fixer on another model than the reviewer's; null continues the reviewer's session. */
   fixer: (() => Agent) | null;
   kinds: Record<Role, RuntimeKind>;
+  /** The local models by role, with the digest and quantization each ran: result.json carries it. */
+  models: Partial<Record<Role, { provider: string; model: string } & ModelIdentity>>;
 }
 
 /**
@@ -1478,6 +1481,8 @@ async function runPhases(cast: Cast, args: DriverArgs, mission: string, skills: 
   const result: Record<string, unknown> = {
     investigations: Object.fromEntries(INVESTIGATIONS.map(([name], i) => [name, Boolean(ok[i])])),
     scope: scopeFound,
+    // A tag can be re-created under one name: the digest says which weights each role ran.
+    ...(Object.keys(cast.models).length > 0 ? { models: cast.models } : {}),
   };
   const done = (code: number, more: Record<string, unknown> = {}): number => {
     writeJsonFs(join(ws, "result.json"), { exit: code, ...result, ...more });
@@ -1613,6 +1618,8 @@ interface PiRole {
   piHome: string | null;
   /** The window the role runs with and where it came from; absent for a pi provider that is not local. */
   context?: { window: number; source: string; serverWindow: number; serverSource: string };
+  /** The digest and quantization the server lists for the model; absent when it lists none. */
+  identity?: ModelIdentity;
 }
 
 /** Probe the local server of a local role and write the pi home that names its model. */
@@ -1646,7 +1653,7 @@ async function prepareLocalRole(ws: string, args: DriverArgs, m: RoleModel, home
     explicit === undefined
       ? { window: serverWindow, source: serverSource, serverWindow, serverSource }
       : { window: explicit, source: "explicit", serverWindow, serverSource };
-  return { provider: prepared.config.provider, model: prepared.model, piHome: home, context };
+  return { provider: prepared.config.provider, model: prepared.model, piHome: home, context, ...(caps.identity ? { identity: caps.identity } : {}) };
 }
 
 /**
@@ -1662,7 +1669,7 @@ function logContext(ws: string, roles: Record<Role, RoleModel>, kinds: Record<Ro
     const label = `${role}=${m.provider ?? "default"}:${model ?? "default"}`;
     if (pi?.context) {
       const c = pi.context;
-      log(ws, `context: ${label} window=${c.window} source=${c.source}`);
+      log(ws, `context: ${label} window=${c.window} source=${c.source}${describeIdentity(pi.identity)}`);
       if (c.source === "explicit" && c.serverSource === "loaded" && c.window !== c.serverWindow) {
         log(ws, `context: ${role} asks ${c.window}, the server runs ${model} at ${c.serverWindow}; a client that sends num_ctx may reload it`);
       }
@@ -1838,6 +1845,12 @@ export async function main(argv: string[] = process.argv.slice(2), deps: DriverD
     return pi.inNative(new Native(ws, nativeImage));
   };
 
+  const models: Cast["models"] = {};
+  for (const role of ROLES) {
+    const p = kinds[role] === "pi" ? piRoles.get(roleKey(roles[role])) : undefined;
+    if (p?.identity && p.provider && p.model) models[role] = { provider: p.provider, model: p.model, ...p.identity };
+  }
+
   const cast: Cast = {
     checker: early(roles.checker),
     challenger: early(roles.challenger),
@@ -1851,6 +1864,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: DriverD
             return kinds.fixer === "pi" ? agent.withSession("repair") : agent;
           },
     kinds,
+    models,
   };
 
   if (!fleet) return runPhases(cast, args, mission, skills);

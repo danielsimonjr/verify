@@ -97,6 +97,23 @@ export type StreamEvent =
   | { type: "tool_call"; toolCall: ToolCall }
   | { type: "done"; finishReason?: string; usage?: TokenUsage };
 
+/**
+ * Which weights a model name stands for. A tag can be re-created under the same name, so a record that
+ * names the tag alone cannot tell two runs apart: the digest can.
+ */
+export interface ModelIdentity {
+  /** The server's digest of the model (Ollama: the `digest` of its `/api/tags` entry). */
+  digest: string;
+  /** The quantization the server reports, such as `Q4_K_M`; absent when it does not say. */
+  quantization?: string;
+}
+
+/** The identity as ` digest=D quantization=Q` for a log line; empty when the server listed none. */
+export function describeIdentity(identity: ModelIdentity | undefined): string {
+  if (!identity) return "";
+  return ` digest=${identity.digest}${identity.quantization ? ` quantization=${identity.quantization}` : ""}`;
+}
+
 export interface Capabilities {
   /** `unknown` means the server did not say; a required tool call is the check. */
   tools: boolean | "unknown";
@@ -106,6 +123,8 @@ export interface Capabilities {
   contextSize?: number;
   /** Where `contextSize` came from: a loaded Ollama model, Ollama's `num_ctx`, or llama.cpp's `n_ctx`. */
   contextSource?: "loaded" | "num_ctx" | "n_ctx";
+  /** The model's digest and quantization, when the server lists them. */
+  identity?: ModelIdentity;
 }
 
 export interface ProbeResult {

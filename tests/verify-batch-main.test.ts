@@ -108,6 +108,8 @@ describe("veriharness batch", () => {
     expect(m.budgetSource).toBe("explicit");
     expect(m.shared).toEqual(["CHANGELOG.md"]);
     expect(m.window).toBeUndefined();
+    // No model was probed, so the manifest names none.
+    expect(m.model).toBeUndefined();
     expect(m.split).toBe(RULE);
     expect(m.batches).toEqual([
       { name: "b01", items: ["7", "8"], estTokens: 208, overBudget: false },
@@ -128,6 +130,22 @@ describe("veriharness batch", () => {
     expect(m.charsPerToken).toBe(3.6);
     expect(m.overheadTokens).toBe(2000);
     expect(m.itemTokens).toBe(0);
+  });
+
+  test("the manifest names the model by digest and quantization, so a re-created tag shows", async () => {
+    const f = files();
+    const argv = [...base(f), "--provider", "ollama", "--model", "m", "--base-url", "http://127.0.0.1:11434"];
+    const tagged = async (input: string | URL): Promise<Response> => {
+      const path = new URL(String(input)).pathname;
+      const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+      if (path === "/api/tags") return json({ models: [{ name: "m", digest: "809799ae09ab0000", details: { quantization_level: "Q4_K_M" } }] });
+      if (path === "/api/show") return json({ capabilities: ["completion", "tools"], parameters: "num_ctx 32768" });
+      if (path === "/api/ps") return json({ models: [{ name: "m", context_length: 65536 }] });
+      return new Response("not found", { status: 404 });
+    };
+    const r = await batch(argv, tagged);
+    expect(r.code).toBe(0);
+    expect(manifest(f.out).model).toEqual({ provider: "ollama", name: "m", digest: "809799ae09ab0000", quantization: "Q4_K_M" });
   });
 
   test("no budget", async () => {
