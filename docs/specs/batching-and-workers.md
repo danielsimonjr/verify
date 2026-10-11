@@ -180,9 +180,16 @@ veriharness workers DIR --provider P --model M [--base-url U] [--context-size N|
    folder. A worker cannot see another worker's files.
 2. It starts one session in that folder:
    - pi workers: the pi command of the driver (`piCommandFor`), with `-p`, `--no-context-files`,
-     `--no-extensions`, `--no-prompt-templates`, `--no-skills`, `--no-session`, `--mode json` and
-     `--tools LIST`. A local model gets its own pi home with the `models.json` that
-     `buildPiProvider` and `materializePiHome` write.
+     `--no-extensions`, `--no-prompt-templates`, `--no-skills`, `--no-session`, `--system-prompt`
+     (`WORKER_CHARTER` in `workers/worker.ts`), `--mode json` and `--tools LIST`. A local model gets its own
+     pi home with the `models.json` that `buildPiProvider` and `materializePiHome` write.
+     pi's default system prompt is not used: it names the pi docs under the harness checkout, and a
+     model takes that path for the task's own.
+   - Before the first worker starts, the harness provides the binaries behind the pi tools `find`
+     (`fd`) and `grep` (`rg`) once, in one process (`model/pitools.ts`), and copies them into each
+     pi home. pi downloads a binary on first use, and its parallel tool calls race on that download.
+     A tool whose binary cannot be provided is left out of `--tools`, and the record names it in
+     `droppedTools`.
    - `claude-code` workers: `claude -p` with `--output-format stream-json`, `--setting-sources ""`,
      `--strict-mcp-config`, the verifier settings, `--no-session-persistence` and the tools from
      `claudeTools(LIST)`. The environment is `claudeSessionEnv` with `DISABLE_AUTOUPDATER=1`.
@@ -223,7 +230,8 @@ the text of each result. `nudged` is true when a pi session that ended without a
 was continued once with a short message (`--nudge-timeout`, default 300 s; 0 turns it off). `length` is a last
 turn cut at the output limit; `thinking-only` is a last turn of thought with no text; `schema` is a
 deliverable that parses and does not fit the `--schema` file. A rollout with an error keeps the last
-text of the worker as `deliverables/<name>.partial.txt`.
+text of the worker as `deliverables/<name>.partial.txt`. `droppedTools` is present only when the
+harness left a pi tool out because it could not provide the tool's binary.
 
 When the batch root has a `manifest.json`, the printed line also has `estTokens` (the manifest's
 estimate for that batch). A `peakContext` above `estTokens` and above the manifest's `budget` writes

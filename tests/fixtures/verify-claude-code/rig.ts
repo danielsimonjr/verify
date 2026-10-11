@@ -4,6 +4,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { main, type DriverDeps } from "../../../harness/driver.ts";
+import type { PiTools } from "../../../harness/model/pitools.ts";
+
+/** No binaries to provide: a rig must not start pi's downloader. */
+export const NO_PI_TOOLS: PiTools = { provide: async (tools) => ({ tools, dropped: [] }), seed: () => {} };
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const STUB = join(HERE, "stub.mjs");
@@ -102,6 +106,7 @@ export function makeRig(): Rig {
           claudeCommand: [process.execPath, STUB],
           backoff: [0, 0, 0],
           sleep: async () => {},
+          piTools: NO_PI_TOOLS,
           ...deps,
         });
       } finally {

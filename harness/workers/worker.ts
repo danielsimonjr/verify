@@ -26,6 +26,7 @@ import { VERIFIER_SETTINGS } from "../claude/env.js";
 import { claudeTools, isClaudeCodeProvider } from "../claude/provider.js";
 import * as config from "../config.js";
 import { agentEnv, piCommandFor, planPiCommand } from "../driver.js";
+import { piTools as realPiTools, type PiTools } from "../model/pitools.js";
 import { copyTree, rmrf } from "../fsutil.js";
 import { run, type RunResult } from "../grade/proc.js";
 import type { ContextSize } from "../model/config.js";
@@ -107,7 +108,21 @@ function nudgeFor(error: WorkerError): string | null {
 export interface WorkerDeps {
   run?: typeof run;
   rmrf?: (path: string) => void;
+  /** Provides the binaries behind pi's `find` and `grep` (default: the harness's own, which downloads them once). */
+  piTools?: PiTools;
 }
+
+/** What a pi worker is told about its directory, in place of pi's default system prompt. */
+export const WORKER_CHARTER = [
+  "You are a worker. Your task is in the current directory.",
+  "",
+  "- `spec/task.md` is the task. Read it first.",
+  "- `workspace/` holds the task inputs. Read from it. Do not change it.",
+  "- Use only the tools you are given. Call each tool with its own parameters.",
+  "- Every path is relative to the current directory. Do not use an absolute path.",
+  "- When the task asks for a final answer in a given format, your final message is that answer and nothing else.",
+  "",
+].join("\n");
 
 /** The command, stdin and environment of one worker. `home` is the pi home of a local model. */
 export function workerArgs(
@@ -143,6 +158,10 @@ export function workerArgs(
     "--no-extensions",
     "--no-prompt-templates",
     "--no-skills",
+    // pi's default prompt names the pi docs under the harness checkout; a model takes that path for the
+    // task's own and prefixes every file it reads with it.
+    "--system-prompt",
+    WORKER_CHARTER,
     // A job with a nudge saves its session in the temp copy, so the nudge can continue it.
     ...(job.nudgeTimeoutSec === undefined ? ["--no-session"] : ["--session-dir", join(home, "session")]),
     "--mode",
@@ -227,6 +246,19 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     copyTree(join(job.batchDir, "spec"), join(cwd, "spec"));
     copyTree(join(job.batchDir, "workspace"), join(cwd, "workspace"));
     if (job.piProvider && !claude) materializePiHome(home, job.piProvider);
+    // pi downloads the binary of `find` and `grep` on first use and its parallel tool calls race on that
+    // download, so the harness provides them first and offers only the tools that can run.
+    let offered = job;
+    let dropped: string[] = [];
+    if (!claude) {
+      const piTools = deps.piTools ?? realPiTools;
+      const provided = await piTools.provide(job.tools);
+      piTools.seed(job.piProvider ? home : (process.env.PI_CODING_AGENT_DIR ?? config.PI_HOME));
+      if (provided.dropped.length > 0) {
+        offered = { ...job, tools: provided.tools };
+        dropped = provided.dropped.map((d) => d.tool);
+      }
+    }
 
     // Neither pi nor `claude -p` has a turn cap, so the worker counts turns in the live stream and stops
     // the session through its own signal, which the job's signal also trips.
@@ -250,7 +282,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     const streamPath = join(out, "trajectory", "agent.jsonl");
     const isJson = job.deliverable.toLowerCase().endsWith(".json");
     const exec = async (nudge: string | undefined, timeoutSec: number): Promise<RunResult> => {
-      const { cmd, input, env } = workerArgs(job, home, nudge);
+      const { cmd, input, env } = workerArgs(offered, home, nudge);
       const live = openSync(streamPath, nudge === undefined ? "w" : "a");
       const onStdout = (chunk: Buffer): void => {
         writeSync(live, chunk);
@@ -336,6 +368,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       error,
       model: { provider: job.model.provider, name: job.model.model },
       ...(job.model.identity ? { modelIdentity: job.model.identity } : {}),
+      ...(dropped.length > 0 ? { droppedTools: dropped } : {}),
     };
     writeFileSync(join(out, "trajectory", "worker.json"), JSON.stringify(record) + "\n", "utf8");
     return record;

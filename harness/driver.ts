@@ -58,6 +58,7 @@ import {
 } from "./claude/index.js";
 import { Native, imageFor } from "./env/index.js";
 import { canonicalLocalProvider, materializePiHome, prepareLocalProvider, resolveLocalConfig, secondsToMs } from "./model/index.js";
+import { piTools as realPiTools, type PiTools } from "./model/pitools.js";
 import type { ContextSize } from "./model/config.js";
 import type { FetchLike } from "./model/http.js";
 import { describeIdentity, type ModelIdentity } from "./model/types.js";
@@ -1129,8 +1130,11 @@ function restoreRecords(ws: string): void {
         log(ws, `[${name}] ${record} restored from its own session's copy (it had been overwritten)`);
       }
     } else if (isFile(root)) {
+      // The session has no copy of its own: the file is not a record this session wrote and parsed. Say
+      // which of the two it is, because a model's own invalid write is not another session's.
+      const why = readJsonFs(root) === null ? "does not parse as JSON" : "was not written by a tool call of this session";
       renameSync(root, join(ws, name, record + ".foreign"));
-      log(ws, `[${name}] ${record} was written by another session; set aside`);
+      log(ws, `[${name}] ${record} at the task root ${why}; set aside`);
     }
   }
 }
@@ -1453,6 +1457,8 @@ export interface DriverDeps {
   sleep?: (ms: number) => Promise<void>;
   /** The fetch the local-model preflight uses (default: the global fetch). */
   fetch?: FetchLike;
+  /** Provides the binaries behind pi's `find` and `grep` (default: the harness's own, which downloads them once). */
+  piTools?: PiTools;
 }
 
 /** The agent of each role in one task. */
@@ -1790,13 +1796,24 @@ export async function main(argv: string[] = process.argv.slice(2), deps: DriverD
     log(ws, "no usable native image for this task (docker or image missing); every turn stays in the jail");
   }
 
+  // pi downloads the binary of `find` and `grep` on first use and the sessions of one task race on that
+  // download, so the harness provides them first, seeds every pi home, and offers only what can run.
+  let tools = TOOLS[args.contract]!;
+  if (usesPi) {
+    const piTools = deps.piTools ?? realPiTools;
+    const provided = await piTools.provide(tools);
+    for (const d of provided.dropped) log(ws, `tool ${d.tool} is not offered: ${d.binary} could not be provided`);
+    tools = provided.tools;
+    for (const p of piRoles.values()) piTools.seed(p.piHome ?? process.env.PI_CODING_AGENT_DIR ?? config.PI_HOME);
+  }
+
   const baseFlags = [
     "--no-context-files",
     "--no-extensions",
     "--no-prompt-templates",
     "--no-skills",
     "--tools",
-    TOOLS[args.contract]!,
+    tools,
     "--session-dir",
     join(ws, "session"),
     "--system-prompt",

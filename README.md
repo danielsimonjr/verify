@@ -128,7 +128,7 @@ harness/
   runner.ts        many tasks: global work pool with per-model and per-benchmark caps; resumable
   score.ts         score a run against the archived pool (selection and final scores)
   config.ts        locations and model lanes; all host specifics come from the environment
-  model/           local backends (Ollama, llama.cpp): HTTP client, preflight, pi registry
+  model/           local backends (Ollama, llama.cpp): HTTP client, preflight, pi registry, pi tool binaries
   claude/          the Claude Code runtime: turn runner, stream parser, preflight, session environment
   batch/           split an items file into task folders that fit a token budget
   workers/         run worker rollouts on each task folder, in isolated copies

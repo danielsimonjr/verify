@@ -4,6 +4,25 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.6] - 2026-10-11
+
+### Fixed
+- A pi worker's `find` and `grep` tools no longer fail with `fd is not available and could not be
+  downloaded`. pi downloads the binary of each tool on first use, runs the tool calls of one turn at
+  the same time, and writes every download to the same archive path: the first extraction deletes the
+  archive and the others fail. A local model that sends many calls in one turn met this in three
+  rollouts of one run, and the driver's two investigations share one pi home the same way. The harness
+  now provides `fd` and `rg` once, in one process, before the first session (`model/pitools.ts`), copies
+  them into each pi home, and leaves a tool out of `--tools` when it cannot provide its binary. The
+  driver logs `tool find is not offered`; the worker record has `droppedTools`.
+- A batch worker no longer runs pi's default system prompt. That prompt names the pi docs under the
+  harness checkout, and a local model prefixed every path with that directory (13 of 13 tool calls
+  failed in one rollout). `workers` passes its own short charter with `--system-prompt`, as the driver
+  already passed `prompts/CHARTER.md`.
+- `driver.log` no longer says that a record "was written by another session" when the session wrote
+  it itself and the text did not parse. It now says that the record does not parse as JSON, or that
+  no tool call of the session wrote it.
+
 ## [0.12.5] - 2026-10-11
 
 ### Fixed

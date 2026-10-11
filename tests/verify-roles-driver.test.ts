@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { parseDriverArgv } from "../harness/driver.ts";
-import { STUB_PI, happyRules, makeRig, piHappyRules, writeRule, type Call, type Rig } from "./fixtures/verify-claude-code/rig.ts";
+import { FALS, STUB_PI, happyRules, makeRig, piHappyRules, writeRule, type Call, type Rig } from "./fixtures/verify-claude-code/rig.ts";
 
 let rig: Rig;
 beforeEach(() => {
@@ -116,6 +116,46 @@ describe("each role on its own model", () => {
   });
 });
 
+describe("the binaries behind pi's find and grep", () => {
+  const piRoles = [...ARGS, "--role", "checker=anthropic:pi-model", "--role", "challenger=anthropic:pi-model"];
+
+  test("a tool the harness could not provide is not offered, and driver.log names it", async () => {
+    rig.script([...happyRules(rig.ws).slice(0, 2), ...piHappyRules(rig.ws).slice(2)]);
+    const piTools = {
+      provide: async () => ({ tools: "read,bash,grep,ls,edit,write", dropped: [{ tool: "find", binary: "fd" }] }),
+      seed: () => {},
+    };
+    const code = await rig.run(piRoles, {}, { piCommand: [process.execPath, STUB_PI], piTools });
+    expect(code).toBe(0);
+    const pi = rig.piCalls().filter((c) => c.argv.includes("--session-dir"));
+    expect(pi).toHaveLength(2);
+    for (const call of pi) expect(after(call.argv, "--tools")).toBe("read,bash,grep,ls,edit,write");
+    expect(rig.log()).toContain("tool find is not offered: fd could not be provided");
+  });
+
+  test("every pi home is seeded before its first turn, and a run with no pi role provides nothing", async () => {
+    rig.script([...happyRules(rig.ws).slice(0, 2), ...piHappyRules(rig.ws).slice(2)]);
+    const seeded: string[] = [];
+    const provided: string[] = [];
+    const piTools = {
+      provide: async (tools: string) => {
+        provided.push(tools);
+        return { tools, dropped: [] };
+      },
+      seed: (dir: string) => void seeded.push(dir),
+    };
+    expect(await rig.run(piRoles, {}, { piCommand: [process.execPath, STUB_PI], piTools })).toBe(0);
+    expect(provided).toEqual(["read,bash,grep,find,ls,edit,write"]);
+    expect(seeded.length).toBeGreaterThan(0);
+    provided.length = 0;
+    seeded.length = 0;
+    rig.script(happyRules(rig.ws));
+    expect(await rig.run(ARGS, {}, { piTools })).toBe(0);
+    expect(provided).toEqual([]);
+    expect(seeded).toEqual([]);
+  });
+});
+
 describe("a turn that runs long", () => {
   test("driver.log gets a progress line while a pi turn runs, with its session numbers", async () => {
     const pi = piHappyRules(rig.ws).map((r) => (r.match === "# Discrimination" ? { ...r, action: { ...r.action, delayMs: 1500 } } : r));
@@ -171,6 +211,46 @@ describe("an investigation that leaves no record", () => {
     expect(result.investigations).toEqual({ elim: true, fals: true });
     expect(JSON.parse(readFileSync(join(rig.ws, "ledger_fals.json"), "utf8"))).toEqual(record);
     expect(rig.log()).not.toContain("no ledger_fals.json of its own");
+  });
+
+  test("a record this session wrote and that does not parse is said to be unparsable, not another session's", async () => {
+    const pi = piHappyRules(rig.ws).filter((r) => !JSON.stringify(r).includes("ledger_fals.json"));
+    rig.script([
+      ...happyRules(rig.ws).slice(0, 2),
+      ...pi.slice(2),
+      {
+        match: "# Falsification",
+        action: {
+          toolUses: [{ name: "write", arguments: { path: join(rig.ws, "ledger_fals.json"), content: "the contents of the record" } }],
+          writes: [{ path: "ledger_fals.json", content: "the contents of the record" }],
+        },
+      },
+    ]);
+    const code = await rig.run(
+      [...ARGS, "--role", "checker=anthropic:pi-model", "--role", "challenger=anthropic:pi-model"],
+      {},
+      { piCommand: [process.execPath, STUB_PI] },
+    );
+    expect(code).toBe(0);
+    expect(rig.log()).toContain("[fals] ledger_fals.json at the task root does not parse as JSON; set aside");
+    expect(rig.log()).not.toContain("written by another session");
+  });
+
+  test("a valid record at the root that no tool call of this session wrote is said to be unwritten by it", async () => {
+    const text = JSON.stringify(FALS);
+    const pi = piHappyRules(rig.ws).filter((r) => !JSON.stringify(r).includes("ledger_fals.json"));
+    rig.script([
+      ...happyRules(rig.ws).slice(0, 2),
+      ...pi.slice(2),
+      { match: "# Falsification", action: { toolUses: [], writes: [{ path: "ledger_fals.json", content: text }] } },
+    ]);
+    const code = await rig.run(
+      [...ARGS, "--role", "checker=anthropic:pi-model", "--role", "challenger=anthropic:pi-model"],
+      {},
+      { piCommand: [process.execPath, STUB_PI] },
+    );
+    expect(code).toBe(0);
+    expect(rig.log()).toContain("[fals] ledger_fals.json at the task root was not written by a tool call of this session; set aside");
   });
 
   test("the same for a pi investigation that wrote its record with a shell command", async () => {

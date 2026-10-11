@@ -5,7 +5,12 @@ import { join } from "node:path";
 
 import type { RunOptions, RunResult } from "../harness/grade/proc.ts";
 import { claudeStreamStats } from "../harness/workers/record.ts";
-import { runWorker, workerArgs, type WorkerJob } from "../harness/workers/worker.ts";
+import type { PiTools } from "../harness/model/pitools.ts";
+import { runWorker as runWorkerReal, workerArgs, type WorkerDeps, type WorkerJob } from "../harness/workers/worker.ts";
+
+/** No binaries to provide: a test must not start pi's downloader. */
+const noTools: PiTools = { provide: async (tools) => ({ tools, dropped: [] }), seed: () => {} };
+const runWorker = (job: WorkerJob, deps: WorkerDeps = {}) => runWorkerReal(job, { piTools: noTools, ...deps });
 
 let root: string;
 let batchDir: string;
@@ -80,6 +85,15 @@ describe("workerArgs", () => {
     expect(env.PI_CODING_AGENT_DIR).toBe(join(root, "home"));
   });
 
+  test("a pi worker gets the worker charter, so pi's default prompt with its docs path never reaches the model", () => {
+    const { cmd } = workerArgs(job(), join(root, "home"));
+    const charter = cmd[cmd.indexOf("--system-prompt") + 1]!;
+    expect(charter).toContain("spec/task.md");
+    expect(charter).toContain("relative");
+    expect(charter).not.toContain("pi documentation");
+    expect(cmd.indexOf("--system-prompt")).toBeLessThan(cmd.indexOf("--tools"));
+  });
+
   test("claude args", () => {
     const j = job({ model: { provider: "claude-code", model: "claude-haiku-5-5" }, piProvider: undefined, tools: "read,grep,find" });
     const { cmd, env, input } = workerArgs(j, join(root, "home"));
@@ -92,6 +106,7 @@ describe("workerArgs", () => {
     expect(cmd[cmd.indexOf("--model") + 1]).toBe("claude-haiku-5-5");
     expect(env.DISABLE_AUTOUPDATER).toBe("1");
     expect(input).toBe("Do the work.");
+    expect(cmd).not.toContain("--system-prompt");
   });
 });
 
@@ -100,6 +115,51 @@ describe("runWorker", () => {
     const fake = fakeRun(PI_STREAM);
     await runWorker(job(), { run: fake.run });
     expect(fake.seen[0]!.homeFiles).toContain("models.json");
+  });
+
+  test("a tool whose binary could not be provided is not offered, and the record says so", async () => {
+    const fake = fakeRun(PI_STREAM);
+    const piTools: PiTools = {
+      provide: async () => ({ tools: "read,grep,ls", dropped: [{ tool: "find", binary: "fd" }] }),
+      seed: () => {},
+    };
+    const rec = await runWorker(job(), { run: fake.run, piTools });
+    const args = fake.seen[0]!.args;
+    expect(args[args.indexOf("--tools") + 1]).toBe("read,grep,ls");
+    expect(rec.droppedTools).toEqual(["find"]);
+    expect(record().droppedTools).toEqual(["find"]);
+  });
+
+  test("the pi home is seeded before the worker starts, and a record with every tool has no droppedTools", async () => {
+    const fake = fakeRun(PI_STREAM);
+    const seeded: string[] = [];
+    const piTools: PiTools = {
+      provide: async (tools) => ({ tools, dropped: [] }),
+      seed: (dir) => {
+        seeded.push(dir);
+        mkdirSync(join(dir, "bin"), { recursive: true });
+        writeFileSync(join(dir, "bin", "fd"), "x");
+      },
+    };
+    const rec = await runWorker(job(), { run: fake.run, piTools });
+    expect(seeded).toHaveLength(1);
+    expect(fake.seen[0]!.homeFiles).toContain("bin");
+    expect(fake.seen[0]!.args[fake.seen[0]!.args.indexOf("--tools") + 1]).toBe("read,grep,find,ls");
+    expect("droppedTools" in rec).toBe(false);
+  });
+
+  test("a Claude Code worker never asks for pi's binaries", async () => {
+    const piTools: PiTools = {
+      provide: async () => {
+        throw new Error("provided");
+      },
+      seed: () => {
+        throw new Error("seeded");
+      },
+    };
+    const j = job({ model: { provider: "claude-code", model: "claude-haiku-5-5" }, piProvider: undefined, tools: "read,grep,find" });
+    const rec = await runWorker(j, { run: fakeRun(CLAUDE_STREAM).run, piTools });
+    expect(rec.error).toBeNull();
   });
 
   test("writes the rollout", async () => {

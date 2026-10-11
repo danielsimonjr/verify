@@ -73,6 +73,8 @@ export interface WorkerRecord {
   model: { provider: string; name: string };
   /** The digest and quantization of the local model that ran, when its server listed them. */
   modelIdentity?: ModelIdentity;
+  /** Tools the job asked for that this worker did not get, because the harness could not provide their binary. */
+  droppedTools?: string[];
 }
 
 /** What an event stream says about a session. */

@@ -166,6 +166,19 @@ pi receives a generated `models.json` under the task's `.pi/` directory (`PI_COD
 
 Sampling options you set are copied into that model's `samplingParams`, which is how temperature reaches the agent loop.
 
+### The `find` and `grep` tools
+
+pi's `find` tool runs `fd`, and `grep` runs `rg`. pi downloads each binary the first time a tool needs
+it. pi runs the tool calls of one turn at the same time, they share one download path, and the
+first extraction deletes the archive the others need: the other calls fail with `fd is not available
+and could not be downloaded`. A local model that sends many calls in one turn meets this at once.
+
+The harness provides both binaries before a session starts (`harness/model/pitools.ts`). It asks pi's
+own tool manager, one binary after the other in one process, and keeps the result in
+`harness/pi-home/bin`. It copies the binaries into each pi home it creates. A binary on `PATH` counts.
+A tool whose binary cannot be provided is not offered: `driver.log` has a `tool find is not offered`
+line, and the worker record has `droppedTools`.
+
 ## Failures
 
 | What you see | What it means |
