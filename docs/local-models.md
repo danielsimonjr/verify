@@ -74,7 +74,7 @@ The source is `loaded` (from `GET /api/ps`), `num_ctx` (from `ollama show`), `n_
 A tag can be re-created under the same name with other weights, so the line also names the build when the server lists it:
 
 ```
-context: checker=ollama:llama3.2:1b-64k window=65536 source=loaded digest=809799ae09ab quantization=Q4_K_M
+context: checker=ollama:llama3.2:1b-64k window=65536 source=loaded digest=809799ae09ab9ff5c3eb9c57f0f757560167e7768a52bb9cc7038016ddb3af67 quantization=Q4_K_M
 ```
 
 `digest` and `quantization` come from `GET /api/tags`. The same two values are in the manifest of `batch` (`model`), in each `worker.json` (`modelIdentity`) and in `result.json` of the driver (`models`, by role). Compare the digest of two runs before you compare their scores.

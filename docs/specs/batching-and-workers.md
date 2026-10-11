@@ -134,7 +134,7 @@ DIR/
 {
   "budget": 32768, "budgetSource": "half-window",
   "window": 65536, "windowSource": "loaded",
-  "model": {"provider": "ollama", "name": "qwen3.5:9b-64k", "digest": "809799ae09ab", "quantization": "Q4_K_M"},
+  "model": {"provider": "ollama", "name": "qwen3.5:9b-64k", "digest": "809799ae09ab9ff5c3eb9c57f0f757560167e7768a52bb9cc7038016ddb3af67", "quantization": "Q4_K_M"},
   "charsPerToken": 3.6, "overheadTokens": 2000, "itemTokens": 0,
   "split": "heading:^### TODO line (\\d+)$", "reference": ["CHANGELOG.md"],
   "batches": [
