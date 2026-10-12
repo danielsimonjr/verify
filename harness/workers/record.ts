@@ -21,7 +21,7 @@
 import { StringDecoder } from "node:string_decoder";
 import { parseStream } from "../claude/stream.js";
 import type { ModelIdentity } from "../model/types.js";
-import { REPEAT_REASON } from "../pi-extensions/repeat-guard.js";
+import { ANSWER_IN_CALL_REASON, REPEAT_REASON } from "../pi-extensions/repeat-guard.js";
 
 /** How the JSON sat in the last message: the whole text, one whole fence, or inside prose. */
 export type DeliverableForm = "pure" | "fenced" | "embedded";
@@ -151,12 +151,14 @@ export interface ToolErrorKinds {
 }
 
 const INVALID_ARGUMENTS = /^\s*(<tool_use_error>\s*)?(Validation failed for tool|InputValidationError)/i;
+/** The guard's block for an argument that the tool does not list (`undeclaredReason`). */
+const UNDECLARED_ARGUMENT = /^Blocked: the \S+ tool has no argument/;
 const MISSING_PATH = /\b(ENOENT|no such file|not found|does not exist|cannot find)\b/i;
 
 /** Class one failed tool result by its text. A result with no text is `other`: nothing says what failed. */
 export function toolErrorKind(text: string): keyof ToolErrorKinds {
   if (text.includes(REPEAT_REASON)) return "repeated";
-  if (INVALID_ARGUMENTS.test(text)) return "invalid";
+  if (INVALID_ARGUMENTS.test(text) || UNDECLARED_ARGUMENT.test(text) || text.includes(ANSWER_IN_CALL_REASON)) return "invalid";
   if (MISSING_PATH.test(text)) return "missing";
   return "other";
 }
@@ -201,6 +203,29 @@ function valueEnd(text: string, start: number): number {
 const ARRAY_OPEN = /\[\s*[\[{"]/y;
 
 /**
+ * The values that start in `text`, in order: each is a balanced `{...}` or `[...]`, and the next one starts
+ * after its end, so what lies inside a value is part of it and is never a value of its own. The last
+ * value has `end` -1 when it never closes. The parser and `jsonProblem` read a text through this one
+ * function: a problem is named for exactly the values that the parser would have taken.
+ */
+function valuesIn(text: string): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
+  for (let i = 0; i < text.length; ) {
+    const c = text[i];
+    ARRAY_OPEN.lastIndex = i;
+    if (c !== "{" && !(c === "[" && ARRAY_OPEN.test(text))) {
+      i++;
+      continue;
+    }
+    const end = valueEnd(text, i);
+    out.push({ start: i, end });
+    if (end < 0) break;
+    i = end + 1;
+  }
+  return out;
+}
+
+/**
  * Parse a JSON deliverable: the whole text, one whole fence, or the largest JSON value in prose.
  *
  * In prose the answer is the longest top-level value, an array included. A value that never closes,
@@ -222,18 +247,11 @@ export function parseJsonDeliverable(text: string): { value: unknown; form: Deli
     if (inner.ok) return { value: inner.value, form: "embedded" };
   }
   let best: { value: unknown; length: number } | null = null;
-  for (let i = 0; i < trimmed.length; ) {
-    const c = trimmed[i];
-    ARRAY_OPEN.lastIndex = i;
-    if (c !== "{" && !(c === "[" && ARRAY_OPEN.test(trimmed))) {
-      i++;
-      continue;
-    }
-    const end = valueEnd(trimmed, i);
+  for (const { start, end } of valuesIn(trimmed)) {
     if (end < 0) break;
-    const found = tryParse(trimmed.slice(i, end + 1));
-    if (found.ok && (best === null || end + 1 - i > best.length)) best = { value: found.value, length: end + 1 - i };
-    i = end + 1;
+    const length = end + 1 - start;
+    const found = tryParse(trimmed.slice(start, end + 1));
+    if (found.ok && (best === null || length > best.length)) best = { value: found.value, length };
   }
   return best === null ? null : { value: best.value, form: "embedded" };
 }
@@ -391,43 +409,40 @@ function firstJsonError(s: string, from = 0): JsonError | null {
 }
 
 /**
- * What is wrong in the JSON that `text` holds, in words for the model that wrote it, or null when `text` has
- * no JSON in it, or holds a value that is complete, or is nested deeper than the scan follows. The place is
- * given as a character of the JSON, with the text around it, so that the model can find it in what it wrote.
+ * What is wrong in the JSON that `text` holds, in words for the model that wrote it, or null when the parser
+ * takes a value from `text`, or `text` has no JSON in it, or is nested deeper than the scan follows. The
+ * place is given as a character of the JSON, with the text around it, so that the model can find it in
+ * what it wrote.
  *
- * A text can hold more than one value: a prose example before the answer. Each value that starts in the
- * text is read, and the problem named is the one in the value that went furthest before it broke, which is
- * the answer and not the example. A value that is complete means the text has a JSON in it, and then there
- * is nothing to name.
+ * A text can hold more than one value: a prose example before the answer. Each value that the parser
+ * would have read (`valuesIn`) is read again for its place, and the problem named is the one in the value
+ * that went furthest before it broke, which is the answer and not the example.
  */
 export function jsonProblem(text: string): string | null {
   const t = text.trim();
+  if (t === "" || parseJsonDeliverable(t) !== null) return null;
+  // The answer is in a fence when the text has one that opens with a brace or a bracket: a prose example
+  // above it is not the place to name, whatever its length.
   const opens = (s: string): boolean => /^[{[]/.test(s.trim());
   const sources: string[] = [];
   const whole = WHOLE_FENCE.exec(t);
   if (whole && opens(whole[1]!)) sources.push(whole[1]!.trim());
   else for (const match of t.matchAll(ANY_FENCE)) if (opens(match[1]!)) sources.push(match[1]!.trim());
   if (sources.length === 0) sources.push(t);
-  let worst: { s: string; from: number; found: JsonError } | null = null;
+  let worst: { s: string; start: number; found: JsonError } | null = null;
   for (const s of sources) {
-    for (let i = 0; i < s.length; ) {
-      ARRAY_OPEN.lastIndex = i;
-      if (s[i] !== "{" && !(s[i] === "[" && ARRAY_OPEN.test(s))) {
-        i++;
-        continue;
-      }
-      const found = firstJsonError(s, i);
-      if (found === null || found.giveUp) return null;
-      if (worst === null || found.at - i > worst.found.at - worst.from) worst = { s, from: i, found };
-      // What lies inside a value that broke is part of it: the next value starts after the break.
-      i = Math.max(i + 1, found.at);
+    for (const { start } of valuesIn(s)) {
+      const found = firstJsonError(s, start);
+      if (found === null) continue;
+      if (found.giveUp) return null;
+      if (worst === null || found.at - start > worst.found.at - worst.start) worst = { s, start, found };
     }
   }
   if (worst === null) return null;
-  const { s, from, found } = worst;
-  const before = s.slice(Math.max(from, found.at - 30), found.at).replace(/\s+/g, " ");
+  const { s, start, found } = worst;
+  const before = s.slice(Math.max(start, found.at - 30), found.at).replace(/\s+/g, " ");
   const after = s.slice(found.at, found.at + 20).replace(/\s+/g, " ");
-  return `character ${found.at - from + 1}: ${found.what} (near: ${before}[HERE]${after})`;
+  return `character ${found.at - start + 1}: ${found.what} (near: ${before}[HERE]${after})`;
 }
 
 function events(text: string): Record<string, unknown>[] {

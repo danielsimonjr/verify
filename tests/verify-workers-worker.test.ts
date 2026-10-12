@@ -164,7 +164,7 @@ describe("workerArgs", () => {
   test("with --ids the guard is told the id field and the number of items, so it can cut a runaway answer", () => {
     const ids = { array: "rows", field: "line", expected: ["6857", "6858", "6867"] };
     const { env } = workerArgs(job({ ids }), join(root, "home"));
-    expect(JSON.parse(env.VERIHARNESS_ANSWER_SHAPE!)).toEqual({ idField: "line", records: 3 });
+    expect(JSON.parse(env.VERIHARNESS_ANSWER_SHAPE!)).toEqual({ idField: "line", records: 3, listField: "rows" });
     expect(workerArgs(job(), join(root, "home")).env.VERIHARNESS_ANSWER_SHAPE).toBeUndefined();
   });
 
@@ -381,6 +381,39 @@ describe("runWorker", () => {
     // It is not the text for a session that read nothing wrong, and it does not blame the model for a cut.
     expect(message).not.toContain("cut off");
     expect(rec).toMatchObject({ error: null, nudged: true, form: "pure" });
+  });
+
+  const IDS3 = { array: "rows", field: "line", expected: ["7", "8", "9"] };
+
+  test("a message that the guard cut for more records than ids is sent back with what the guard saw", async () => {
+    // A model that is only told its message was "cut off or held only thinking" writes the same message again.
+    const runaway = '{"rows": [{"line": 7}, {"line": 8}, {"line": 9}, {"line": 10';
+    const f = sequence({ stdout: turns([[{ type: "text", text: runaway }], "aborted"]) }, { stdout: PI_STREAM });
+    const rec = await runWorker(job({ ids: IDS3, nudgeTimeoutSec: 90 }), { run: f.run });
+    const message = f.calls[1]!.args.at(-1)!;
+    expect(message).toContain("held 4 records");
+    expect(message).toContain("the batch has 3 ids: 7, 8, 9");
+    expect(message).toContain("one record for each id");
+    expect(message).not.toContain("held only thinking");
+    expect(f.calls[1]!.args).toContain("--no-tools");
+    expect(rec).toMatchObject({ nudged: true });
+  });
+
+  test("a message that the guard cut for text that repeats says so", async () => {
+    const unit = "the row of this id was not found in the changelog; ";
+    const runaway = '{"rows": [' + unit.repeat(14);
+    const f = sequence({ stdout: turns([[{ type: "text", text: runaway }], "aborted"]) }, { stdout: PI_STREAM });
+    await runWorker(job({ ids: IDS3, nudgeTimeoutSec: 90 }), { run: f.run });
+    const message = f.calls[1]!.args.at(-1)!;
+    expect(message).toContain("same text again and again");
+    expect(message).toContain("Write your final answer once");
+    expect(message).not.toContain("held only thinking");
+  });
+
+  test("a message that was cut at the output limit, with no runaway in it, keeps the text about a cut", async () => {
+    const f = sequence({ stdout: turns([[{ type: "text", text: '{"rows": [{"line": 7' }], "length"]) }, { stdout: PI_STREAM });
+    await runWorker(job({ ids: IDS3, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls[1]!.args.at(-1)).toContain("cut off or held only thinking");
   });
 
   test("a nudge after the empty turn that the abort ended continues from the turn before it", async () => {

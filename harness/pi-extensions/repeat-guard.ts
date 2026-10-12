@@ -28,7 +28,14 @@
  * - A final message that has more records than the batch has items, or that repeats one unit of text,
  *   is cut at that point (`ctx.abort()`). Left alone, it runs to the output limit: one row written
  *   a hundred times, which costs ten minutes on a local model. The harness sees the aborted message
- *   as a cut one and asks for the answer again, with the message removed from the session.
+ *   as a cut one and asks for the answer again, with the message removed from the session; it names
+ *   the reason with `runawayOf`, so the model is told why the message was cut.
+ * - A call with an argument that the tool does not list is blocked, and the block names the arguments
+ *   that the tool takes. Pi ignores such an argument and runs the call, so the model would read the
+ *   result of a call that it did not make. A call whose arguments hold the records of the answer is
+ *   blocked too, and ends the session at the end of its turn: a local model that is given tools is told
+ *   by its template to answer as a function call, and then sends its answer to the first tool it names.
+ *   The harness then asks for the answer on a turn that has no tools.
  *
  * It also sizes each tool result to the room that is left before pi compacts the context, so that
  * one result cannot be the call that forces a compaction (see `capResult`).
@@ -75,6 +82,32 @@ export interface ExtensionApi {
   // The handler of each event has its own event type in pi; the guard reads the few fields it names.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: string, handler: (event: any, ctx: ExtensionContext) => unknown): void;
+  /** The tools of the session with their argument schemas (pi 0.84.4 `getAllTools`). */
+  getAllTools?(): { name: string; parameters?: unknown }[];
+}
+
+/** What the model reads in place of the result of a call that holds its answer. */
+export const ANSWER_IN_CALL_REASON =
+  "Blocked: this call holds your answer. An answer is the text of a message, not the arguments of a tool call. No tool is offered now: write the answer as the text of your next message.";
+
+/** The names that the argument schema of a tool lists, or undefined when it lists none. */
+export function declaredArguments(parameters: unknown): string[] | undefined {
+  const properties = (parameters as { properties?: unknown } | null | undefined)?.properties;
+  if (properties === null || typeof properties !== "object" || Array.isArray(properties)) return undefined;
+  return Object.keys(properties);
+}
+
+/** The names in `input` that `declared` does not list. */
+export function undeclaredArguments(input: unknown, declared: readonly string[]): string[] {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return [];
+  return Object.keys(input).filter((key) => !declared.includes(key));
+}
+
+/** What the model reads in place of the result of a call with an argument that its tool does not list. */
+export function undeclaredReason(toolName: string, extra: readonly string[], declared: readonly string[]): string {
+  const takes = declared.length === 0 ? "It takes no arguments." : `It takes: ${declared.join(", ")}.`;
+  const names = extra.map((name) => `'${name}'`).join(", ");
+  return `Blocked: the ${toolName} tool has no argument ${names}. ${takes} Call it again with only those arguments, or write your final answer now.`;
 }
 
 /**
@@ -224,6 +257,8 @@ export interface AnswerShape {
   idField: string;
   /** The number of items of the batch, so the number of records the answer may have. */
   records: number;
+  /** The name of the list that holds the records (`--ids ARRAY.FIELD`), so a call that carries the answer is known. */
+  listField?: string;
 }
 
 /** The environment variable that carries the `AnswerShape` as JSON from the harness to the guard. */
@@ -236,7 +271,8 @@ export function answerShapeFromEnv(env: NodeJS.ProcessEnv): AnswerShape | undefi
   try {
     const v = JSON.parse(raw) as Partial<AnswerShape>;
     if (typeof v.idField === "string" && v.idField !== "" && typeof v.records === "number" && v.records > 0) {
-      return { idField: v.idField, records: v.records };
+      const listField = typeof v.listField === "string" && v.listField !== "" ? v.listField : undefined;
+      return { idField: v.idField, records: v.records, ...(listField !== undefined ? { listField } : {}) };
     }
   } catch {
     // fall through
@@ -303,15 +339,37 @@ function countRecords(text: string, field: string): number {
   return byDepth.get(Math.min(...byDepth.keys()))!;
 }
 
+/** Why a message is a runaway: more records than the batch has items, or text that repeats at its end. */
+export type Runaway = { kind: "records"; found: number; allowed: number } | { kind: "repeat" };
+
 /**
- * True when `text`, the message so far, is a runaway: it holds more records than the batch has items
+ * The runaway that `text`, the message so far, is, or null: it holds more records than the batch has items
  * (a record is a key `shape.idField`), or its end is one unit of text written again and again. The
  * first holds when the model writes the row of one id with another heading each time; the second
- * holds when a batch has no id field.
+ * holds when a batch has no id field. The harness asks the same question of the message that the
+ * guard cut, to tell the model what it saw.
  */
+export function runawayOf(text: string, shape?: AnswerShape): Runaway | null {
+  if (shape !== undefined) {
+    const found = countRecords(text, shape.idField);
+    if (found > shape.records) return { kind: "records", found, allowed: shape.records };
+  }
+  return repeatsAtEnd(text) ? { kind: "repeat" } : null;
+}
+
+/** True when `text`, the message so far, is a runaway (see `runawayOf`). */
 export function findRunaway(text: string, shape?: AnswerShape): boolean {
-  if (shape !== undefined && countRecords(text, shape.idField) > shape.records) return true;
-  return repeatsAtEnd(text);
+  return runawayOf(text, shape) !== null;
+}
+
+/** True when `input` holds a list of the shape's name whose elements are records (objects with the id field). */
+function holdsAnswer(input: unknown, shape: AnswerShape | undefined): boolean {
+  if (shape?.listField === undefined || input === null || typeof input !== "object") return false;
+  const list = (input as Record<string, unknown>)[shape.listField];
+  return (
+    Array.isArray(list) &&
+    list.some((r) => r !== null && typeof r === "object" && !Array.isArray(r) && shape.idField in (r as object))
+  );
 }
 
 /** New characters of text between two runaway checks: a check reads up to a few thousand characters. */
@@ -324,7 +382,37 @@ const CHECK_EVERY = 200;
 export default function repeatGuard(pi: ExtensionApi, env: NodeJS.ProcessEnv = process.env): void {
   const guard = createRepeatGuard();
   const streak = createFailureStreak();
-  pi.on("tool_call", (event) => guard.check(event.toolName, event.input));
+  const shape = answerShapeFromEnv(env);
+  // The arguments that each tool lists. The tools are registered after the extensions are loaded, so the
+  // list is read at the first call; a session that gives no list is left to the checks of pi.
+  const declared = new Map<string, string[]>();
+  const declaredFor = (toolName: string): string[] | undefined => {
+    if (declared.size === 0) {
+      try {
+        for (const tool of pi.getAllTools?.() ?? []) {
+          const names = declaredArguments(tool.parameters);
+          if (names !== undefined) declared.set(tool.name, names);
+        }
+      } catch {
+        // The check is an aid: a session whose tools cannot be read keeps the checks of pi.
+      }
+    }
+    return declared.get(toolName);
+  };
+  // True once a call held the answer: the session is stopped at the end of that turn.
+  let answered = false;
+  pi.on("tool_call", (event) => {
+    if (holdsAnswer(event.input, shape)) {
+      answered = true;
+      return { block: true, reason: ANSWER_IN_CALL_REASON } satisfies BlockResult;
+    }
+    const names = declaredFor(event.toolName);
+    if (names !== undefined) {
+      const extra = undeclaredArguments(event.input, names);
+      if (extra.length > 0) return { block: true, reason: undeclaredReason(event.toolName, extra, names) } satisfies BlockResult;
+    }
+    return guard.check(event.toolName, event.input);
+  });
   // Tokens of results handed out and not yet in the context. Pi runs the calls of one message together,
   // so all their tool_result events come before the first result is added to the context.
   let granted = 0;
@@ -332,6 +420,7 @@ export default function repeatGuard(pi: ExtensionApi, env: NodeJS.ProcessEnv = p
     guard.reset();
     streak.reset();
     granted = 0;
+    answered = false;
   });
   pi.on("tool_result", (event, ctx) => {
     const content = event?.content ?? [];
@@ -344,13 +433,15 @@ export default function repeatGuard(pi: ExtensionApi, env: NodeJS.ProcessEnv = p
     if (event?.message?.role === "toolResult") granted = 0;
   });
   // The end of a turn has the results of all its calls. A turn in which every call failed is one failure.
+  // A call that held the answer ends the session at once, and again at each later turn if the abort did
+  // not take effect.
   pi.on("turn_end", (event, ctx) => {
     const results: { isError?: boolean }[] = Array.isArray(event?.toolResults) ? event.toolResults : [];
     if (results.length === 0) return;
-    if (streak.record(results.every((r) => r?.isError === true))) ctx.abort();
+    const stop = streak.record(results.every((r) => r?.isError === true));
+    if (stop || answered) ctx.abort();
   });
 
-  const shape = answerShapeFromEnv(env);
   let text = "";
   let checkedAt = 0;
   let aborted = false;

@@ -16,6 +16,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import repeatGuard, {
+  ANSWER_IN_CALL_REASON,
   answerShapeFromEnv,
   callKey,
   capResult,
@@ -29,6 +30,7 @@ import repeatGuard, {
   REPEAT_REASON,
   RUNAWAY_MIN_UNIT,
   RUNAWAY_REPEATS,
+  runawayOf,
 } from "../harness/pi-extensions/repeat-guard.ts";
 
 const fixture = (name: string) => readFileSync(join(import.meta.dir, "fixtures", "workers", name), "utf8");
@@ -213,9 +215,37 @@ describe("findRunaway", () => {
   });
 });
 
+describe("runawayOf", () => {
+  const shape = { idField: "line", records: 2 };
+
+  test("more records than the batch has items says how many there were and how many the batch has", () => {
+    expect(runawayOf('{"rows": [{"line": 1}, {"line": 2}, {"line": 3', shape)).toEqual({ kind: "records", found: 3, allowed: 2 });
+  });
+
+  test("a unit of text that is written again and again is a repeat", () => {
+    const unit = "the row of this id was not found in the changelog; ";
+    expect(runawayOf('{"rows": [' + unit.repeat(RUNAWAY_REPEATS + 1))).toEqual({ kind: "repeat" });
+  });
+
+  test("an answer that fits the batch is not a runaway", () => {
+    expect(runawayOf('{"rows": [{"line": 1}, {"line": 2}]}', shape)).toBeNull();
+    expect(runawayOf("Done.")).toBeNull();
+  });
+
+  test("findRunaway is true exactly when runawayOf names a runaway", () => {
+    const texts = ['{"rows": [{"line": 1}, {"line": 2}, {"line": 3', '{"rows": [{"line": 1}]}', "x".repeat(40).repeat(20), "short"];
+    for (const t of texts) expect(findRunaway(t, shape)).toBe(runawayOf(t, shape) !== null);
+  });
+});
+
 describe("answerShapeFromEnv", () => {
   test("it reads the id field and the number of records", () => {
     expect(answerShapeFromEnv({ VERIHARNESS_ANSWER_SHAPE: JSON.stringify({ idField: "line", records: 4 }) })).toEqual({ idField: "line", records: 4 });
+  });
+
+  test("it reads the name of the list that holds the records, when the harness gives it", () => {
+    const env = { VERIHARNESS_ANSWER_SHAPE: JSON.stringify({ idField: "line", records: 4, listField: "rows" }) };
+    expect(answerShapeFromEnv(env)).toEqual({ idField: "line", records: 4, listField: "rows" });
   });
 
   test("a missing or a damaged value gives no shape, and never an error: the guard must not stop a session", () => {
@@ -379,6 +409,105 @@ describe("capResult", () => {
     const body = textOf(out);
     expect(body).toContain("[Cut here.");
     expect(body).not.toContain("bbbbbbbbbb");
+  });
+});
+
+describe("the extension refuses a call that the tool does not declare", () => {
+  type Handler = (event: unknown, ctx: unknown) => unknown;
+  const TOOLS = [
+    { name: "ls", parameters: { type: "object", properties: { path: {}, limit: {} } } },
+    { name: "read", parameters: { type: "object", properties: { path: {}, offset: {}, limit: {} }, required: ["path"] } },
+  ];
+  const SHAPE = { VERIHARNESS_ANSWER_SHAPE: JSON.stringify({ idField: "line", records: 3, listField: "rows" }) };
+
+  /** `tools` null: a session whose API has no list of tools. */
+  function load(env: NodeJS.ProcessEnv = {}, tools: unknown = TOOLS) {
+    const handlers: Record<string, Handler> = {};
+    let aborts = 0;
+    const api: Record<string, unknown> = { on: (name: string, handler: Handler) => void (handlers[name] = handler) };
+    if (tools !== null) api.getAllTools = () => tools;
+    repeatGuard(api as never, env);
+    const ctx = { abort: () => void aborts++ };
+    const call = (toolName: string, input: Record<string, unknown>) =>
+      handlers.tool_call!({ toolName, input }, ctx) as { block?: boolean; reason?: string } | undefined;
+    const turn = (...failed: boolean[]) => handlers.turn_end!({ toolResults: failed.map((isError) => ({ role: "toolResult", isError })) }, ctx);
+    return { call, turn, aborts: () => aborts };
+  }
+
+  test("an argument that the tool does not list blocks the call, and the reason names what the tool takes", () => {
+    // Pi ignores such an argument and runs the call, so the model reads a result of a call it did not make.
+    const { call } = load();
+    const r = call("ls", { path: "workspace", foo: 1 })!;
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain("foo");
+    expect(r.reason).toContain("ls");
+    expect(r.reason).toContain("path, limit");
+  });
+
+  test("a call with the arguments of the tool is not touched", () => {
+    const { call } = load();
+    expect(call("read", { path: "a.md", offset: "5", limit: 10 })).toBeUndefined();
+    expect(call("ls", {})).toBeUndefined();
+  });
+
+  test("a call that was refused is not a repeat: it is refused for its arguments each time, and the call that is right runs", () => {
+    const { call } = load();
+    const first = call("ls", { path: "workspace", foo: 1 })!;
+    const again = call("ls", { path: "workspace", foo: 1 })!;
+    expect(first.reason).toBe(again.reason);
+    expect(again.reason).not.toBe(REPEAT_REASON);
+    // The right call is the one that was refused with `foo` taken out: it was never recorded, so it runs.
+    expect(call("ls", { path: "workspace" })).toBeUndefined();
+    // And now it is a call that was made.
+    expect(call("ls", { path: "workspace" })!.reason).toBe(REPEAT_REASON);
+  });
+
+  test("a tool that the session does not list, or a session that lists none, is left to pi", () => {
+    expect(load({}, TOOLS).call("grep", { pattern: "x", anything: 1 })).toBeUndefined();
+    expect(load({}, null).call("ls", { foo: 1 })).toBeUndefined();
+    expect(load({}, []).call("ls", { foo: 1 })).toBeUndefined();
+  });
+
+  test("a schema with no properties is not read as a list of none", () => {
+    const { call } = load({}, [{ name: "ls", parameters: { type: "object" } }]);
+    expect(call("ls", { foo: 1 })).toBeUndefined();
+  });
+
+  test("a call that holds the records of the answer says so, and ends the session at the end of its turn", () => {
+    // Llama 3.1 writes its answer as {"name": "ls", "parameters": {"rows": [...]}}: the template tells it to
+    // answer as a function call. A tool that cannot take the answer is no place for it.
+    const { call, turn, aborts } = load(SHAPE);
+    const r = call("ls", { rows: [{ line: 1, verdict: "LOGGED" }] })!;
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain("answer");
+    expect(r.reason).toContain("text of your next message");
+    expect(aborts()).toBe(0);
+    turn(true);
+    expect(aborts()).toBe(1);
+  });
+
+  test("a call with other undeclared arguments does not end the session by itself", () => {
+    const { call, turn, aborts } = load(SHAPE);
+    expect(call("ls", { path: "workspace", foo: 1 })!.block).toBe(true);
+    turn(true);
+    expect(aborts()).toBe(0);
+  });
+
+  test("a list under another name, or records with no id field, is not the answer", () => {
+    const { call, turn, aborts } = load(SHAPE);
+    expect(call("ls", { items: [{ line: 1 }] })!.reason).not.toBe(ANSWER_IN_CALL_REASON);
+    expect(call("ls", { rows: ["a", "b"] })!.reason).not.toBe(ANSWER_IN_CALL_REASON);
+    turn(true);
+    expect(aborts()).toBe(0);
+  });
+
+  test("a stop that did not take effect is asked for again at the end of each turn that follows", () => {
+    // The abort can come between two turns. A session that goes on is still one whose answer is in a call.
+    const { call, turn, aborts } = load(SHAPE);
+    call("ls", { rows: [{ line: 1 }] });
+    turn(true);
+    turn(false);
+    expect(aborts()).toBe(2);
   });
 });
 

@@ -27,7 +27,7 @@ import { claudeTools, isClaudeCodeProvider } from "../claude/provider.js";
 import * as config from "../config.js";
 import { agentEnv, piCommandFor, planPiCommand } from "../driver.js";
 import { piTools as realPiTools, type PiTools } from "../model/pitools.js";
-import { ANSWER_SHAPE_ENV } from "../pi-extensions/repeat-guard.js";
+import { ANSWER_SHAPE_ENV, runawayOf, type AnswerShape, type Runaway } from "../pi-extensions/repeat-guard.js";
 import { copyTree, rmrf } from "../fsutil.js";
 import { run, type RunResult } from "../grade/proc.js";
 import type { ContextSize } from "../model/config.js";
@@ -152,6 +152,11 @@ function withAnswerCap(job: WorkerJob): PiProviderRecord | undefined {
   return { ...provider, config: { ...provider.config, models: capped } };
 }
 
+/** Ids for a message to the model: the first IDS_LISTED, then how many more. */
+function showIds(xs: readonly string[]): string {
+  return xs.slice(0, IDS_LISTED).join(", ") + (xs.length > IDS_LISTED ? ` (and ${xs.length - IDS_LISTED} more)` : "");
+}
+
 /** The errors of the ids of a deliverable against the ids of its batch; none when they are the same set. */
 function idProblems(value: unknown, ids: WorkerIds): string[] {
   const list = value !== null && typeof value === "object" ? (value as Record<string, unknown>)[ids.array] : undefined;
@@ -166,17 +171,16 @@ function idProblems(value: unknown, ids: WorkerIds): string[] {
     }
     seen.set(String(raw), (seen.get(String(raw)) ?? 0) + 1);
   }
-  const show = (xs: string[]): string => xs.slice(0, IDS_LISTED).join(", ") + (xs.length > IDS_LISTED ? ` (and ${xs.length - IDS_LISTED} more)` : "");
   const expected = new Set(ids.expected);
   const missing = ids.expected.filter((id) => !seen.has(id));
   const extra = [...seen.keys()].filter((id) => !expected.has(id));
   const repeated = [...seen].filter(([, n]) => n > 1).map(([id]) => id);
   const out: string[] = [];
   if (without > 0) out.push(`${without} record(s) of '${ids.array}' have no '${ids.field}' that is a string or a number`);
-  if (missing.length > 0) out.push(`ids missing from ${ids.array}: ${show(missing)}`);
-  if (extra.length > 0) out.push(`ids not in the batch: ${show(extra)}`);
-  if (repeated.length > 0) out.push(`ids repeated: ${show(repeated)}`);
-  if (out.length > 0) out.push(`the batch has ${ids.expected.length} ids: ${show([...ids.expected])}`);
+  if (missing.length > 0) out.push(`ids missing from ${ids.array}: ${showIds(missing)}`);
+  if (extra.length > 0) out.push(`ids not in the batch: ${showIds(extra)}`);
+  if (repeated.length > 0) out.push(`ids repeated: ${showIds(repeated)}`);
+  if (out.length > 0) out.push(`the batch has ${ids.expected.length} ids: ${showIds([...ids.expected])}`);
   return out;
 }
 
@@ -185,6 +189,24 @@ const NUDGE_TIME = "Time is nearly up. Stop investigating and do not read any mo
 const NUDGE_CUT = "Your last message ended without an answer: it was cut off or held only thinking. Do not think further. Write your final answer now, in the format the task asked for, as the text of your next message.";
 const NUDGE_FORMAT = "Your last message did not hold the answer in the format the task asked for. Write your final answer now, in that format, as the text of your next message.";
 const NUDGE_STUCK = "Your tool calls failed or repeated an earlier call, so no tool is offered now. Write your final answer now, from what you have found, in the format the task asked for, as the text of your next message.";
+
+/**
+ * The nudge for a message that the guard of the session cut, with what the guard saw. The model that is
+ * only told that its message "was cut off" writes the same message again.
+ */
+function cutBy(runaway: Runaway, ids: WorkerIds | undefined): string {
+  if (runaway.kind === "records") {
+    const batch = ids === undefined ? `${runaway.allowed} ids` : `${runaway.allowed} ids: ${showIds(ids.expected)}`;
+    return (
+      `Your last message was stopped because it held ${runaway.found} records, and the batch has ${batch}. ` +
+      "Write your final answer once, with one record for each id and each id once, as the text of your next message."
+    );
+  }
+  return (
+    "Your last message was stopped because it wrote the same text again and again. " +
+    "Write your final answer once, in the format the task asked for, as the text of your next message."
+  );
+}
 
 /** Most errors a nudge lists: a model that was given more would lose the first ones. */
 const NUDGE_LISTED = 8;
@@ -208,8 +230,9 @@ type NudgeKind = "time" | "cut" | "format" | "json" | "schema" | "ids" | "stuck"
  * The nudge for a session that ended with `error`, or null when a nudge cannot help.
  * `problems`: what the schema or the ids check found in an answer that parsed.
  */
-function nudgeFor(error: WorkerError, problems: readonly string[] = []): { kind: NudgeKind; message: string } | null {
+function nudgeFor(error: WorkerError, problems: readonly string[] = [], cut: string | null = null): { kind: NudgeKind; message: string } | null {
   if (error === "timeout") return { kind: "time", message: NUDGE_TIME };
+  if (error === "length" && cut !== null) return { kind: "cut", message: cut };
   if (error === "length" || error === "thinking-only") return { kind: "cut", message: NUDGE_CUT };
   if (error === "stuck") return { kind: "stuck", message: NUDGE_STUCK };
   // A JSON that stops being JSON at a place is sent back with the place and the rule; without a JSON in
@@ -338,11 +361,17 @@ export function workerArgs(
   const env = agentEnv(process.env);
   env.PI_CODING_AGENT_DIR = job.piProvider ? home : (env.PI_CODING_AGENT_DIR ?? config.PI_HOME);
   env.PI_SKIP_VERSION_CHECK ??= "1";
-  // The guard cuts a message that has more records than the batch has items; it needs the field and the count.
-  if (job.ids !== undefined) {
-    env[ANSWER_SHAPE_ENV] = JSON.stringify({ idField: job.ids.field, records: job.ids.expected.length });
-  }
+  // The guard needs the id field, the item count and the name of the list: it cuts a message that has more
+  // records than the batch has items, and it knows a tool call that holds the answer.
+  const shape = answerShapeOf(job);
+  if (shape !== undefined) env[ANSWER_SHAPE_ENV] = JSON.stringify(shape);
   return { cmd: plan.cmd, input: plan.input, env };
+}
+
+/** What the guard is told about the answer: the field of the id, the number of items and the list of records. */
+function answerShapeOf(job: WorkerJob): AnswerShape | undefined {
+  if (job.ids === undefined) return undefined;
+  return { idField: job.ids.field, records: job.ids.expected.length, listField: job.ids.array };
 }
 
 /** The error of a finished session, before its deliverable is read. `overTurns`: the turn cap stopped it. */
@@ -514,6 +543,12 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       let parsed: ReturnType<typeof parseJsonDeliverable> = null;
       let problems: string[] = [];
       let problemKind: "schema" | "ids" = "schema";
+      // A message that the guard cut: ask the guard's question of it again, to tell the model what was seen.
+      let cut: string | null = null;
+      if (error === "length" && !claude) {
+        const runaway = runawayOf(stats.finalText, answerShapeOf(job));
+        if (runaway !== null) cut = cutBy(runaway, job.ids);
+      }
       if (error === null && isJson) {
         parsed = parseJsonDeliverable(stats.finalText);
         if (parsed === null) {
@@ -530,7 +565,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
           }
         }
       }
-      return { stats, error, parsed, problems, problemKind };
+      return { stats, error, parsed, problems, problemKind, cut };
     };
 
     if (!claude) mkdirSync(join(home, "session"), { recursive: true });
@@ -547,7 +582,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     const sentFor = new Set<NudgeKind>();
     while (nudgeSec !== undefined && !claude && !overTurns && !r.aborted && !r.error) {
       const failing: WorkerError | null = verdict.error ?? (verdict.problems.length > 0 ? verdict.problemKind : null);
-      const nudge = failing === null ? null : nudgeFor(failing, verdict.problems);
+      const nudge = failing === null ? null : nudgeFor(failing, verdict.problems, verdict.cut);
       if (nudge === null || sentFor.has(nudge.kind)) break;
       sentFor.add(nudge.kind);
       dropCutReply(join(home, "session"));

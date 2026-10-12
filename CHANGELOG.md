@@ -4,6 +4,32 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.13] - 2026-10-12
+
+### Added
+- The guard blocks a tool call with an argument that the tool's schema does not list. Pi ignored such an
+  argument and ran the call, so the model read the result of a call it did not make. The block names the
+  arguments that the tool takes.
+- The guard knows a call that holds the answer: with `--ids`, a list of the name of the `--ids` array whose
+  elements have the id field. It blocks the call, says that an answer is the text of a message, and stops
+  the session at the end of the turn (error `stuck`; the nudge with no tools follows). In one measured
+  run all 28 `ls` calls held `{"rows": [...]}` because the llama3.1 template tells a model that has tools
+  to answer as a function call, and the first call listed a directory, so the model read success.
+- `runawayOf` names why the guard cut a message: records over the ids of the batch, or text that repeats.
+
+### Changed
+- The nudge after a message that the guard cut says what the guard saw (records held and ids of the batch,
+  or text written again and again) and asks for the answer once, with one record for each id. It said
+  "cut off or held only thinking", and the model wrote the same message again.
+- The answer shape that the harness gives the guard has the name of the list (`listField`).
+
+### Fixed
+- The nudge for a final message that is not valid JSON names the place where it breaks in every case where
+  the parser takes no value. A broken answer that had whole objects after the break (a heading with `\\"`
+  inside) was sent back as "not in the format" with no place, because `jsonProblem` read the whole
+  objects after the break as values of their own. The parser and `jsonProblem` now read a text with one
+  function.
+
 ## [0.12.12] - 2026-10-12
 
 ### Added

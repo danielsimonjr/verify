@@ -263,7 +263,9 @@ worker had found. `workers` now continues the same session with a short message:
 do not think further, write the answer now. The message depends on the cause. For a schema or an ids
 error it lists the errors (the first eight). For a JSON that is not valid it names the character where
 the text stops being JSON, the rule that it breaks and the text around that place. For a stuck session
-it says that the tool calls failed or repeated an earlier call and that no tool is offered.
+it says that the tool calls failed or repeated an earlier call and that no tool is offered. For a message
+that the guard cut it says what the guard saw: how many records the message held and which ids the batch
+has, or that the message wrote the same text again and again.
 
 A session is sent back once for each kind of failure: `time`, `cut`, `stuck`, `format`, `json`,
 `schema` and `ids`. An answer that is put right can fail the next check. A model that answered in
@@ -286,7 +288,7 @@ session. A nudge needs a saved session, so a Claude Code worker has none, and `-
 
 A small model can repeat one tool call, again and again, until its context is full, or call a tool with
 arguments that it does not accept. A pi worker therefore loads one extension, the guard
-(`harness/pi-extensions/repeat-guard.ts`), which does three things with tool calls and one with the
+(`harness/pi-extensions/repeat-guard.ts`), which does four things with tool calls and one with the
 answer.
 
 **Repeated calls.** The tools of a worker only read, so a repeat returns the text that the model
@@ -298,6 +300,20 @@ order of the keys does not matter. A compaction clears the guard, because the re
 are no longer in the context. A call of any other tool (`edit`, `write`, `bash`) clears it too: the same
 read after it can return other text. The record counts a blocked call in `toolErrors`, in the class
 `repeated`.
+
+**Arguments that the tool does not list.** Pi ignores an argument that the schema of a tool does not
+name, and runs the call: the model reads the result of a call that it did not make. The guard blocks
+such a call, and the model reads the name of the tool, the arguments that it does not have and the
+arguments that it takes. A call that has the arguments of its tool is not touched, and a session whose
+tools cannot be read is left to the checks of pi.
+
+**An answer in a call.** A chat template such as llama3.1's tells a model that holds tools to answer
+with a function call, so a model that has its answer can send it as the arguments of the first tool that
+it names (all 28 `ls` calls of one run held `{"rows": [...]}`). With `--ids` the harness gives the guard
+the name of the list, so a call that has a list of that name whose elements have the id field is known
+for what it is. The guard blocks it, tells the model that an answer is the text of a message, and stops
+the session at the end of that turn. The error is `stuck`, and the nudge for it asks for the answer on a
+turn that has no tools.
 
 **Failed calls in a row.** Three turns in a row in which every tool call failed stop the session,
 whatever the cause: a block, arguments that the tool does not accept, or a path that is not there. The
@@ -325,7 +341,10 @@ it the field and the number of items), or when the end of the text is one unit o
 characters written 12 times in a row (a batch with no ids, or a runaway of another shape). A cut
 message ends with the stop reason `aborted`. The record has the error `length`, as for a message that
 reached the limit, and the nudge for it removes the message from the session before it asks for the
-answer.
+answer. The harness asks the guard's question of the cut text again, so the nudge says why the message
+was stopped (for example: it held 4 records, and the batch has 3 ids: 7, 8, 9) and asks for one
+record for each id, written once. A message that reached the output limit with no runaway in it keeps
+the text about a cut.
 
 With `--ids`, the output limit of the model is also cut to the answer that the batch needs: 1024 tokens
 for each item and 1024 for the rest of the message, and never less than 4096, because the limit is

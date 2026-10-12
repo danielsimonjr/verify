@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { REPEAT_REASON } from "../harness/pi-extensions/repeat-guard.ts";
-import { claudeStreamStats, jsonProblem, openMessageKind, parseJsonDeliverable, piStreamStats, turnCounter } from "../harness/workers/record.ts";
+import { ANSWER_IN_CALL_REASON, REPEAT_REASON, undeclaredReason } from "../harness/pi-extensions/repeat-guard.ts";
+import { claudeStreamStats, jsonProblem, openMessageKind, parseJsonDeliverable, piStreamStats, toolErrorKind, turnCounter } from "../harness/workers/record.ts";
 
 const FIXTURES = join(import.meta.dir, "fixtures", "workers");
 const FENCE = "```";
@@ -265,6 +265,17 @@ describe("stream stats", () => {
   });
 });
 
+describe("toolErrorKind of the guard's blocks", () => {
+  test("a call with an argument the tool does not list, and a call that holds the answer, are invalid arguments", () => {
+    expect(toolErrorKind(undeclaredReason("ls", ["rows"], ["path", "limit"]))).toBe("invalid");
+    expect(toolErrorKind(ANSWER_IN_CALL_REASON)).toBe("invalid");
+  });
+
+  test("a block text that merely mentions a missing file is still classed by its own words", () => {
+    expect(toolErrorKind("ENOENT: no such file or directory")).toBe("missing");
+  });
+});
+
 describe("jsonProblem", () => {
   test("text that has no JSON in it has no problem to name", () => {
     expect(jsonProblem("The rows are logged.")).toBeNull();
@@ -348,5 +359,43 @@ describe("jsonProblem", () => {
 
   test("only the first problem is named, and the text after a value that closes is not read", () => {
     expect(jsonProblem('{"a": 1} and then {"b": ')).toBeNull();
+  });
+
+  test("rows that are whole after the place where the answer broke do not hide the break", () => {
+    // `\\"` ends the string at the quote and `1 error` is not JSON. The rows after it are whole objects, but
+    // they are part of the value that broke, and the parser does not take a piece of a broken value.
+    const text =
+      '{"rows": [{"line": 1, "heading": "a \\\\"1 error", "evidence": "x"}, {"line": 2, "verdict": "LOGGED", "evidence": "y"}]}';
+    expect(parseJsonDeliverable(text)).toBeNull();
+    const problem = jsonProblem(text)!;
+    expect(problem).toContain("expected a comma");
+    expect(problem).toContain("found '1'");
+  });
+
+  test("a fenced answer is named, not a prose example before the fence", () => {
+    // The fence holds the answer. The example above it breaks too, and it must not be the place named.
+    const text = 'Format: {"line": <n>}\n' + FENCE + "json\n{'rows': [{\"line\": 1}]}\n" + FENCE;
+    expect(parseJsonDeliverable(text)).toBeNull();
+    const problem = jsonProblem(text)!;
+    expect(problem).toContain("double quotes");
+    expect(problem).not.toContain("found '<'");
+  });
+
+  test("a place is named exactly when the parser finds no value in a text that has braces in it", () => {
+    const texts = [
+      '{"a": 1}',
+      '{"a": 1,}',
+      'Answer: {"rows": [{"line": 1}, {"line": 2}',
+      'Example {"line": N} then {"rows": [{"line": 1}]}',
+      'Example {"x": 1} then {"rows": [',
+      '{"rows": [{"line": 1, "e": "C:\\Users"}, {"line": 2}]}',
+      "```json\n" + '{"rows": [{"line": 1}' + "\n```",
+      "```json\n" + '{"rows": [{"line": 1}]}' + "\n```",
+      'text [1, 2, 3] and {"a": [1, 2}',
+      '{"rows": [{"line": 1, "e": "x" "y"}, {"line": 2}]}',
+    ];
+    for (const t of texts) {
+      expect({ text: t, named: jsonProblem(t) !== null }).toEqual({ text: t, named: parseJsonDeliverable(t) === null });
+    }
   });
 });

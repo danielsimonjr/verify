@@ -198,11 +198,16 @@ veriharness workers DIR --provider P --model M [--base-url U] [--context-size N|
      worked, and a compaction, start the count again. The guard cuts each tool result to half of the
      room that is left before pi compacts, less the results of the same message that the context does
      not hold yet, so that one result cannot force a compaction. A compaction clears the memory of calls.
+     A call with an argument that the tool's schema does not list (`pi.getAllTools()`, read at the first
+     call) is blocked with the arguments the tool takes. A call that has a list of the name given in
+     `VERIHARNESS_ANSWER_SHAPE` (`listField`) whose elements have the id field is the answer in a tool
+     call: it is blocked, and the session is stopped at the end of that turn (error `stuck`).
      The guard also cuts a message (`ctx.abort()`) that holds more records than the batch has items
      (the harness gives it the `--ids` field and the item count in `VERIHARNESS_ANSWER_SHAPE`), or whose
      end is one unit of 24 to 600 characters written 12 times. The id count is read at the shallowest
      depth of braces where the key stands. The stop reason `aborted` is the error `length`, and the
-     nudge removes that message from the session. A call of a tool that is not `read`, `grep`, `find`
+     nudge removes that message from the session; it names the runaway (`runawayOf`: the records found
+     and the ids of the batch, or text that repeats). A call of a tool that is not `read`, `grep`, `find`
      or `ls` clears the guard's memory of calls. A session that ends in its tool calls (the guard
      stopped it, or its last turn asks for a tool) is `stuck`.
    - A job with `--ids` has the output limit of its model cut to the answer that the batch needs:
