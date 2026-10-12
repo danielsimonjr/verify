@@ -4,6 +4,51 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.12] - 2026-10-12
+
+### Added
+- The error `stuck`: a pi session that ended in its tool calls. The guard stops a session after three
+  turns in a row in which every tool call failed, whatever the cause (a repeated call, arguments the
+  tool does not accept, a path that is not there). A turn is the unit because pi runs the calls of one
+  message together. Before, only a third repeated call stopped it, so a model that sent arguments the
+  tool refused 34 times in a row never ended on its own. A streak of two failed calls was followed by
+  a call that worked in 12 of 16 cases, and a streak of three or more in 3 of 22.
+- The nudge for `stuck` says that the tool calls failed or repeated an earlier call and that no tool is
+  offered. The nudge for a final message with broken JSON names the character where the text stops being
+  JSON, the rule it breaks and the text around that place (`json` is a kind of its own, so it does not
+  use up the format nudge).
+- The guard cuts each tool result to half of the room that is left before pi compacts (less the results
+  of the same message that the context does not hold yet), at the end of a line where it can, with a
+  line that says what was cut and how to ask for less. One 50 KB result is 14 000 to 16 000 tokens of a
+  llama model, which is the call that forced most compactions.
+- With `--ids`, the output limit of a local model is cut to the answer that the batch needs (1024 tokens
+  for each item and 1024 for the rest, at least 4096). The longest record measured took 378 tokens.
+  `--max-tokens`, `VERIHARNESS_MAX_TOKENS` and `--thinking` keep the limit of the provider, and the cap
+  never raises a limit.
+- `workers` warns when the window is at or below the compaction reserve of pi (16384 tokens): every
+  rollout then compacts.
+
+### Changed
+- `--retries` also runs a rollout again when its error is `stuck` or `compacted`.
+- The stderr line for a compacted rollout names the point where pi compacts (the window less the reserve
+  of 16384 tokens) and the peak that the worker reached. It no longer says that the batch is too big for
+  the window, which the record does not show.
+- A session that ends on a tool call, or on an aborted turn after a tool result, is `stuck`, not
+  `no-result`. A request that timed out stays `no-result`.
+
+- A retry moves the deliverable of the attempt before it to `trajectory/attempt-N/deliverables/`. A
+  compacted rollout keeps its deliverable, and a retry that ended worse left none.
+- A turn that an error ended counts as `stuck` only when the error says that the session was aborted
+  (`This operation was aborted` and the messages of pi's providers). A timeout or a reset that has the
+  word "aborted" in it stays `no-result`.
+
+### Fixed
+- A nudge after the empty turn that an abort ended continued a session that held that turn. The harness
+  removes it from the saved session first, as it does for a cut message.
+- The JSON problem that a nudge names is the one in the answer: a prose example with braces before the
+  answer was named instead of it, and a text nested deeper than 200 levels got a place that was not
+  the break.
+
 ## [0.12.11] - 2026-10-11
 
 ### Added

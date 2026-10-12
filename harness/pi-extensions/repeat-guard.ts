@@ -13,17 +13,25 @@
 // limitations under the License.
 
 /**
- * A pi extension for a worker session. It stops the two loops that a small model enters and cannot
- * leave by itself:
+ * A pi extension for a worker session. It keeps a small model from three things it cannot leave by
+ * itself:
  *
  * - A tool call that repeats an earlier call of the session is blocked. The tools of a worker only
  *   read, so the second call returns the text the model already has. The block tells the model so,
- *   in the place where the result would be. The third block in a row stops the session, and the
+ *   in the place where the result would be.
+ * - MAX_FAILURES_IN_A_ROW turns in a row in which every tool call failed stop the session
+ *   (`ctx.abort()`), whatever the cause: a block, arguments the tool does not accept, a path that is
+ *   not there. Pi checks the arguments of a call before it tells an extension about the call, so the
+ *   result of the turn is the place where every failure is seen. A turn is the unit because pi runs
+ *   the calls of one message together: the model has read none of their results when they end. The
  *   harness then asks the model for the answer on a turn that has no tools.
  * - A final message that has more records than the batch has items, or that repeats one unit of text,
  *   is cut at that point (`ctx.abort()`). Left alone, it runs to the output limit: one row written
  *   a hundred times, which costs ten minutes on a local model. The harness sees the aborted message
  *   as a cut one and asks for the answer again, with the message removed from the session.
+ *
+ * It also sizes each tool result to the room that is left before pi compacts the context, so that
+ * one result cannot be the call that forces a compaction (see `capResult`).
  *
  * Pi loads this file with `-e`. It imports nothing from pi: the types below are the part of the pi
  * extension API that it uses.
@@ -32,8 +40,13 @@
 /** The tools whose result is the same each time they are called with the same arguments. */
 const READ_ONLY_TOOLS: ReadonlySet<string> = new Set(["read", "grep", "find", "ls"]);
 
-/** Blocks in a row after which the session is stopped. */
-export const MAX_BLOCKS_IN_A_ROW = 3;
+/**
+ * Turns in a row, in which every tool call failed, after which the session is stopped. Over runs 5 to 7
+ * a streak of 2 failed calls was followed by a call that worked in 12 of 16 cases, and a streak of 3 or
+ * more in 3 of 22; the longest (34 calls with arguments the tool does not accept, b16 r03) never ended
+ * on its own. The worker charter asks for one call in a message, so a turn is mostly one call.
+ */
+export const MAX_FAILURES_IN_A_ROW = 3;
 
 /** What the model reads in place of the result of a blocked call. */
 export const REPEAT_REASON =
@@ -43,13 +56,18 @@ export const REPEAT_REASON =
 export interface BlockResult {
   block: true;
   reason: string;
-  /** Stops the session when every call of the message is a block that has this set. */
-  terminate?: true;
+}
+
+/** The context of a session as pi reports it: `tokens` is null right after a compaction. */
+export interface ContextUsage {
+  tokens: number | null;
+  contextWindow: number;
 }
 
 /** The part of the pi extension context that the guard uses. */
 export interface ExtensionContext {
   abort(): void;
+  getContextUsage?(): ContextUsage | undefined;
 }
 
 /** The part of the pi extension API that this file uses. */
@@ -77,10 +95,9 @@ export function callKey(toolName: string, input: Record<string, unknown>): strin
   return `${toolName}:${JSON.stringify(norm(input))}`;
 }
 
-/** The state of one session: the calls it has made and how many blocks came in a row. */
+/** The state of one session: the calls it has made. */
 export function createRepeatGuard() {
   const seen = new Set<string>();
-  let blocksInARow = 0;
   return {
     /** `undefined` lets the call run. A block result stops it. */
     check(toolName: string, input: Record<string, unknown>): BlockResult | undefined {
@@ -88,26 +105,117 @@ export function createRepeatGuard() {
         // `--tools` is a list the caller chose. A call that can change a file or a listing makes the
         // results that the session holds old: the same read after it can return other text.
         seen.clear();
-        blocksInARow = 0;
         return undefined;
       }
       const key = callKey(toolName, input);
       if (!seen.has(key)) {
         seen.add(key);
-        blocksInARow = 0;
         return undefined;
       }
-      blocksInARow += 1;
-      return blocksInARow >= MAX_BLOCKS_IN_A_ROW
-        ? { block: true, reason: REPEAT_REASON, terminate: true }
-        : { block: true, reason: REPEAT_REASON };
+      return { block: true, reason: REPEAT_REASON };
     },
     /** A compaction replaces the results in the context, so the calls that were made are not "already in" it. */
     reset(): void {
       seen.clear();
-      blocksInARow = 0;
     },
   };
+}
+
+/** Counts the failures in a row: one for each turn in which every tool call failed. */
+export function createFailureStreak(limit: number = MAX_FAILURES_IN_A_ROW) {
+  let failures = 0;
+  return {
+    /**
+     * True at the failure that reaches the limit, and at each one after it: a stop that was asked for
+     * and did not take effect (the abort came between two turns) is asked for again.
+     */
+    record(failed: boolean): boolean {
+      if (!failed) {
+        failures = 0;
+        return false;
+      }
+      failures += 1;
+      return failures >= limit;
+    },
+    reset(): void {
+      failures = 0;
+    },
+  };
+}
+
+/** Tokens that pi holds back from the window: it compacts above `window - reserve` (pi 0.84.4 `reserveTokens`). */
+export const COMPACTION_RESERVE_TOKENS = 16384;
+/** The share of the room that is left that one tool result may take. */
+export const RESULT_SHARE = 0.5;
+/**
+ * Characters that one token of a tool result costs, or more. Measured on llama3.1: 47396 characters of an
+ * index cost 16078 tokens (2.95 each), and 51343 characters of grep output 14561 (3.5 each). The lower
+ * figure cuts a result a little earlier; it never lets one through that is larger than the room.
+ */
+export const CHARS_PER_TOKEN = 3;
+/** A result is never cut below this: a model that gets a few lines can still tell what it asked for. */
+export const MIN_RESULT_CHARS = 1000;
+
+/** A part of the content of a tool result. */
+export interface ResultPart {
+  type: string;
+  text?: string;
+}
+
+/** The characters of text in the content of a tool result. */
+export function textLength(content: readonly ResultPart[]): number {
+  return content.reduce((n, part) => n + (part.type === "text" ? (part.text ?? "").length : 0), 0);
+}
+
+/**
+ * The content of a tool result, cut to the room, or undefined when it fits.
+ *
+ * The harness counts a compaction as a failure: the answer would rest on turns the worker no longer holds.
+ * Pi cuts a result at 50 KB, which is 14 to 16k tokens, and a window of 65536 tokens compacts above 49152:
+ * three results that a model could not size before the call were enough (b06 r01 of run 7). A result may
+ * take at most RESULT_SHARE of the room that is left, so the next result gets half of what is then left,
+ * and the notice tells the model how to ask for less.
+ *
+ * `granted`: tokens of results that were handed out and that the context does not hold yet. Pi runs the
+ * calls of one message together, so the results of a message are sized before any of them is in the
+ * context, and each would read the same room.
+ */
+export function capResult<T extends ResultPart>(content: readonly T[], usage: ContextUsage | undefined, granted = 0): T[] | undefined {
+  if (usage === undefined || typeof usage.tokens !== "number" || !Number.isFinite(usage.tokens)) return undefined;
+  const room = Math.max(0, usage.contextWindow - COMPACTION_RESERVE_TOKENS - usage.tokens - granted);
+  const cap = Math.max(MIN_RESULT_CHARS, Math.floor(room * RESULT_SHARE * CHARS_PER_TOKEN));
+  const total = textLength(content);
+  if (total <= cap) return undefined;
+  const notice =
+    `\n\n[Cut here. This result had ${total} characters. Your context has room for about ${room} more tokens, ` +
+    `so one result may hold ${cap} characters. Ask for less: a smaller limit, a smaller context, or a more exact pattern.]`;
+  const out: T[] = [];
+  let left = cap;
+  let noticed = false;
+  for (const part of content) {
+    if (part.type !== "text") {
+      out.push(part);
+      continue;
+    }
+    const text = part.text ?? "";
+    if (left <= 0) continue;
+    if (text.length <= left) {
+      out.push(part);
+      left -= text.length;
+      continue;
+    }
+    let kept = text.slice(0, left);
+    // End at a line when one ends in the last quarter of what is kept: a line cut in the middle reads as a
+    // value that is wrong.
+    const newline = kept.lastIndexOf("\n");
+    if (newline >= left * 0.75) kept = kept.slice(0, newline);
+    out.push({ ...part, text: kept + notice });
+    noticed = true;
+    left = 0;
+  }
+  // The room ended exactly at the end of a part: what follows was dropped, and the model is told so.
+  if (!noticed) out.push({ type: "text", text: notice.trimStart() } as T);
+  return out;
 }
 
 /** What the harness tells the guard about the answer it expects: one record for each item of the batch. */
@@ -215,8 +323,32 @@ const CHECK_EVERY = 200;
  */
 export default function repeatGuard(pi: ExtensionApi, env: NodeJS.ProcessEnv = process.env): void {
   const guard = createRepeatGuard();
+  const streak = createFailureStreak();
   pi.on("tool_call", (event) => guard.check(event.toolName, event.input));
-  pi.on("session_compact", () => guard.reset());
+  // Tokens of results handed out and not yet in the context. Pi runs the calls of one message together,
+  // so all their tool_result events come before the first result is added to the context.
+  let granted = 0;
+  pi.on("session_compact", () => {
+    guard.reset();
+    streak.reset();
+    granted = 0;
+  });
+  pi.on("tool_result", (event, ctx) => {
+    const content = event?.content ?? [];
+    const capped = capResult(content, ctx.getContextUsage?.(), granted);
+    granted += Math.ceil(textLength(capped ?? content) / CHARS_PER_TOKEN);
+    return capped === undefined ? undefined : { content: capped };
+  });
+  // A result that ends is in the context, and the context size counts it from here on.
+  pi.on("message_end", (event) => {
+    if (event?.message?.role === "toolResult") granted = 0;
+  });
+  // The end of a turn has the results of all its calls. A turn in which every call failed is one failure.
+  pi.on("turn_end", (event, ctx) => {
+    const results: { isError?: boolean }[] = Array.isArray(event?.toolResults) ? event.toolResults : [];
+    if (results.length === 0) return;
+    if (streak.record(results.every((r) => r?.isError === true))) ctx.abort();
+  });
 
   const shape = answerShapeFromEnv(env);
   let text = "";

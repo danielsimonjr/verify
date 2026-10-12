@@ -36,6 +36,8 @@ import type { ModelIdentity } from "../model/types.js";
 import { validateSchema } from "./schema.js";
 import {
   claudeStreamStats,
+  ABORT_MESSAGE,
+  jsonProblem,
   openMessageKind,
   parseJsonDeliverable,
   piStreamStats,
@@ -109,6 +111,47 @@ export interface WorkerIds {
 /** Most ids one error line names: a longer list would bury the line, and the nudge. */
 const IDS_LISTED = 12;
 
+/**
+ * Tokens that one record of an answer may take, and tokens for the rest of the message (the braces, a
+ * fence, a line of prose). The longest record that a model was measured to write took 378 tokens (107
+ * records of run 7), so this is the room of about 2.7 of them. It is a bound for a runaway, not an aim.
+ */
+export const ANSWER_TOKENS_PER_RECORD = 1024;
+export const ANSWER_OVERHEAD_TOKENS = 1024;
+/**
+ * The least that the limit is cut to. The limit is the one of every turn of the session, not only of the
+ * answer: a batch of one record would otherwise leave a model 2048 tokens for each turn, and the
+ * summary that pi writes when it compacts is cut to the limit too.
+ */
+export const ANSWER_MIN_TOKENS = 4096;
+
+/** The most output tokens that an answer of `records` records needs. */
+export function answerCap(records: number): number {
+  return Math.max(ANSWER_MIN_TOKENS, records * ANSWER_TOKENS_PER_RECORD + ANSWER_OVERHEAD_TOKENS);
+}
+
+/**
+ * The pi provider of a job with the output limit of its model cut to the answer that its batch needs.
+ * Without it the limit is the default of the provider (8192 tokens), so a model that loops on one record
+ * writes for most of a turn before the limit ends it, and a context that has few tokens left is spent
+ * on the loop. The limit of the user is the user's: a job whose model has `maxTokens` keeps the
+ * provider as it is built, and the cap never raises a limit. A job that asks the model to think keeps it
+ * too: the thought is output, and its size does not follow the size of the answer.
+ */
+function withAnswerCap(job: WorkerJob): PiProviderRecord | undefined {
+  const provider = job.piProvider;
+  if (provider === undefined || job.ids === undefined || job.model.maxTokens !== undefined || job.model.thinking) return provider;
+  const models = provider.config.models;
+  if (!Array.isArray(models)) return provider;
+  const cap = answerCap(job.ids.expected.length);
+  const capped = models.map((m: unknown) => {
+    if (m === null || typeof m !== "object") return m;
+    const have = (m as { maxTokens?: unknown }).maxTokens;
+    return { ...(m as object), maxTokens: typeof have === "number" ? Math.min(have, cap) : cap };
+  });
+  return { ...provider, config: { ...provider.config, models: capped } };
+}
+
 /** The errors of the ids of a deliverable against the ids of its batch; none when they are the same set. */
 function idProblems(value: unknown, ids: WorkerIds): string[] {
   const list = value !== null && typeof value === "object" ? (value as Record<string, unknown>)[ids.array] : undefined;
@@ -141,16 +184,17 @@ function idProblems(value: unknown, ids: WorkerIds): string[] {
 const NUDGE_TIME = "Time is nearly up. Stop investigating and do not read any more files. Write your final answer now, from what you have found, in the format the task asked for, as the text of your next message.";
 const NUDGE_CUT = "Your last message ended without an answer: it was cut off or held only thinking. Do not think further. Write your final answer now, in the format the task asked for, as the text of your next message.";
 const NUDGE_FORMAT = "Your last message did not hold the answer in the format the task asked for. Write your final answer now, in that format, as the text of your next message.";
+const NUDGE_STUCK = "Your tool calls failed or repeated an earlier call, so no tool is offered now. Write your final answer now, from what you have found, in the format the task asked for, as the text of your next message.";
 
-/** Most errors a schema nudge lists: a model that was given more would lose the first ones. */
-const NUDGE_SCHEMA_LISTED = 8;
+/** Most errors a nudge lists: a model that was given more would lose the first ones. */
+const NUDGE_LISTED = 8;
 
-/** The message that sends an answer back with the errors the schema or the ids check found in it. */
-function nudgeSchema(problems: readonly string[]): string {
-  const shown = problems.slice(0, NUDGE_SCHEMA_LISTED).map((p) => `- ${p.slice(0, 200)}`);
+/** The message that sends an answer back with a list of what is wrong in it. */
+function nudgeList(heading: string, problems: readonly string[]): string {
+  const shown = problems.slice(0, NUDGE_LISTED).map((p) => `- ${p.slice(0, 200)}`);
   const more = problems.length - shown.length;
   return [
-    "Your answer does not fit the format the task asked for:",
+    heading,
     ...shown,
     ...(more > 0 ? [`(and ${more} more)`] : []),
     "Write the corrected answer now, as the text of your next message, and nothing else.",
@@ -158,7 +202,7 @@ function nudgeSchema(problems: readonly string[]): string {
 }
 
 /** The ways an answer can fail that a nudge can put right. A session is sent back once for each. */
-type NudgeKind = "time" | "cut" | "format" | "schema" | "ids";
+type NudgeKind = "time" | "cut" | "format" | "json" | "schema" | "ids" | "stuck";
 
 /**
  * The nudge for a session that ended with `error`, or null when a nudge cannot help.
@@ -167,8 +211,16 @@ type NudgeKind = "time" | "cut" | "format" | "schema" | "ids";
 function nudgeFor(error: WorkerError, problems: readonly string[] = []): { kind: NudgeKind; message: string } | null {
   if (error === "timeout") return { kind: "time", message: NUDGE_TIME };
   if (error === "length" || error === "thinking-only") return { kind: "cut", message: NUDGE_CUT };
+  if (error === "stuck") return { kind: "stuck", message: NUDGE_STUCK };
+  // A JSON that stops being JSON at a place is sent back with the place and the rule; without a JSON in
+  // it, the answer is only said to be in the wrong format.
+  if (error === "no-json" && problems.length > 0) {
+    return { kind: "json", message: nudgeList("Your answer is not valid JSON:", problems) };
+  }
   if (error === "no-result" || error === "no-json") return { kind: "format", message: NUDGE_FORMAT };
-  if ((error === "schema" || error === "ids") && problems.length > 0) return { kind: error, message: nudgeSchema(problems) };
+  if ((error === "schema" || error === "ids") && problems.length > 0) {
+    return { kind: error, message: nudgeList("Your answer does not fit the format the task asked for:", problems) };
+  }
   return null;
 }
 
@@ -308,13 +360,14 @@ function runError(r: RunResult, claude: boolean, stats: StreamStats, overTurns: 
     // before an error result is a stray sentence, not a deliverable.
     if (r.status !== 0 || !result || result.isError) return "no-result";
   }
+  // A session that ends in its tool calls has not answered: the guard of the session stopped it after tool
+  // calls that failed in a row (pi-extensions/repeat-guard.ts), or the agent loop ended on a call. What
+  // the model needs is a turn with no tools, which is not what a cut message needs, so it has its own kind.
+  if (!claude && stats.stoppedInTools) return "stuck";
   // The stream says why the last turn ended: output cut at the limit, or all of it spent on thought. A turn
-  // that ends `aborted` was cut by the runaway guard of the session (pi-extensions/repeat-guard.ts): a
-  // message that was on its way to the limit, so it is the same failure, found sooner.
+  // that ends `aborted` with text was cut by the runaway guard of the session: a message that was on its
+  // way to the limit, so it is the same failure, found sooner.
   if (stats.stopReason === "length" || stats.stopReason === "aborted") return "length";
-  // A session that ends on a tool call has not answered: the guard stopped it (`terminate`), or the
-  // agent loop did. The text of that turn is a sentence beside the call.
-  if (!claude && stats.stopReason === "toolUse") return "no-result";
   if (stats.thinkingOnly) return "thinking-only";
   if (finalText.trim() === "") return "no-result";
   return null;
@@ -334,11 +387,12 @@ function newestSessionFile(dir: string): string | null {
 }
 
 /**
- * Removes the last message of a saved pi session when its output was cut at the limit, or aborted by the
- * runaway guard of the session. A nudge continues that session. A message cut at the limit is a runaway
- * more often than a near answer (one row written 129 times), so carrying it makes the model read its own
- * loop again and spends the window. The event stream keeps the message: the stream is the record, the
- * session is the context. Returns true when a message was removed.
+ * Removes the last message of a saved pi session when it holds no answer to continue from: its output was
+ * cut at the limit, the runaway guard aborted it, or it is the empty turn that an abort ended after a tool
+ * result. A nudge continues that session. A message cut at the limit is a runaway more often than a near
+ * answer (one row written 129 times), so carrying it makes the model read its own loop again and spends
+ * the window. The event stream keeps the message: the stream is the record, the session is the context.
+ * Returns true when a message was removed.
  */
 export function dropCutReply(sessionDir: string): boolean {
   const file = newestSessionFile(sessionDir);
@@ -347,14 +401,19 @@ export function dropCutReply(sessionDir: string): boolean {
   let last = lines.length - 1;
   while (last >= 0 && lines[last]!.trim() === "") last--;
   if (last < 0) return false;
-  let entry: { type?: unknown; message?: { role?: unknown; stopReason?: unknown } };
+  let entry: { type?: unknown; message?: { role?: unknown; stopReason?: unknown; content?: unknown; errorMessage?: unknown } };
   try {
     entry = JSON.parse(lines[last]!);
   } catch {
     return false;
   }
   const stop = entry.message?.stopReason;
-  if (entry.type !== "message" || entry.message?.role !== "assistant" || (stop !== "length" && stop !== "aborted")) return false;
+  const emptyAbort =
+    stop === "error" &&
+    Array.isArray(entry.message?.content) &&
+    entry.message.content.length === 0 &&
+    ABORT_MESSAGE.test(typeof entry.message.errorMessage === "string" ? entry.message.errorMessage : "");
+  if (entry.type !== "message" || entry.message?.role !== "assistant" || (stop !== "length" && stop !== "aborted" && !emptyAbort)) return false;
   lines.splice(last, 1);
   writeFileSync(file, lines.join("\n"), "utf8");
   return true;
@@ -394,7 +453,8 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     const home = join(temp, "pi-home");
     copyTree(join(job.batchDir, "spec"), join(cwd, "spec"));
     copyTree(join(job.batchDir, "workspace"), join(cwd, "workspace"));
-    if (job.piProvider && !claude) materializePiHome(home, job.piProvider);
+    const provider = withAnswerCap(job);
+    if (provider && !claude) materializePiHome(home, provider);
     // pi downloads the binary of `find` and `grep` on first use and its parallel tool calls race on that
     // download, so the harness provides them first and offers only the tools that can run.
     let offered = job;
@@ -456,8 +516,12 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       let problemKind: "schema" | "ids" = "schema";
       if (error === null && isJson) {
         parsed = parseJsonDeliverable(stats.finalText);
-        if (parsed === null) error = "no-json";
-        else {
+        if (parsed === null) {
+          error = "no-json";
+          // Text that began a JSON value and broke has a place where it broke; text with none has no problem.
+          const broken = jsonProblem(stats.finalText);
+          if (broken !== null) problems = [broken];
+        } else {
           if (job.schema !== undefined) problems = validateSchema(parsed.value, job.schema);
           // The ids are checked when the shape is right: a record that has the wrong type has no id to read.
           if (problems.length === 0 && job.ids !== undefined) {

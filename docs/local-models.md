@@ -178,7 +178,7 @@ tool call: llama3.1:8b through Ollama made a structured call on the first turn i
 at 0.8 (the server default), 96% of 80 at 0.6, and 100% of 40 at 0.4 and at 0.2. A high value lets a
 session leave a loop: when the session had already repeated one call, the next call repeated it again
 in 2 of 10 samples at 0.8, 5 at 0.6, 8 at 0.4 and 9 at 0.2. 0.6 is the highest value that keeps the
-first turn structured. The repeat guard (see `docs/batching.md`) ends the loops that remain.
+first turn structured. The session guard (see `docs/batching.md`) ends the loops that remain.
 
 A frequency penalty is not set. From a position inside a loop, with a penalty of 0.3 to 1.0, 7 to 10 of
 10 samples still repeated the call, because the penalty window is much shorter than the loop. A

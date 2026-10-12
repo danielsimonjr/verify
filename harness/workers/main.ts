@@ -29,6 +29,7 @@ import { canonicalLocalProvider, parseContextSize, resolveLocalConfig, WORKER_SA
 import { prepareLocalProvider } from "../model/prepare.js";
 import type { PiProviderRecord } from "../model/pi.js";
 import { describeIdentity } from "../model/types.js";
+import { COMPACTION_RESERVE_TOKENS } from "../pi-extensions/repeat-guard.js";
 import { isMain } from "../runtime.js";
 import type { WorkerRecord } from "./record.js";
 import { unsupportedKeywords } from "./schema.js";
@@ -49,21 +50,28 @@ class UsageError extends Error {}
 
 const DEFAULT_TOOLS = "read,grep,find,ls";
 
-/** Errors a second try can fix: the model's output was wrong or empty. A limit, a timeout or a stop would only repeat. */
 /**
  * A retry runs in the same rollout folder and would replace the stream and the record of the attempt
  * before it. Move both to trajectory/attempt-N/, so a rollout that took three tries shows all three.
  */
 function keepAttempt(job: WorkerJob, attempt: number): void {
-  const t = join(job.batchDir, "rollouts", job.rollout, "trajectory");
+  const out = join(job.batchDir, "rollouts", job.rollout);
+  const t = join(out, "trajectory");
   const to = join(t, `attempt-${attempt}`);
   mkdirSync(to, { recursive: true });
   for (const name of ["agent.jsonl", "worker.json"]) {
     if (existsSync(join(t, name))) renameSync(join(t, name), join(to, name));
   }
+  // The deliverable of an attempt is evidence too (a compacted rollout keeps one), and the retry clears the folder.
+  if (existsSync(join(out, "deliverables"))) renameSync(join(out, "deliverables"), join(to, "deliverables"));
 }
 
-const RETRYABLE = new Set(["no-result", "no-json", "thinking-only", "length", "schema", "ids", "no-tool-calls"]);
+/**
+ * Errors a second try can fix: the model's output was wrong or empty, its tool calls failed in a row, or its
+ * context passed the point where pi compacts it (a fresh session reads the same files in a different order,
+ * and the results of its tools are cut to its room). A limit, a timeout or a stop would only repeat.
+ */
+const RETRYABLE = new Set(["no-result", "no-json", "thinking-only", "length", "schema", "ids", "no-tool-calls", "stuck", "compacted"]);
 
 /**
  * Whether a second session can end differently. A timeout of a session that was working is the speed of
@@ -227,6 +235,8 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
   let skipped = 0;
   let retries = 0;
   let nudgeTimeoutSec: number | undefined;
+  /** The context window of a local model, once it is known (`--context-size` or what the server says). */
+  let windowTokens: number | undefined;
   try {
     if (positionals.length !== 1) throw new UsageError("give one DIR: a batch output root or one task workspace");
     const dir = resolve(positionals[0]!);
@@ -319,6 +329,16 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
         `workers: ${provider}:${prepared.model} window=${config.contextSize ?? caps.contextSize} source=${source}${describeIdentity(caps.identity)}\n`,
       );
       if (caps.identity) workerModel.identity = caps.identity;
+      windowTokens = config.contextSize ?? caps.contextSize;
+      if (windowTokens !== undefined && windowTokens <= COMPACTION_RESERVE_TOKENS) {
+        process.stderr.write(
+          `workers: the window of ${windowTokens} tokens is at or below the reserve of ${COMPACTION_RESERVE_TOKENS}: ` +
+            `pi compacts above the window less ${COMPACTION_RESERVE_TOKENS} tokens, so every rollout compacts and ends as compacted\n`,
+        );
+      }
+      // A limit that came from the environment is the user's as much as one from --max-tokens, so the
+      // worker does not derive a cap over it.
+      if (config.maxTokens !== undefined) workerModel.maxTokens = config.maxTokens;
       piProvider = prepared.piProvider;
       workerModel.model = prepared.model;
     } else if (claude) {
@@ -422,9 +442,15 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
       process.stderr.write(`workers: ${batch.name}/${job.rollout}: ${record.toolErrors} of ${record.tools} tool calls failed: ${cause}\n`);
     }
     if (record.compactions > 0) {
+      // Say what was measured: pi compacts when the context passes the window less its reserve, and the peak
+      // is what the worker held at most. Whether the batch or the tool results filled it is not known here.
+      const at =
+        windowTokens === undefined
+          ? ""
+          : ` at ${Math.max(0, windowTokens - COMPACTION_RESERVE_TOKENS)} tokens (the window of ${windowTokens} less the reserve of ${COMPACTION_RESERVE_TOKENS})`;
       process.stderr.write(
-        `workers: ${batch.name}/${job.rollout}: the context was compacted ${record.compactions} times; ` +
-          `the answer rests on turns the worker no longer held, so the batch is too big for the window\n`,
+        `workers: ${batch.name}/${job.rollout}: the context was compacted ${record.compactions} times${at}, after a peak of ${record.peakContext} tokens; ` +
+          `the answer rests on turns the worker no longer held\n`,
       );
     }
     if (record.error === null) complete++;

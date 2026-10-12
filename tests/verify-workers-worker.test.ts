@@ -6,7 +6,17 @@ import { join } from "node:path";
 import type { RunOptions, RunResult } from "../harness/grade/proc.ts";
 import { claudeStreamStats } from "../harness/workers/record.ts";
 import type { PiTools } from "../harness/model/pitools.ts";
-import { runWorker as runWorkerReal, workerArgs, WORKER_CHARTER, type WorkerDeps, type WorkerJob } from "../harness/workers/worker.ts";
+import {
+  ANSWER_MIN_TOKENS,
+  ANSWER_OVERHEAD_TOKENS,
+  ANSWER_TOKENS_PER_RECORD,
+  answerCap,
+  runWorker as runWorkerReal,
+  workerArgs,
+  WORKER_CHARTER,
+  type WorkerDeps,
+  type WorkerJob,
+} from "../harness/workers/worker.ts";
 
 /** No binaries to provide: a test must not start pi's downloader. */
 const noTools: PiTools = { provide: async (tools) => ({ tools, dropped: [] }), seed: () => {} };
@@ -323,15 +333,74 @@ describe("runWorker", () => {
     expect(readFileSync(rollout("deliverables", "report.json.partial.txt"), "utf8")).toBe('{"rows": [{"line": 1');
   });
 
-  test("a session that ends on a tool call has no answer, whatever text came with the call", async () => {
-    // The guard ends a session that repeats a call (`terminate`), and a turn cap or an error can do the
-    // same. The last turn then asked for a tool and got no answer; its text is a sentence beside the call.
+  test("a session that ends on a tool call is stuck, whatever text came with the call", async () => {
+    // A turn cap or an error can end a session on a call. The last turn then asked for a tool and got no
+    // answer; its text is a sentence beside the call.
     const fake = fakeRun(
       turns([[{ type: "text", text: "Let me read it again." }, { type: "toolCall", id: "c9", name: "read", arguments: { path: "spec/task.md" } }], "toolUse"]),
     );
     const rec = await runWorker(job({ deliverable: "report.md" }), { run: fake.run });
-    expect(rec.error).toBe("no-result");
+    expect(rec.error).toBe("stuck");
     expect(existsSync(rollout("deliverables", "report.md"))).toBe(false);
+  });
+
+  /** The stream of a session that the guard stopped: a call, its failed result, and the empty turn that the abort ended. */
+  const failedResult = (id: string): string =>
+    JSON.stringify({ type: "message_end", message: { role: "toolResult", toolCallId: id, toolName: "read", isError: true, content: [{ type: "text", text: "Validation failed" }] } }) + "\n";
+  const emptyTurn = (stopReason: string, errorMessage: string): string =>
+    JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], usage: { input: 0, output: 0 }, stopReason, errorMessage } }) + "\n";
+  const STUCK =
+    turns([[{ type: "toolCall", id: "c1", name: "read", arguments: { rows: [] } }], "toolUse"]) +
+    failedResult("c1") +
+    emptyTurn("error", "This operation was aborted");
+
+  test("a session that the guard stopped after failed tool calls is stuck, not no-result", async () => {
+    const rec = await runWorker(job(), { run: fakeRun(STUCK).run });
+    expect(rec.error).toBe("stuck");
+  });
+
+  test("a request that timed out after a failed tool call is the server's failure, so it stays no-result", async () => {
+    const stream =
+      turns([[{ type: "toolCall", id: "c1", name: "read", arguments: { rows: [] } }], "toolUse"]) +
+      failedResult("c1") +
+      emptyTurn("error", "Request timed out.");
+    const rec = await runWorker(job(), { run: fakeRun(stream).run });
+    expect(rec.error).toBe("no-result");
+  });
+
+  test("a stuck session is continued once with a nudge that says why, and with no tools offered", async () => {
+    const f = sequence({ stdout: STUCK }, { stdout: PI_STREAM });
+    const rec = await runWorker(job({ nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(2);
+    const second = f.calls[1]!;
+    expect(second.args).toContain("-c");
+    expect(second.args).toContain("--no-tools");
+    const message = second.args.at(-1)!;
+    expect(message).toContain("tool calls");
+    expect(message).toContain("Write your final answer now");
+    // It is not the text for a session that read nothing wrong, and it does not blame the model for a cut.
+    expect(message).not.toContain("cut off");
+    expect(rec).toMatchObject({ error: null, nudged: true, form: "pure" });
+  });
+
+  test("a nudge after the empty turn that the abort ended continues from the turn before it", async () => {
+    // The turn holds nothing, and pi does not replay it; it is dropped so that the nudge follows the result.
+    const abortedEntry = { type: "message", id: "m4", parentId: "m3", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "This operation was aborted" } };
+    const f = sessionRun(sessionFile(abortedEntry), STUCK, PI_STREAM);
+    const rec = await runWorker(job({ nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(rec).toMatchObject({ error: null, nudged: true });
+    expect(f.found).toEqual([sessionFile()]);
+  });
+
+  test("a nudge keeps an error turn that was not an abort", async () => {
+    const timedOut = { type: "message", id: "m4", parentId: "m3", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Request timed out." } };
+    const stream =
+      turns([[{ type: "toolCall", id: "c1", name: "read", arguments: { path: "spec/task.md" } }], "toolUse"]) +
+      failedResult("c1") +
+      emptyTurn("error", "Request timed out.");
+    const f = sessionRun(sessionFile(timedOut), stream, PI_STREAM);
+    await runWorker(job({ nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.found).toEqual([sessionFile(timedOut)]);
   });
 
   test("a last turn that the runaway guard aborted is length, as one cut at the output limit is", async () => {
@@ -539,6 +608,86 @@ describe("runWorker", () => {
     expect(f.calls[1]!.args.at(-1)).toContain("$.rows[0]: missing property 'verdict'");
     expect(rec).toMatchObject({ error: null, nudged: true, form: "pure" });
     expect(existsSync(rollout("deliverables", "report.json.schema-errors.txt"))).toBe(false);
+  });
+
+  test("an answer that is not JSON is sent back with the place where it stops being JSON", async () => {
+    // A model that is told only "not in the format" writes the same break again (b14 r03 of run 7 wrote
+    // an object with no closing brace twice). The place and the rule are what it can act on.
+    const broken = '{"rows": [{"line": 7, "verdict": "LOGGED"}]';
+    const f = sequence({ stdout: worked(broken) }, { stdout: answer('{"rows": [{"line": 7, "verdict": "LOGGED"}]}') });
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(2);
+    const message = f.calls[1]!.args.at(-1)!;
+    expect(message).toContain("character 1");
+    expect(message).toContain("not closed");
+    expect(message).toContain("[HERE]");
+    expect(f.calls[1]!.args).toContain("--no-tools");
+    expect(rec).toMatchObject({ error: null, nudged: true, form: "pure" });
+  });
+
+  test("a json nudge does not use up the format nudge: prose after it is sent back once more", async () => {
+    const f = sequence(
+      { stdout: worked('{"rows": [{"line": 7') },
+      { stdout: answer("I could not finish.") },
+      { stdout: answer('{"rows": [{"line": 7, "verdict": "LOGGED"}]}') },
+    );
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(3);
+    expect(rec).toMatchObject({ error: null, nudges: 2 });
+  });
+
+  test("an answer that has no JSON at all gets the format nudge, which names no place", async () => {
+    const f = sequence({ stdout: worked("I could not finish.") }, { stdout: answer('{"rows": [{"line": 7, "verdict": "LOGGED"}]}') });
+    await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
+    const message = f.calls[1]!.args.at(-1)!;
+    expect(message).toContain("did not hold the answer");
+    expect(message).not.toContain("[HERE]");
+  });
+
+  /** The `maxTokens` that the worker wrote for the model in the pi home of its first call. */
+  async function answerCapOf(over: Partial<WorkerJob>, providerMax: number): Promise<number> {
+    let written = -1;
+    const run = async (_cmd: string, _args: string[], opts: RunOptions): Promise<RunResult> => {
+      const models = JSON.parse(readFileSync(join(opts.env!.PI_CODING_AGENT_DIR!, "models.json"), "utf8"));
+      written = models.providers.ollama.models[0].maxTokens;
+      return { status: 0, signal: null, stdout: PI_STREAM, stderr: "", timedOut: false, truncated: false, timeoutMs: opts.timeoutMs };
+    };
+    const piProvider = { id: "ollama", config: { baseUrl: "http://127.0.0.1:11434/v1", models: [{ id: "m", maxTokens: providerMax }] } };
+    await runWorker(job({ piProvider, ...over }), { run });
+    return written;
+  }
+  const IDS8 = { array: "rows", field: "line", expected: ["1", "2", "3", "4", "5", "6", "7", "8"] };
+
+  test("a job with ids caps the answer at what its records need, so a runaway ends in a fraction of the window", async () => {
+    // 8 records at 1024 tokens each and 1024 for the rest of the message. The default cap of the provider
+    // (8192) is the room of the whole turn, which is about 8 times the longest record that a model was
+    // measured to write.
+    expect(await answerCapOf({ ids: IDS8 }, 65536)).toBe(8 * ANSWER_TOKENS_PER_RECORD + ANSWER_OVERHEAD_TOKENS);
+  });
+
+  test("the cap never raises the limit of the provider", async () => {
+    expect(await answerCapOf({ ids: IDS8 }, 2000)).toBe(2000);
+  });
+
+  test("a limit that the user set is the user's: the cap does not replace it", async () => {
+    const model = { provider: "ollama", model: "m", maxTokens: 20000 };
+    expect(await answerCapOf({ ids: IDS8, model }, 20000)).toBe(20000);
+  });
+
+  test("a job without ids has no cap derived", async () => {
+    expect(await answerCapOf({}, 8192)).toBe(8192);
+  });
+
+  test("the cap grows with the records of the batch, and a small batch keeps a floor", () => {
+    expect(answerCap(16)).toBe(16 * ANSWER_TOKENS_PER_RECORD + ANSWER_OVERHEAD_TOKENS);
+    // One record needs a few hundred tokens, but the limit is the one of every turn of the session.
+    expect(answerCap(1)).toBe(ANSWER_MIN_TOKENS);
+    expect(answerCap(1)).toBeGreaterThan(ANSWER_TOKENS_PER_RECORD + ANSWER_OVERHEAD_TOKENS);
+  });
+
+  test("a job that asks the model to think keeps the limit of the provider: thought is output too", async () => {
+    const model = { provider: "ollama", model: "m", thinking: "medium" };
+    expect(await answerCapOf({ ids: IDS8, model }, 8192)).toBe(8192);
   });
 
   test("an answer that still fails the schema after the nudge is schema, with the errors of the last answer", async () => {

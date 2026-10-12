@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -193,6 +193,12 @@ describe("veriharness workers", () => {
     expect(r.stderr).toContain("b01/r01: the context was compacted 2 times");
   });
 
+  test("the compaction line says the point and the peak that were measured, not that the batch is too big", async () => {
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1"], fake((j) => ({ ...ok(j), compactions: 1, peakContext: 49000 })));
+    expect(r.stderr).toMatch(/compacted 1 times at \d+ tokens \(the window of \d+ less the reserve of 16384\), after a peak of 49000 tokens/);
+    expect(r.stderr).not.toContain("too big");
+  });
+
   test("the summary names one --item-tokens that covers every rollout: the largest suggestion, not one probe's", async () => {
     const dir = batchRoot(["b01", "b02"]);
     writeFileSync(
@@ -257,6 +263,26 @@ describe("veriharness workers", () => {
     expect(off.calls[0]!.nudgeTimeoutSec).toBeUndefined();
   });
 
+  test("an output limit from --max-tokens or the environment reaches the job, so the answer cap does not replace it", async () => {
+    const dir = batchRoot(["b01"]);
+    const none = fake();
+    await workers([dir, ...OLLAMA, "--count", "1"], none);
+    expect(none.calls[0]!.model.maxTokens).toBeUndefined();
+    const flag = fake();
+    await workers([dir, ...OLLAMA, "--count", "1", "--max-tokens", "5000"], flag);
+    expect(flag.calls[0]!.model.maxTokens).toBe(5000);
+    const before = process.env.VERIHARNESS_MAX_TOKENS;
+    process.env.VERIHARNESS_MAX_TOKENS = "6000";
+    try {
+      const env = fake();
+      await workers([dir, ...OLLAMA, "--count", "1"], env);
+      expect(env.calls[0]!.model.maxTokens).toBe(6000);
+    } finally {
+      if (before === undefined) delete process.env.VERIHARNESS_MAX_TOKENS;
+      else process.env.VERIHARNESS_MAX_TOKENS = before;
+    }
+  });
+
   test("--schema reaches every job as the parsed schema", async () => {
     const dir = batchRoot(["b01"]);
     writeFileSync(join(dir, "schema.json"), JSON.stringify({ type: "object", required: ["rows"] }));
@@ -293,6 +319,20 @@ describe("veriharness workers", () => {
 
   test("--retries runs a rollout again when the worker made no tool call", async () => {
     const f = fake((j) => ok(j, (j.attempt ?? 1) < 2 ? "no-tool-calls" : null));
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--retries", "1"], f);
+    expect(f.calls).toHaveLength(2);
+    expect(r.lines[0]).toMatchObject({ error: null, attempts: 2 });
+  });
+
+  test("--retries runs a rollout again when its session was stuck in failed tool calls", async () => {
+    const f = fake((j) => ok(j, (j.attempt ?? 1) < 2 ? "stuck" : null));
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--retries", "1"], f);
+    expect(f.calls).toHaveLength(2);
+    expect(r.lines[0]).toMatchObject({ error: null, attempts: 2 });
+  });
+
+  test("--retries runs a rollout again when its context was compacted", async () => {
+    const f = fake((j) => ok(j, (j.attempt ?? 1) < 2 ? "compacted" : null));
     const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--retries", "1"], f);
     expect(f.calls).toHaveLength(2);
     expect(r.lines[0]).toMatchObject({ error: null, attempts: 2 });
@@ -360,6 +400,31 @@ describe("veriharness workers", () => {
     expect(readFileSync(join(t, "attempt-1", "agent.jsonl"), "utf8")).toBe("stream 1");
     expect(JSON.parse(readFileSync(join(t, "attempt-2", "worker.json"), "utf8")).error).toBe("schema");
     expect(JSON.parse(readFileSync(join(t, "worker.json"), "utf8")).attempts).toBe(3);
+  });
+
+  test("a retry keeps the deliverables of each earlier attempt, so a retry that does worse loses nothing", async () => {
+    // A compacted rollout keeps its deliverable. A retry clears the rollout folder, and a second attempt
+    // that ends in a timeout would leave no deliverable at all.
+    const f = fake((j) => {
+      const out = join(j.batchDir, "rollouts", j.rollout);
+      mkdirSync(join(out, "deliverables"), { recursive: true });
+      mkdirSync(join(out, "trajectory"), { recursive: true });
+      if ((j.attempt ?? 1) === 1) writeFileSync(join(out, "deliverables", "report.json"), '{"rows": []}');
+      return ok(j, (j.attempt ?? 1) < 2 ? "compacted" : "no-result");
+    });
+    const dir = batchRoot(["b01"]);
+    const r = await workers([dir, ...OLLAMA, "--count", "1", "--retries", "1"], f);
+    expect(r.lines[0]).toMatchObject({ error: "no-result", attempts: 2 });
+    const out = join(dir, "b01", "rollouts", "r01");
+    expect(readFileSync(join(out, "trajectory", "attempt-1", "deliverables", "report.json"), "utf8")).toBe('{"rows": []}');
+    expect(existsSync(join(out, "deliverables", "report.json"))).toBe(false);
+  });
+
+  test("a window at or below the compaction reserve is warned about: pi compacts after every turn", async () => {
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--context-size", "16384"], fake());
+    expect(r.stderr).toContain("pi compacts above the window less 16384 tokens");
+    const wide = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--context-size", "65536"], fake());
+    expect(wide.stderr).not.toContain("pi compacts above the window less");
   });
 
   /** The sampling parameters pi is given for a job: the first job's provider record. */

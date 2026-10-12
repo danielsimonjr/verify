@@ -48,6 +48,8 @@ export type WorkerError =
   | "ids"
   /** The agent compacted its context: the answer rests on turns it no longer held. */
   | "compacted"
+  /** The session ended while the model still called tools: the guard stopped it after tool calls that failed. */
+  | "stuck"
   | null;
 
 /** `trajectory/worker.json`: the numbers and the outcome of one rollout. */
@@ -122,6 +124,12 @@ export interface StreamStats {
   compactions: number;
   /** Why the last assistant turn ended: `stop`, `toolUse`, `length`... Empty when the stream does not say. */
   stopReason: string;
+  /**
+   * The session ended while the model still called tools (pi only): the last turn asked for a tool, or it
+   * was aborted with no text after a tool result, which is how the guard of the session stops a model
+   * whose tool calls fail in a row.
+   */
+  stoppedInTools: boolean;
   /** The last assistant turn has thinking blocks and no text (pi only). */
   thinkingOnly: boolean;
   /** Tool calls whose result was an error. */
@@ -230,6 +238,198 @@ export function parseJsonDeliverable(text: string): { value: unknown; form: Deli
   return best === null ? null : { value: best.value, form: "embedded" };
 }
 
+/**
+ * The message of an assistant turn that an abort of the session ended: the DOM error of a request that was
+ * started with the signal already aborted, and the messages of the pi providers. A timeout or a reset
+ * that says "aborted" among other words is the server's and is not in this list.
+ */
+export const ABORT_MESSAGE = /^(this operation|the operation|request|operation) (was )?aborted\.?$/i;
+
+interface JsonError {
+  /** Index of the character where the text stops being JSON. */
+  at: number;
+  what: string;
+  /** The text is nested deeper than the scan follows: no place is named. */
+  giveUp?: boolean;
+}
+
+/** Deepest nesting that the check follows; a deeper text is left to the parser. */
+const JSON_MAX_DEPTH = 200;
+
+/**
+ * The first place where `s` stops being JSON, or null when its first value is complete. This is a strict
+ * reading of the JSON grammar, written out so that the message is the same on every engine and says what
+ * rule is broken, which an engine's own message does not.
+ */
+function firstJsonError(s: string, from = 0): JsonError | null {
+  let i = from;
+  const fail = (at: number, what: string): JsonError => ({ at, what });
+  const show = (c: string): string => (c === "\n" ? "a line break" : `'${c}'`);
+  const ws = (): void => {
+    while (i < s.length && (s[i] === " " || s[i] === "\t" || s[i] === "\n" || s[i] === "\r")) i++;
+  };
+  const text = (): JsonError | null => {
+    const start = i;
+    i++;
+    while (i < s.length) {
+      const c = s[i]!;
+      if (c === '"') {
+        i++;
+        return null;
+      }
+      if (c === "\\") {
+        const n = s[i + 1];
+        if (n === undefined) break;
+        if ('"\\/bfnrt'.includes(n)) {
+          i += 2;
+          continue;
+        }
+        if (n === "u" && /^[0-9a-fA-F]{4}$/.test(s.slice(i + 2, i + 6))) {
+          i += 6;
+          continue;
+        }
+        return fail(i, `the escape \\${n} is not valid in a JSON string. Write a backslash as two backslashes (\\\\) and a double quote as \\"`);
+      }
+      if (c < " ") return fail(i, "a string holds a raw line break or control character. Write a line break as \\n");
+      i++;
+    }
+    return fail(start, `the string that starts at character ${start - from + 1} is not closed`);
+  };
+  const object = (depth: number): JsonError | null => {
+    const start = i;
+    const open = (): JsonError => fail(i, `the object that starts at character ${start - from + 1} is not closed`);
+    i++;
+    ws();
+    if (s[i] === "}") {
+      i++;
+      return null;
+    }
+    for (;;) {
+      ws();
+      if (i >= s.length) return open();
+      if (s[i] !== '"') {
+        return fail(
+          i,
+          s[i] === "}"
+            ? "a trailing comma is not allowed: a key must follow a comma"
+            : `expected a key, found ${show(s[i]!)}; a key is a string in double quotes`,
+        );
+      }
+      const key = text();
+      if (key) return key;
+      ws();
+      if (i >= s.length) return open();
+      if (s[i] !== ":") return fail(i, `expected a colon after the key, found ${show(s[i]!)}`);
+      i++;
+      const v = value(depth + 1);
+      if (v) return v;
+      ws();
+      if (i >= s.length) return open();
+      if (s[i] === ",") {
+        i++;
+        continue;
+      }
+      if (s[i] === "}") {
+        i++;
+        return null;
+      }
+      return fail(i, `expected a comma or a closing brace, found ${show(s[i]!)}`);
+    }
+  };
+  const array = (depth: number): JsonError | null => {
+    const start = i;
+    const open = (): JsonError => fail(i, `the array that starts at character ${start - from + 1} is not closed`);
+    i++;
+    ws();
+    if (s[i] === "]") {
+      i++;
+      return null;
+    }
+    for (;;) {
+      ws();
+      if (i >= s.length) return open();
+      if (s[i] === "]") return fail(i, "a trailing comma is not allowed: a value must follow a comma");
+      const v = value(depth + 1);
+      if (v) return v;
+      ws();
+      if (i >= s.length) return open();
+      if (s[i] === ",") {
+        i++;
+        continue;
+      }
+      if (s[i] === "]") {
+        i++;
+        return null;
+      }
+      return fail(i, `expected a comma or a closing bracket, found ${show(s[i]!)}`);
+    }
+  };
+  const NUMBER = /-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?/y;
+  function value(depth: number): JsonError | null {
+    ws();
+    if (depth > JSON_MAX_DEPTH) return { at: i, what: "the text is nested too deep", giveUp: true };
+    if (i >= s.length) return fail(i, "the text ends where a value must begin");
+    const c = s[i]!;
+    if (c === "{") return object(depth);
+    if (c === "[") return array(depth);
+    if (c === '"') return text();
+    for (const word of ["true", "false", "null"]) {
+      if (s.startsWith(word, i)) {
+        i += word.length;
+        return null;
+      }
+    }
+    NUMBER.lastIndex = i;
+    const n = NUMBER.exec(s);
+    if (n) {
+      i += n[0].length;
+      return null;
+    }
+    return fail(i, `expected a value, found ${show(c)}; a value is a string in double quotes, a number, true, false, null, an object or an array`);
+  }
+  return value(0);
+}
+
+/**
+ * What is wrong in the JSON that `text` holds, in words for the model that wrote it, or null when `text` has
+ * no JSON in it, or holds a value that is complete, or is nested deeper than the scan follows. The place is
+ * given as a character of the JSON, with the text around it, so that the model can find it in what it wrote.
+ *
+ * A text can hold more than one value: a prose example before the answer. Each value that starts in the
+ * text is read, and the problem named is the one in the value that went furthest before it broke, which is
+ * the answer and not the example. A value that is complete means the text has a JSON in it, and then there
+ * is nothing to name.
+ */
+export function jsonProblem(text: string): string | null {
+  const t = text.trim();
+  const opens = (s: string): boolean => /^[{[]/.test(s.trim());
+  const sources: string[] = [];
+  const whole = WHOLE_FENCE.exec(t);
+  if (whole && opens(whole[1]!)) sources.push(whole[1]!.trim());
+  else for (const match of t.matchAll(ANY_FENCE)) if (opens(match[1]!)) sources.push(match[1]!.trim());
+  if (sources.length === 0) sources.push(t);
+  let worst: { s: string; from: number; found: JsonError } | null = null;
+  for (const s of sources) {
+    for (let i = 0; i < s.length; ) {
+      ARRAY_OPEN.lastIndex = i;
+      if (s[i] !== "{" && !(s[i] === "[" && ARRAY_OPEN.test(s))) {
+        i++;
+        continue;
+      }
+      const found = firstJsonError(s, i);
+      if (found === null || found.giveUp) return null;
+      if (worst === null || found.at - i > worst.found.at - worst.from) worst = { s, from: i, found };
+      // What lies inside a value that broke is part of it: the next value starts after the break.
+      i = Math.max(i + 1, found.at);
+    }
+  }
+  if (worst === null) return null;
+  const { s, from, found } = worst;
+  const before = s.slice(Math.max(from, found.at - 30), found.at).replace(/\s+/g, " ");
+  const after = s.slice(found.at, found.at + 20).replace(/\s+/g, " ");
+  return `character ${found.at - from + 1}: ${found.what} (near: ${before}[HERE]${after})`;
+}
+
 function events(text: string): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   for (const line of text.split("\n")) {
@@ -295,7 +495,10 @@ export function turnCounter(claude: boolean): (chunk: Buffer) => number {
 
 /** pi `--mode json`: assistant `message_end` events carry the usage; `tool_execution_end` is one tool call. */
 export function piStreamStats(text: string): StreamStats {
-  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 } };
+  // The role of the message before the assistant message that is read: a tool result before an empty turn
+  // says the session was stopped in its tool calls.
+  let lastRole = "";
+  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", stoppedInTools: false, thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 } };
   for (const e of events(text)) {
     if (e.type === "tool_execution_end") {
       stats.tools++;
@@ -305,6 +508,13 @@ export function piStreamStats(text: string): StreamStats {
       }
     }
     if (e.type === "compaction_start") stats.compactions++;
+    if (e.type === "message_end") {
+      const role = ((e.message ?? {}) as { role?: unknown }).role;
+      if (role !== "assistant") {
+        lastRole = typeof role === "string" ? role : "";
+        continue;
+      }
+    }
     const m = piTurn(e);
     if (!m) continue;
     const u = (m.usage ?? {}) as Record<string, unknown>;
@@ -313,6 +523,12 @@ export function piStreamStats(text: string): StreamStats {
     stats.outputTokens += num(u.output);
     stats.finalText = textOf(m.content);
     stats.stopReason = typeof m.stopReason === "string" ? m.stopReason : "";
+    // A turn that starts after the signal was aborted ends as `error` with the message of the abort; a turn
+    // that was running ends as `aborted`. A request that timed out is the server's, and is neither.
+    const errorMessage = typeof m.errorMessage === "string" ? m.errorMessage : "";
+    const aborted = stats.stopReason === "aborted" || (stats.stopReason === "error" && ABORT_MESSAGE.test(errorMessage));
+    stats.stoppedInTools = stats.stopReason === "toolUse" || (aborted && lastRole === "toolResult" && stats.finalText.trim() === "");
+    lastRole = "assistant";
     stats.thinkingOnly =
       stats.finalText.trim() === "" &&
       Array.isArray(m.content) &&
@@ -326,7 +542,7 @@ export function piStreamStats(text: string): StreamStats {
  * a turn is a message id. The `result` event holds the final text and the session's output total.
  */
 export function claudeStreamStats(text: string): StreamStats {
-  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 } };
+  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", stoppedInTools: false, thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 } };
   const output = new Map<string, number>();
   let lastText = "";
   let resultUsage: Record<string, unknown> | undefined;

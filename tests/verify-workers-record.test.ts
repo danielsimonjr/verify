@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { REPEAT_REASON } from "../harness/pi-extensions/repeat-guard.ts";
-import { claudeStreamStats, openMessageKind, parseJsonDeliverable, piStreamStats, turnCounter } from "../harness/workers/record.ts";
+import { claudeStreamStats, jsonProblem, openMessageKind, parseJsonDeliverable, piStreamStats, turnCounter } from "../harness/workers/record.ts";
 
 const FIXTURES = join(import.meta.dir, "fixtures", "workers");
 const FENCE = "```";
@@ -99,6 +99,7 @@ describe("stream stats", () => {
       outputTokens: 187 + 106 + 111,
       compactions: 0,
       stopReason: "stop",
+      stoppedInTools: false,
       thinkingOnly: false,
       toolErrors: 0,
       toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 },
@@ -118,6 +119,7 @@ describe("stream stats", () => {
       outputTokens: 265,
       compactions: 0,
       stopReason: "",
+      stoppedInTools: false,
       thinkingOnly: false,
       toolErrors: 0,
       toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 },
@@ -145,7 +147,7 @@ describe("stream stats", () => {
   });
 
   test("an empty stream gives zeros and no text", () => {
-    const empty = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 } };
+    const empty = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", stoppedInTools: false, thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 } };
     expect(piStreamStats("")).toEqual(empty);
     expect(claudeStreamStats("")).toEqual(empty);
   });
@@ -215,5 +217,136 @@ describe("stream stats", () => {
     // Text earlier in the session does not make a later empty turn an answer: the last turn counts.
     const later = piStreamStats([end([{ type: "text", text: "x" }], "toolUse"), end([{ type: "thinking", thinking: "hmm" }], "stop")].join("\n"));
     expect(later.thinkingOnly).toBe(true);
+  });
+
+  describe("stoppedInTools", () => {
+    const call = end([{ type: "toolCall", id: "c1", name: "read", arguments: { rows: [] } }], "toolUse");
+    const failed = JSON.stringify({ type: "message_end", message: { role: "toolResult", toolCallId: "c1", toolName: "read", isError: true, content: [{ type: "text", text: "Validation failed" }] } });
+    const turn = (errorMessage: string) =>
+      JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], usage: { input: 0, output: 0 }, stopReason: "error", errorMessage } });
+
+    test("an empty turn that was aborted after a tool result means the guard stopped the session", () => {
+      expect(piStreamStats([call, failed, turn("This operation was aborted")].join("\n")).stoppedInTools).toBe(true);
+    });
+
+    test("an aborted turn after a tool result is the same, whatever the stop reason is called", () => {
+      const aborted = end([], "aborted");
+      expect(piStreamStats([call, failed, aborted].join("\n")).stoppedInTools).toBe(true);
+    });
+
+    test("a request that timed out after a tool result is the server's failure, not a stop of the guard", () => {
+      expect(piStreamStats([call, failed, turn("Request timed out.")].join("\n")).stoppedInTools).toBe(false);
+    });
+
+    test("an error that only has the word abort in it is the server's, not the guard's", () => {
+      for (const message of ["The operation was aborted due to timeout", "read ECONNABORTED", "net::ERR_CONNECTION_ABORTED"]) {
+        expect(piStreamStats([call, failed, turn(message)].join("\n")).stoppedInTools).toBe(false);
+      }
+    });
+
+    test("the messages that an abort of the session gives are the guard's", () => {
+      for (const message of ["This operation was aborted", "The operation was aborted", "Request was aborted", "Operation aborted", "Request aborted"]) {
+        expect(piStreamStats([call, failed, turn(message)].join("\n")).stoppedInTools).toBe(true);
+      }
+    });
+
+    test("a turn that ends on a tool call means the session stopped while it still wanted tools", () => {
+      expect(piStreamStats(call).stoppedInTools).toBe(true);
+    });
+
+    test("a runaway message that was aborted while it had text is not a stop in tools", () => {
+      const cut = end([{ type: "text", text: '{"rows": [{"line": 1' }], "aborted");
+      expect(piStreamStats([call, failed, cut].join("\n")).stoppedInTools).toBe(false);
+    });
+
+    test("a session that ends with its answer is not", () => {
+      expect(piStreamStats([call, failed, end([{ type: "text", text: "{}" }], "stop")].join("\n")).stoppedInTools).toBe(false);
+    });
+  });
+});
+
+describe("jsonProblem", () => {
+  test("text that has no JSON in it has no problem to name", () => {
+    expect(jsonProblem("The rows are logged.")).toBeNull();
+    expect(jsonProblem("")).toBeNull();
+  });
+
+  test("JSON that parses has none", () => {
+    expect(jsonProblem('{"rows": [{"line": 1}]}')).toBeNull();
+    expect(jsonProblem("Here it is: " + FENCE + 'json\n{"rows": []}\n' + FENCE)).toBeNull();
+  });
+
+  test("a backslash that starts no escape is named, with the rule that fixes it (b08 r03 of run 7)", () => {
+    const text = '{"rows": [{"line": 1, "evidence": "C:\\Users\\danie\\x"}]}';
+    const problem = jsonProblem(text)!;
+    expect(problem).toContain("character 38");
+    expect(problem).toContain("\\U");
+    expect(problem).toContain("two backslashes");
+    // The place is shown, so the model can find it in its own text.
+    expect(problem).toContain("C:");
+  });
+
+  test("a missing closing brace is named at the end of the text (b14 r03 of run 7)", () => {
+    const problem = jsonProblem('{"rows": [{"line": 1, "verdict": "LOGGED"}]')!;
+    expect(problem).toContain("object that starts at character 1");
+    expect(problem).toContain("not closed");
+  });
+
+  test("a closing character that does not match is named (b08 r01 of run 7)", () => {
+    const problem = jsonProblem('{"rows": [{"line": 1, "evidence": "x")}]}')!;
+    expect(problem).toContain("character 38");
+    expect(problem).toContain("comma or a closing brace");
+  });
+
+  test("a raw line break inside a string is named", () => {
+    const problem = jsonProblem('{"a": "one\ntwo"}')!;
+    expect(problem).toContain("line break");
+    expect(problem).toContain("\\n");
+  });
+
+  test("a trailing comma is named", () => {
+    expect(jsonProblem('{"a": [1, 2,]}')).toContain("trailing comma");
+    expect(jsonProblem('{"a": 1,}')).toContain("trailing comma");
+  });
+
+  test("single quotes and bare keys are named", () => {
+    expect(jsonProblem("{'a': 1}")).toContain("double quotes");
+    expect(jsonProblem("{a: 1}")).toContain("double quotes");
+  });
+
+  test("a string that is not closed is named", () => {
+    expect(jsonProblem('{"a": "never closed')).toContain("string that starts at character 7");
+  });
+
+  test("the JSON is found inside a fence and after prose", () => {
+    expect(jsonProblem("Here is the answer:\n" + FENCE + 'json\n{"a": [1, 2}\n' + FENCE)).not.toBeNull();
+    expect(jsonProblem('Answer: {"a": [1, 2}')).not.toBeNull();
+  });
+
+  test("a text that nests deeper than the scan follows is left to the parser, with no place named", () => {
+    // The scan stops at 200 levels. A place named there would be the level where the scan stopped, not
+    // where the text is wrong.
+    expect(jsonProblem('{"a":'.repeat(250) + " 1")).toBeNull();
+  });
+
+  test("the place named is in the answer, not in a prose example before it", () => {
+    const text = 'The format is {"line": N} for each row. Final answer: {"rows": [{"line": 1, "verdict": "LOGGED"}]';
+    const problem = jsonProblem(text)!;
+    expect(problem).toContain("not closed");
+    expect(problem).not.toContain("found 'N'");
+  });
+
+  test("a prose example that is valid JSON next to a broken answer leaves nothing to name", () => {
+    expect(jsonProblem('Example: {"a": 1}. Answer: {"rows": [')).toBeNull();
+  });
+
+  test("a long text with many braces is read in one pass", () => {
+    const started = Date.now();
+    jsonProblem("{x".repeat(50_000));
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  test("only the first problem is named, and the text after a value that closes is not read", () => {
+    expect(jsonProblem('{"a": 1} and then {"b": ')).toBeNull();
   });
 });

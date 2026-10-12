@@ -189,18 +189,27 @@ veriharness workers DIR --provider P --model M [--base-url U] [--context-size N|
      a model takes that path for the task's own. The schema is in the charter because the charter is
      the one text that every turn and every compaction keeps: a worker that compacted its context
      once wrote its report with other field names than the task named.
-   - The repeat guard (`pi-extensions/repeat-guard.ts`) is the one extension that a worker loads. It
+   - The guard (`pi-extensions/repeat-guard.ts`) is the one extension that a worker loads. It
      blocks a `read`, `grep`, `find` or `ls` call whose tool and arguments equal an earlier call of the
      session: the result is already in the context. The model reads the reason in place of the result.
-     A number and the same number as a string are one argument. The third block in a row stops the
-     session, and the nudge for a missing answer follows. A compaction clears the guard.
+     A number and the same number as a string are one argument. Three turns in a row in which every
+     tool call failed, whatever the cause, stop the session (`ctx.abort()` at the end of the third
+     turn): the error is `stuck`, and the nudge for it follows with no tools. A turn with a call that
+     worked, and a compaction, start the count again. The guard cuts each tool result to half of the
+     room that is left before pi compacts, less the results of the same message that the context does
+     not hold yet, so that one result cannot force a compaction. A compaction clears the memory of calls.
      The guard also cuts a message (`ctx.abort()`) that holds more records than the batch has items
      (the harness gives it the `--ids` field and the item count in `VERIHARNESS_ANSWER_SHAPE`), or whose
      end is one unit of 24 to 600 characters written 12 times. The id count is read at the shallowest
      depth of braces where the key stands. The stop reason `aborted` is the error `length`, and the
      nudge removes that message from the session. A call of a tool that is not `read`, `grep`, `find`
-     or `ls` clears the guard's memory of calls. A session whose last turn ends on a tool call is
-     `no-result`.
+     or `ls` clears the guard's memory of calls. A session that ends in its tool calls (the guard
+     stopped it, or its last turn asks for a tool) is `stuck`.
+   - A job with `--ids` has the output limit of its model cut to the answer that the batch needs:
+     `answerCap(items)` is 1024 tokens for each item and 1024 for the rest of the message, and at
+     least 4096, written into the `models.json` of the pi home. A limit from `--max-tokens` or
+     `VERIHARNESS_MAX_TOKENS` is kept, so is the limit of a job with `--thinking`, and the cap never
+     raises a limit.
    - Before the first worker starts, the harness provides the binaries behind the pi tools `find`
      (`fd`) and `grep` (`rg`) once, in one process (`model/pitools.ts`), and copies them into each
      pi home. pi downloads a binary on first use, and its parallel tool calls race on that download.
@@ -240,14 +249,16 @@ Each rollout gets `trajectory/worker.json`:
 `peakContext` is the largest prompt size of one turn: input plus cache read plus cache write
 tokens. `compactions` counts the context compactions of the agent: above 0, the worker answered from
 turns it no longer held. `error` is one of `timeout`, `no-result`, `no-json`, `start-failed`,
-`usage-limit`, `truncated`, `stopped`, `max-turns`, `length`, `thinking-only`, `no-tool-calls`, `schema`,
-`ids`, `compacted` or null.
+`usage-limit`, `truncated`, `stopped`, `max-turns`, `length`, `thinking-only`, `no-tool-calls`, `stuck`,
+`schema`, `ids`, `compacted` or null.
 `toolErrors` counts failed tool calls, and `toolErrorKinds` splits them into `invalid`, `missing`, `repeated`
-(a call that the repeat guard blocked) and `other` by the text of each result. `nudged` is true when a pi session that ended without an answer, or with
+(a call that the guard blocked) and `other` by the text of each result. `nudged` is true when a pi session that ended without an answer, or with
 an answer that does not fit the schema or the ids, was continued with a short message, and `nudges`
-counts the messages. A session gets one message for each kind of failure: time, cut, format, schema,
-ids (`--nudge-timeout` is the budget of each, default 300 s; 0 turns it off). `length` is a last
-turn cut at the output limit; `thinking-only` is a last turn of thought with no text; `schema` is a
+counts the messages. A session gets one message for each kind of failure: time, cut, stuck, format,
+json, schema, ids (`--nudge-timeout` is the budget of each, default 300 s; 0 turns it off). The json
+message names the place where the text stops being JSON. `length` is a last
+turn cut at the output limit; `thinking-only` is a last turn of thought with no text; `stuck` is a
+session that ended in its tool calls; `schema` is a
 deliverable that parses and does not fit the `--schema` file; `ids` is a deliverable that fits the schema
 and whose record ids (`--ids ARRAY.FIELD`) are not the ids of the batch in `manifest.json`;
 `no-tool-calls` is a pi session that was

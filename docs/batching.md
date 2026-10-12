@@ -158,9 +158,13 @@ value over all rollouts of all batches, not the value of one probe: one rollout 
 cost that varies from run to run.
 
 `compactions` is the number of times the agent compacted its context. Each compaction drops the
-older turns, so a worker that compacted answers from turns it no longer holds. A rollout with a
-compaction ends as `compacted`: its deliverable is kept, but the batch did not fit the window, which
-is the premise of `batch`. Make the batches smaller. `--allow-compaction` accepts such a rollout.
+older turns, so a worker that compacted answers from turns it no longer holds. pi compacts when the
+context passes the window less its reserve of 16384 tokens, and `workers` writes that point and the
+peak in its stderr line. A rollout with a compaction ends as `compacted`: its deliverable is kept, and
+the batch with the results of its tools did not fit under that point. `--retries` runs it again, and
+the deliverable of the attempt before is kept in `trajectory/attempt-N/deliverables/`. Make the batches
+smaller if it repeats. `--allow-compaction` accepts such a rollout. A window at or below the reserve
+makes every rollout compact, and `workers` writes a warning before it starts.
 Compaction caps `peakContext`, so the suggested `--item-tokens` of a compacted rollout is a lower
 bound: the line says "at least".
 
@@ -195,13 +199,14 @@ model, leave the digest fields out.
 | `max-turns` | The worker passed `--max-turns` assistant turns. |
 | `usage-limit` | The Claude Code account hit its usage limit. |
 | `no-result` | No final answer. For Claude Code, also an exit code that is not 0 or an error result. |
+| `stuck` | The session ended in its tool calls: the guard stopped it after three turns in a row in which every tool call failed, or its last turn asked for a tool. A pi worker only. |
 | `no-json` | A `.json` deliverable, and the final text holds no JSON. |
 | `length` | The last turn ended at the output-token limit, or the runaway guard cut it (it held more records than the batch has items, or one unit of text again and again). Its text is cut. |
 | `thinking-only` | The last turn held thinking and no text: the model spent its output on thought. |
 | `no-tool-calls` | A pi worker was offered tools and made no tool call. Its answer, whatever it says, rests on nothing it read. |
 | `schema` | The deliverable is JSON but does not fit the `--schema` file. |
 | `ids` | The deliverable fits the schema, and the ids of its records are not the ids of the batch (`--ids`). |
-| `compacted` | The agent compacted its context. The deliverable is kept; see `--allow-compaction`. |
+| `compacted` | The agent compacted its context. The deliverable is kept; see `--retries` and `--allow-compaction`. |
 
 When a rollout ends with an error and its last turn had text, the harness keeps that text as
 `deliverables/<name>.partial.txt`. A timeout, a cut or a stop no longer loses what the worker wrote.
@@ -236,8 +241,9 @@ repeated, up to twelve of each.
 ## Retries
 
 `--retries N` runs a rollout again, up to N more times, when its error is `no-result`, `no-json`,
-`thinking-only`, `length`, `schema`, `ids` or `no-tool-calls`: the model's output was wrong or empty,
-and a second try can differ. A `timeout` is repeated when `worker.json` has `timeoutWriting`: the time
+`thinking-only`, `length`, `schema`, `ids`, `no-tool-calls`, `stuck` or `compacted`: the model's output
+was wrong or empty, its tool calls failed in a row, or its context filled, and a second try can differ.
+A `timeout` is repeated when `worker.json` has `timeoutWriting`: the time
 ran out while the model wrote prose, and a new session does not repeat that. A `timeout` of a worker
 that was working is the speed of the batch or the model, and a new session repeats it. A
 `usage-limit`, a `stopped` and a `max-turns` are never repeated. Each printed line and each
@@ -249,54 +255,84 @@ all of them.
 ## Nudge
 
 Three things end a pi session with no answer: the time limit, a last turn of thought alone, and a
-last turn cut at the output limit. A fourth is a final message without the JSON. A fifth is an answer
-that parses and does not fit the `--schema` file, and a sixth is an answer that fits it and has the
-wrong `--ids`. Each one used to throw away what the worker had found. `workers` now continues the same
-session with a short message: stop investigating, do not think further, write the answer now. The
-message depends on the cause; for a schema or an ids error it lists the errors (the first eight).
+last turn cut at the output limit. A fourth is a session that the guard stopped after failed tool
+calls. A fifth is a final message without the JSON, and a sixth is a final message whose JSON stops
+being JSON at some place. A seventh is an answer that parses and does not fit the `--schema` file, and
+an eighth is an answer that fits it and has the wrong `--ids`. Each one used to throw away what the
+worker had found. `workers` now continues the same session with a short message: stop investigating,
+do not think further, write the answer now. The message depends on the cause. For a schema or an ids
+error it lists the errors (the first eight). For a JSON that is not valid it names the character where
+the text stops being JSON, the rule that it breaks and the text around that place. For a stuck session
+it says that the tool calls failed or repeated an earlier call and that no tool is offered.
 
-A session is sent back once for each kind of failure: `time`, `cut`, `format`, `schema` and `ids`. An
-answer that is put right can fail the next check. A model that answered in prose, then in the wrong
-shape, then with the wrong ids needs three messages, and one message for all three kinds leaves the
-last check with no chance. A kind is never sent twice, so a session gets five messages at most.
+A session is sent back once for each kind of failure: `time`, `cut`, `stuck`, `format`, `json`,
+`schema` and `ids`. An answer that is put right can fail the next check. A model that answered in
+prose, then in the wrong shape, then with the wrong ids needs three messages, and one message for all
+three kinds leaves the last check with no chance. A kind is never sent twice, so a session gets seven
+messages at most.
 
 A nudge turn offers no tools (`--no-tools`): a chat template such as llama3.1's tells a model that
 holds tools to answer with a function call, so a nudge that left the tools on was answered with more
 tool calls. Before a nudge, the harness removes the last message of the saved session when that
-message was cut at the output limit. A cut message is mostly a runaway (one row written many times),
-and the model would read its own loop again. `agent.jsonl` keeps the message. Each nudge has its own
+message was cut at the output limit, or aborted by the guard, or is the empty turn that an abort ended
+after a tool result. A cut message is mostly a runaway (one row written many times), and the model
+would read its own loop again. `agent.jsonl` keeps the message. Each nudge has its own
 budget: `--nudge-timeout S` (default 300; 0 turns it off). The
 record has `nudged: true` and `nudges`, the number of messages sent, and `agent.jsonl` holds every
 session. A nudge needs a saved session, so a Claude Code worker has none, and `--nudge-timeout` with
 `--provider claude-code` is an input error.
 
-## Repeated calls
+## Session guard
 
-A small model can repeat one tool call, again and again, until its context is full. The tools of a
-worker only read, so each repeat returns the text that the model already has. A pi worker therefore
-loads one extension, the repeat guard (`harness/pi-extensions/repeat-guard.ts`). It blocks a `read`,
-`grep`, `find` or `ls` call that has the same tool and the same arguments as an earlier call of the
-session. In place of the result, the model reads: the call is the same as an earlier call, its result
-is in the context, use a different call or write the final answer.
+A small model can repeat one tool call, again and again, until its context is full, or call a tool with
+arguments that it does not accept. A pi worker therefore loads one extension, the guard
+(`harness/pi-extensions/repeat-guard.ts`), which does three things with tool calls and one with the
+answer.
 
+**Repeated calls.** The tools of a worker only read, so a repeat returns the text that the model
+already has. The guard blocks a `read`, `grep`, `find` or `ls` call that has the same tool and the same
+arguments as an earlier call of the session. In place of the result, the model reads: the call is the
+same as an earlier call, its result is in the context, use a different call or write the final answer.
 Two arguments are the same when they have the same value: `10` and `"10"` are one argument, and the
-order of the keys does not matter. The third block in a row stops the session. The session then has no
-answer, and the nudge for a missing answer (`--no-tools`) asks for it. A call that is not blocked
-starts the count again. A compaction clears the guard, because the results that it replaced are no
-longer in the context. A call of any other tool (`edit`, `write`, `bash`) clears it too: the same read
-after it can return other text. The record counts a blocked call in `toolErrors`, in the class
-`repeated`. A session that ends on a tool call has no answer: its error is `no-result`.
+order of the keys does not matter. A compaction clears the guard, because the results that it replaced
+are no longer in the context. A call of any other tool (`edit`, `write`, `bash`) clears it too: the same
+read after it can return other text. The record counts a blocked call in `toolErrors`, in the class
+`repeated`.
 
-The guard also reads the text of the message that the model is writing. A final message can repeat one
-row until the output limit: one batch of four rows came back as 129 rows of the same id, 8192 tokens
-and ten minutes of a local model. The guard cuts a message when it holds more records than the batch
-has items (it counts the key of `--ids ARRAY.FIELD` at the shallowest depth where it is written, so a
-nested object with a key of the same name is not a record; the harness gives it the field and the
-number of items), or when the end of the text is one unit of 24 to 600 characters written 12 times in
-a row (a batch with no ids, or a runaway of another shape). A cut message ends with the stop reason
-`aborted`. The record has the error
-`length`, as for a message that reached the limit, and the nudge for it removes the message from the
-session before it asks for the answer.
+**Failed calls in a row.** Three turns in a row in which every tool call failed stop the session,
+whatever the cause: a block, arguments that the tool does not accept, or a path that is not there. The
+turn is the unit because pi runs the calls of one message together, so the model has read none of
+their results when they end; the charter asks for one call in each message, so a turn is mostly one
+call. A turn in which one call worked starts the count again, and so does a compaction. The count is
+three because, over three runs of a local model, a streak of two failed calls was followed by a call
+that worked in 12 of 16 cases, and a streak of three or more in 3 of 22. The session then has no
+answer: its error is `stuck`, and the nudge for it (`--no-tools`) asks for the answer from what the
+worker has found.
+
+**Result size.** One result can be the call that forces a compaction: pi cuts a result at 50 KB, which
+is 14 000 to 16 000 tokens of a llama model. The guard cuts a result to half of the room that is left
+before pi compacts (the window less the reserve of 16384 tokens, less the context in use, less the
+results of the same message that the context does not hold yet), at the end of a line where it can,
+and ends the result with a line that says how many characters it had, how much room is left and how
+to ask for less. A result is never cut below 1000 characters.
+
+**Runaway message.** The guard also reads the text of the message that the model is writing. A final
+message can repeat one row until the output limit: one batch of four rows came back as 129 rows of the
+same id, 8192 tokens and ten minutes of a local model. The guard cuts a message when it holds more
+records than the batch has items (it counts the key of `--ids ARRAY.FIELD` at the shallowest depth
+where it is written, so a nested object with a key of the same name is not a record; the harness gives
+it the field and the number of items), or when the end of the text is one unit of 24 to 600
+characters written 12 times in a row (a batch with no ids, or a runaway of another shape). A cut
+message ends with the stop reason `aborted`. The record has the error `length`, as for a message that
+reached the limit, and the nudge for it removes the message from the session before it asks for the
+answer.
+
+With `--ids`, the output limit of the model is also cut to the answer that the batch needs: 1024 tokens
+for each item and 1024 for the rest of the message, and never less than 4096, because the limit is
+the one of every turn of the session. The longest record that a model was measured to write took 378
+tokens, so the room is about 2.7 times that. A runaway then ends in a few thousand tokens, not in the
+8192 of the default. `--max-tokens`, and `VERIHARNESS_MAX_TOKENS`, replace the cap, `--thinking` keeps
+the limit of the provider because thought is output too, and the cap never raises a limit.
 
 ## Turn cap
 
