@@ -132,6 +132,8 @@ harness/
   claude/          the Claude Code runtime: turn runner, stream parser, preflight, session environment
   batch/           split an items file into task folders that fit a token budget
   workers/         run worker rollouts on each task folder, in isolated copies
+  pi-extensions/   the repeat guard: the one pi extension a worker loads (blocks a repeated tool call,
+                   cuts a runaway answer)
   views.ts         plain-text views rendered beside binary artifacts (.cells.tsv, .text.txt)
   prompts/         CHARTER (system prompt), MISSION, the two investigation playbooks and
                    record formats, ADJUDICATE, REPAIR

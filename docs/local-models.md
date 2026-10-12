@@ -94,6 +94,7 @@ context: checker asks 8192, the server runs qwen3.5:9b-64k at 65536; a client th
 | `--model` | | Model name (`qwen2.5-coder:7b`). Required. `name` matches `name:latest`. |
 | `--base-url` | `VERIHARNESS_OLLAMA_BASE_URL`, then `OLLAMA_HOST` | Server root. Default `http://127.0.0.1:11434`. |
 | `--temperature` | `VERIHARNESS_TEMPERATURE` | Sampling temperature. Omitted unless set, so the model's own default stands. `0.2` is a reasonable verifier setting. |
+| `--frequency-penalty` | `VERIHARNESS_FREQUENCY_PENALTY` | OpenAI `frequency_penalty`: a token is less likely each time it was already written. Omitted unless set. Ollama applies it on `/v1`; `presence_penalty` is not used, because a request with it gave the same text as one without it. |
 | `--top-p` | `VERIHARNESS_TOP_P` | Nucleus sampling. |
 | `--max-tokens` | `VERIHARNESS_MAX_TOKENS` | Maximum tokens pi may generate in one reply. Default ceiling 8192, capped by the context window. |
 | `--context-size` | `VERIHARNESS_CONTEXT_SIZE` | Context to register with pi. `auto`, or a positive integer no larger than the window the server advertises, and greater than 4096. `auto` uses the server's window, also when the variable is set. |
@@ -166,13 +167,32 @@ pi receives a generated `models.json` under the task's `.pi/` directory (`PI_COD
 
 Sampling options you set are copied into that model's `samplingParams`, which is how temperature reaches the agent loop.
 
+### Sampling of batch workers
+
+`workers` samples a pi worker with `temperature` 0.6 when the flag and the environment variable are
+both unset (`WORKER_SAMPLING` in `harness/model/config.ts`). `--temperature` and `--frequency-penalty`
+replace the value, and `0` is a value. Other roles keep their own settings.
+
+The temperature has two effects that pull in opposite directions. A low value keeps the first turn a
+tool call: llama3.1:8b through Ollama made a structured call on the first turn in 85% of 145 samples
+at 0.8 (the server default), 96% of 80 at 0.6, and 100% of 40 at 0.4 and at 0.2. A high value lets a
+session leave a loop: when the session had already repeated one call, the next call repeated it again
+in 2 of 10 samples at 0.8, 5 at 0.6, 8 at 0.4 and 9 at 0.2. 0.6 is the highest value that keeps the
+first turn structured. The repeat guard (see `docs/batching.md`) ends the loops that remain.
+
+A frequency penalty is not set. From a position inside a loop, with a penalty of 0.3 to 1.0, 7 to 10 of
+10 samples still repeated the call, because the penalty window is much shorter than the loop. A
+penalty also works against the keys that a JSON report repeats on every row.
+
 ### The tool list and the chat template
 
 The Ollama template of llama3.1 prints the tool list with the last user message only. After the first
 tool round the model sees no tool list. A user message at the end of the chat (a nudge) makes the
 template tell the model to answer with a function call. For that reason the harness sends a nudge turn
 with `--no-tools`. Another model may have a template with the same limit. Read it with
-`ollama show --template <tag>` before you trust a long tool session on that model.
+`ollama show --template <tag>` before you trust a long tool session on that model. `model-check` and
+`workers` read the template and write a warning when the tool list is printed with a message and not
+in the system block.
 
 The template also decides whether a worker calls a tool at all. With the shipped template, 10 of the
 18 attempts of one `llama3.1:8b` run made no tool call: the model answered at once, with a report that

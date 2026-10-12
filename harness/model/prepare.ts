@@ -71,6 +71,13 @@ export async function prepareLocalProvider(config: LocalModelConfig, deps: Prepa
   const probe = await backend.probe();
   const warnings: string[] = [];
   enforceContext(config, probe, warnings);
+  if (probe.capabilities.toolList === "message") {
+    warnings.push(
+      `the chat template of '${probe.model}' prints the tool list with the last user message only. ` +
+        `After the first tool result the model sees no list, and may write calls as prose or invent tools. ` +
+        `docs/local-models.md has a Modelfile that prints the list in the system block.`,
+    );
+  }
   const tools = await confirmTools(config, backend, probe, deps, warnings);
   const capabilities = { ...probe.capabilities, tools };
   if (backend instanceof OllamaBackend || backend instanceof LlamaCppBackend) {

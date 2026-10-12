@@ -21,6 +21,7 @@
 import { StringDecoder } from "node:string_decoder";
 import { parseStream } from "../claude/stream.js";
 import type { ModelIdentity } from "../model/types.js";
+import { REPEAT_REASON } from "../pi-extensions/repeat-guard.js";
 
 /** How the JSON sat in the last message: the whole text, one whole fence, or inside prose. */
 export type DeliverableForm = "pure" | "fenced" | "embedded";
@@ -81,6 +82,29 @@ export interface WorkerRecord {
   modelIdentity?: ModelIdentity;
   /** Tools the job asked for that this worker did not get, because the harness could not provide their binary. */
   droppedTools?: string[];
+  /**
+   * Set for a timeout that came while the model was writing prose (a runaway, or an answer that did not
+   * end), not while it worked. Another session can differ, so `--retries` runs it again.
+   */
+  timeoutWriting?: boolean;
+}
+
+/**
+ * What a pi stream ended in the middle of: `text` (prose, or an answer), `toolcall` (the arguments of a
+ * call), or empty when the last message ended. A timeout or a stop cuts a message at an event, and this
+ * tells the work of a session (calls) from a generation that ran on (text).
+ */
+export function openMessageKind(text: string): "text" | "toolcall" | "" {
+  let open: "text" | "toolcall" | "" = "";
+  for (const e of events(text)) {
+    if (e.type === "message_end") open = "";
+    else if (e.type === "message_update") {
+      const kind = (e.assistantMessageEvent as { type?: unknown } | undefined)?.type;
+      if (kind === "text_delta") open = "text";
+      else if (kind === "toolcall_delta") open = "toolcall";
+    }
+  }
+  return open;
 }
 
 /** What an event stream says about a session. */
@@ -108,12 +132,14 @@ export interface StreamStats {
 
 /**
  * Why a tool call failed, from the text of its result: the tool refused the arguments (`invalid`: none,
- * a wrong type), the path or file was not there (`missing`), or anything else.
+ * a wrong type), the path or file was not there (`missing`), the repeat guard blocked a call that the
+ * session had already made (`repeated`), or anything else.
  */
 export interface ToolErrorKinds {
   invalid: number;
   missing: number;
   other: number;
+  repeated: number;
 }
 
 const INVALID_ARGUMENTS = /^\s*(<tool_use_error>\s*)?(Validation failed for tool|InputValidationError)/i;
@@ -121,6 +147,7 @@ const MISSING_PATH = /\b(ENOENT|no such file|not found|does not exist|cannot fin
 
 /** Class one failed tool result by its text. A result with no text is `other`: nothing says what failed. */
 export function toolErrorKind(text: string): keyof ToolErrorKinds {
+  if (text.includes(REPEAT_REASON)) return "repeated";
   if (INVALID_ARGUMENTS.test(text)) return "invalid";
   if (MISSING_PATH.test(text)) return "missing";
   return "other";
@@ -268,7 +295,7 @@ export function turnCounter(claude: boolean): (chunk: Buffer) => number {
 
 /** pi `--mode json`: assistant `message_end` events carry the usage; `tool_execution_end` is one tool call. */
 export function piStreamStats(text: string): StreamStats {
-  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0 } };
+  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 } };
   for (const e of events(text)) {
     if (e.type === "tool_execution_end") {
       stats.tools++;
@@ -299,7 +326,7 @@ export function piStreamStats(text: string): StreamStats {
  * a turn is a message id. The `result` event holds the final text and the session's output total.
  */
 export function claudeStreamStats(text: string): StreamStats {
-  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0 } };
+  const stats: StreamStats = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 } };
   const output = new Map<string, number>();
   let lastText = "";
   let resultUsage: Record<string, unknown> | undefined;

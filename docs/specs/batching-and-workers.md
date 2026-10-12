@@ -180,7 +180,8 @@ veriharness workers DIR --provider P --model M [--base-url U] [--context-size N|
    folder. A worker cannot see another worker's files.
 2. It starts one session in that folder:
    - pi workers: the pi command of the driver (`piCommandFor`), with `-p`, `--no-context-files`,
-     `--no-extensions`, `--no-prompt-templates`, `--no-skills`, `--no-session`, `--system-prompt`
+     `--no-extensions`, `-e` (the repeat guard), `--no-prompt-templates`,
+     `--no-skills`, `--no-session`, `--system-prompt`
      (`workerCharter` in `workers/worker.ts`: `WORKER_CHARTER`, and the `--schema` text when the job has
      one), `--mode json` and `--tools LIST`. A nudge turn has `--no-tools` instead of `--tools`. A local
      model gets its own pi home with the `models.json` that `buildPiProvider` and `materializePiHome`
@@ -188,6 +189,18 @@ veriharness workers DIR --provider P --model M [--base-url U] [--context-size N|
      a model takes that path for the task's own. The schema is in the charter because the charter is
      the one text that every turn and every compaction keeps: a worker that compacted its context
      once wrote its report with other field names than the task named.
+   - The repeat guard (`pi-extensions/repeat-guard.ts`) is the one extension that a worker loads. It
+     blocks a `read`, `grep`, `find` or `ls` call whose tool and arguments equal an earlier call of the
+     session: the result is already in the context. The model reads the reason in place of the result.
+     A number and the same number as a string are one argument. The third block in a row stops the
+     session, and the nudge for a missing answer follows. A compaction clears the guard.
+     The guard also cuts a message (`ctx.abort()`) that holds more records than the batch has items
+     (the harness gives it the `--ids` field and the item count in `VERIHARNESS_ANSWER_SHAPE`), or whose
+     end is one unit of 24 to 600 characters written 12 times. The id count is read at the shallowest
+     depth of braces where the key stands. The stop reason `aborted` is the error `length`, and the
+     nudge removes that message from the session. A call of a tool that is not `read`, `grep`, `find`
+     or `ls` clears the guard's memory of calls. A session whose last turn ends on a tool call is
+     `no-result`.
    - Before the first worker starts, the harness provides the binaries behind the pi tools `find`
      (`fd`) and `grep` (`rg`) once, in one process (`model/pitools.ts`), and copies them into each
      pi home. pi downloads a binary on first use, and its parallel tool calls race on that download.
@@ -229,8 +242,8 @@ tokens. `compactions` counts the context compactions of the agent: above 0, the 
 turns it no longer held. `error` is one of `timeout`, `no-result`, `no-json`, `start-failed`,
 `usage-limit`, `truncated`, `stopped`, `max-turns`, `length`, `thinking-only`, `no-tool-calls`, `schema`,
 `ids`, `compacted` or null.
-`toolErrors` counts failed tool calls, and `toolErrorKinds` splits them into `invalid`, `missing` and `other` by
-the text of each result. `nudged` is true when a pi session that ended without an answer, or with
+`toolErrors` counts failed tool calls, and `toolErrorKinds` splits them into `invalid`, `missing`, `repeated`
+(a call that the repeat guard blocked) and `other` by the text of each result. `nudged` is true when a pi session that ended without an answer, or with
 an answer that does not fit the schema or the ids, was continued with a short message, and `nudges`
 counts the messages. A session gets one message for each kind of failure: time, cut, format, schema,
 ids (`--nudge-timeout` is the budget of each, default 300 s; 0 turns it off). `length` is a last

@@ -1,0 +1,30 @@
+Here is the final JSON object that fits the JSON Schema:
+
+```
+{
+  "rows": [
+    {"line": 6871, "verdict": "LOGGED", "changelog_heading": "## 2026-10-09 09:12 - verify 0.4.1: the first version published to npm by CI", "evidence": "verify 0.4.1"},
+    {"line": 6872, "verdict": "LOGGED", "changelog_heading": "## 2026-10-09 08:28 - verify 0.4.0 + verify-mcp 0.8.0: a model for each role; verify publishes from CI", "evidence": "verify 0.4.0 + verify-mcp 0.8.0"},
+    {"line": 6873, "verdict": "LOGGED", "changelog_heading": "## 2026-10-08 17:39 - episodic-memory 1.7.0 enabled on both ships with the digest flag", "evidence": "episodic-memory 1.7.0"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-08 21:16 - repo-tools 2.2.1 released (entry roots outside src/)", "evidence": "repo-tools 2.2.1"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-08 13:15 - episodic-memory 1.7.0 released (session digest, off by default)", "evidence": "episodic-memory 1.7.0"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-08 00:27 - stale-row sweep of C:\TODO.md finished (qwen3.5:9b-64k via verify-mcp)", "evidence": "qwen3.5:9b-64k via verify-mcp"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-07 20:43 - EpisodicMemorySync scheduled task disabled (ZBOOK)", "evidence": "EpisodicMemorySync"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-07 18:15 - ollama-mcp 0.7.0 released: five read-only benchmark tools", "evidence": "ollama-mcp 0.7.0"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-07 09:17 - verify-mcp rerun with the tuned profile: 6754 plus 6564", "evidence": "verify-mcp 0.5.0"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-07 08:23 - verify-mcp 0.5.0 released; tuning keys added to both ships' settings.json", "evidence": "verify-mcp 0.5.0"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-07 07:28 - verify-mcp ships no default model; the local profile lives in each ship's settings", "evidence": "verify-mcp 0.4.2"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-07 07:07 - verify-mcp 0.4.1: qwen3.5:9b-64k is the default model on the ZBOOK and the EVO", "evidence": "qwen3.5:9b-64k"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-07 06:27 - qwen3.5:9b pulled on the EVO and run through the verify driver", "evidence": "qwen3.5:9b"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-07 05:44 - three duplicate Ollama tags deleted on the EVO", "evidence": "Ollama tags"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-07 04:59 - verify driver run with Haiku on the same stale-row task", "evidence": "Haiku"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-07 02:08 - verify driver finished a full run on a local 27B model", "evidence": "qwen3.8:27b"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-06 22:30 - verify-mcp tried on a local model; stale-row sweep of TODO.md", "evidence": "verify-mcp 0.2.2"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-06 21:32 - @danielsimonjr/verify published to npm; verify-mcp 0.3.0 uses it", "evidence": "@danielsimonjr/verify"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-06 20:38 - verify-mcp 0.2.2 released and deployed on the ZBOOK", "evidence": "verify-mcp 0.2.2"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-06 20:11 - pi fork published as @danielsimonjr/pi; verify uses it", "evidence": "@danielsimonjr/pi"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-06 18:32 - briefing raises S2 when the backup volume is absent", "evidence": "briefing"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-06 09:18 - ZBOOK session-start hook: one briefing run, not two; claude-patrol reads tasks via COM (both ships)", "evidence": "claude-patrol"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-06 07:48 - Both ships: plugin reloads proven from the running image; plugin-census deployed and fixed", "evidence": "plugin-census"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-06 06:45 - ZBOOK: mcp-tools 0.9.1 deployed; my 10-02 spike's plugin state removed", "evidence": "mcp-tools 0.9.1"},
+    {"line"

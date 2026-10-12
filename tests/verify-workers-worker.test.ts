@@ -94,6 +94,15 @@ describe("workerArgs", () => {
     expect(cmd.indexOf("--system-prompt")).toBeLessThan(cmd.indexOf("--tools"));
   });
 
+  test("the charter asks for one tool call in each message", () => {
+    // A small model that writes its whole plan as one message of calls (10 or more in 14% of its messages)
+    // fills the later calls with paths it has not seen. One call in a message, with the result read before
+    // the next, cut that to 1% and the failed calls from 21% to 6% in the same batches.
+    expect(WORKER_CHARTER).toContain("Make one tool call in each message");
+    const { cmd } = workerArgs(job(), join(root, "home"));
+    expect(cmd[cmd.indexOf("--system-prompt") + 1]).toContain("one tool call in each message");
+  });
+
   test("the charter carries the schema of the deliverable, so the format is in every turn and survives a compaction", () => {
     const schema = { type: "object", required: ["rows"], properties: { rows: { type: "array", items: { required: ["line", "verdict"] } } } };
     const { cmd } = workerArgs(job({ schema }), join(root, "home"));
@@ -126,6 +135,27 @@ describe("workerArgs", () => {
     expect(nudge).toContain("--no-tools");
     expect(nudge).not.toContain("--tools");
     expect(nudge).toContain("-c");
+  });
+
+  test("every turn of a pi worker loads the repeat guard, a nudge turn too", () => {
+    // Pi runs with --no-extensions; the guard is the one extension that is named, so a worker loads
+    // nothing from the user's pi home. A nudge turn has no tools to guard, and its answer can be a
+    // runaway as well.
+    const first = workerArgs(job(), join(root, "home")).cmd;
+    const at = first.indexOf("-e");
+    expect(at).toBeGreaterThan(-1);
+    expect(first).toContain("--no-extensions");
+    expect(first[at + 1]).toMatch(/pi-extensions[\\/]repeat-guard\.ts$/);
+    expect(existsSync(first[at + 1]!)).toBe(true);
+    const nudge = workerArgs(job({ nudgeTimeoutSec: 90 }), join(root, "home"), "Write the answer.").cmd;
+    expect(nudge[nudge.indexOf("-e") + 1]).toBe(first[at + 1]);
+  });
+
+  test("with --ids the guard is told the id field and the number of items, so it can cut a runaway answer", () => {
+    const ids = { array: "rows", field: "line", expected: ["6857", "6858", "6867"] };
+    const { env } = workerArgs(job({ ids }), join(root, "home"));
+    expect(JSON.parse(env.VERIHARNESS_ANSWER_SHAPE!)).toEqual({ idField: "line", records: 3 });
+    expect(workerArgs(job(), join(root, "home")).env.VERIHARNESS_ANSWER_SHAPE).toBeUndefined();
   });
 
   test("claude args", () => {
@@ -293,6 +323,49 @@ describe("runWorker", () => {
     expect(readFileSync(rollout("deliverables", "report.json.partial.txt"), "utf8")).toBe('{"rows": [{"line": 1');
   });
 
+  test("a session that ends on a tool call has no answer, whatever text came with the call", async () => {
+    // The guard ends a session that repeats a call (`terminate`), and a turn cap or an error can do the
+    // same. The last turn then asked for a tool and got no answer; its text is a sentence beside the call.
+    const fake = fakeRun(
+      turns([[{ type: "text", text: "Let me read it again." }, { type: "toolCall", id: "c9", name: "read", arguments: { path: "spec/task.md" } }], "toolUse"]),
+    );
+    const rec = await runWorker(job({ deliverable: "report.md" }), { run: fake.run });
+    expect(rec.error).toBe("no-result");
+    expect(existsSync(rollout("deliverables", "report.md"))).toBe(false);
+  });
+
+  test("a last turn that the runaway guard aborted is length, as one cut at the output limit is", async () => {
+    // The guard of the pi session (pi-extensions/repeat-guard.ts) cuts a message that has more records than
+    // the batch has items. pi ends that message with stopReason `aborted`.
+    const fake = fakeRun(turns([[{ type: "text", text: '{"rows": [{"line": 1' }], "aborted"]));
+    const rec = await runWorker(job(), { run: fake.run });
+    expect(rec.error).toBe("length");
+    expect(readFileSync(rollout("deliverables", "report.json.partial.txt"), "utf8")).toBe('{"rows": [{"line": 1');
+  });
+
+  /** A streamed fragment of the message in progress. */
+  const update = (assistantMessageEvent: object): string => JSON.stringify({ type: "message_update", assistantMessageEvent }) + "\n";
+
+  test("a timeout while the model was writing prose is marked, so a retry can run it again", async () => {
+    // The session read a file and then began its answer, which did not end before the time did.
+    const read =
+      turns([[{ type: "toolCall", id: "c1", name: "read", arguments: { path: "spec/task.md" } }], "toolUse"]) +
+      JSON.stringify({ type: "tool_execution_end", toolCallId: "c1", toolName: "read", result: { content: [] }, isError: false }) +
+      "\n";
+    const writing = read + update({ type: "text_delta", contentIndex: 0, delta: '{"rows": [{"line": 7' });
+    const rec = await runWorker(job(), { run: fakeRun(writing, { status: null, timedOut: true }).run });
+    expect(rec).toMatchObject({ error: "timeout", timeoutWriting: true });
+    expect(record().timeoutWriting).toBe(true);
+  });
+
+  test("a timeout while the model was working is not marked", async () => {
+    const working = turns([[{ type: "toolCall", id: "c1", name: "read", arguments: { path: "spec/task.md" } }], "toolUse"]) +
+      update({ type: "toolcall_delta", contentIndex: 0, delta: '{"path": "workspace/' });
+    const rec = await runWorker(job(), { run: fakeRun(working, { status: null, timedOut: true }).run });
+    expect(rec.error).toBe("timeout");
+    expect(rec).not.toHaveProperty("timeoutWriting");
+  });
+
   test("a last turn of thinking alone is thinking-only, not no-result", async () => {
     const fake = fakeRun(turns([[{ type: "thinking", thinking: "hmm" }], "stop"]));
     expect((await runWorker(job(), { run: fake.run })).error).toBe("thinking-only");
@@ -361,6 +434,64 @@ describe("runWorker", () => {
     expect(f.calls).toHaveLength(3);
     expect(rec).toMatchObject({ error: "no-json", nudged: true, nudges: 2, tools: 1 });
     expect(readFileSync(rollout("deliverables", "report.json.txt"), "utf8")).toBe("Still no JSON.");
+  });
+
+  /** The lines of a pi session file: a header, a request, a tool round, then the given last entry. */
+  const sessionFile = (...last: object[]): string =>
+    [
+      { type: "session", version: 3, id: "s1", cwd: "/w" },
+      { type: "message", id: "m1", parentId: null, message: { role: "user", content: [{ type: "text", text: "Do the work." }] } },
+      { type: "message", id: "m2", parentId: "m1", message: { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "spec/task.md" } }], stopReason: "toolUse" } },
+      { type: "message", id: "m3", parentId: "m2", message: { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "task" }] } },
+      ...last,
+    ]
+      .map((e) => JSON.stringify(e))
+      .join("\n") + "\n";
+  const cutEntry = { type: "message", id: "m4", parentId: "m3", message: { role: "assistant", content: [{ type: "text", text: '{"rows": [{"line": 7' }], stopReason: "length" } };
+
+  /** A run() fake that, on its first call, saves `file` as the pi session, and then records the session each later call finds. */
+  function sessionRun(file: string, first: string, later: string) {
+    const found: string[] = [];
+    let n = 0;
+    const run = async (_cmd: string, _args: string[], opts: RunOptions): Promise<RunResult> => {
+      const path = join(opts.env!.PI_CODING_AGENT_DIR!, "session", "s1.jsonl");
+      n++;
+      if (n === 1) writeFileSync(path, file);
+      else found.push(readFileSync(path, "utf8"));
+      return { status: 0, signal: null, stdout: n === 1 ? first : later, stderr: "", timedOut: false, truncated: false, timeoutMs: opts.timeoutMs };
+    };
+    return { run, found };
+  }
+
+  test("a nudge after a message cut at the output limit continues from the turn before it, not from the cut text", async () => {
+    // A cut message is a model's runaway more often than not (one row written 129 times). Sent back with
+    // the nudge it is context that invites the same text again, and it spends the window.
+    const f = sessionRun(sessionFile(cutEntry), turns([[{ type: "text", text: '{"rows": [{"line": 7' }], "length"]), PI_STREAM);
+    const rec = await runWorker(job({ nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(rec).toMatchObject({ error: null, nudged: true, form: "pure" });
+    expect(f.found).toEqual([sessionFile()]);
+    // The stream keeps the cut message: it is the record of what happened.
+    expect(readFileSync(rollout("trajectory", "agent.jsonl"), "utf8")).toContain('{\\"rows\\": [{\\"line\\": 7');
+  });
+
+  test("a nudge after a message that the runaway guard aborted continues from the turn before it", async () => {
+    const abortedEntry = { type: "message", id: "m4", parentId: "m3", message: { role: "assistant", content: [{ type: "text", text: '{"rows": [{"line": 7' }], stopReason: "aborted" } };
+    const f = sessionRun(sessionFile(abortedEntry), turns([[{ type: "text", text: '{"rows": [{"line": 7' }], "aborted"]), PI_STREAM);
+    const rec = await runWorker(job({ nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(rec).toMatchObject({ error: null, nudged: true, form: "pure" });
+    expect(f.found).toEqual([sessionFile()]);
+  });
+
+  test("a nudge keeps the last message of a session when that message was not cut", async () => {
+    const stopEntry = { type: "message", id: "m4", parentId: "m3", message: { role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" } };
+    // The session read a file, so its end is a format failure, not a lack of work.
+    const read =
+      turns([[{ type: "toolCall", id: "c1", name: "read", arguments: { path: "spec/task.md" } }], "toolUse"]) +
+      JSON.stringify({ type: "tool_execution_end", toolCallId: "c1", toolName: "read", result: { content: [] }, isError: false }) +
+      "\n";
+    const f = sessionRun(sessionFile(stopEntry), read + turns([[{ type: "text", text: "Done." }], "stop"]), PI_STREAM);
+    await runWorker(job({ nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.found).toEqual([sessionFile(stopEntry)]);
   });
 
   test("no nudge for a stop, a turn cap, a usage limit, a start failure, or when the nudge is off", async () => {

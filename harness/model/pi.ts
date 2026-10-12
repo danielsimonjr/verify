@@ -49,6 +49,7 @@ export function buildPiProvider(
   const sampling: Record<string, number> = {};
   if (config.temperature !== undefined) sampling.temperature = config.temperature;
   if (config.topP !== undefined) sampling.top_p = config.topP;
+  if (config.frequencyPenalty !== undefined) sampling.frequency_penalty = config.frequencyPenalty;
   const model: Record<string, unknown> = {
     id: resolvedModel,
     name: `${resolvedModel} (${config.provider})`,

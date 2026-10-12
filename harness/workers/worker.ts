@@ -18,7 +18,7 @@
  * to `rollouts/<rollout>/` of the batch. The temp copy is deleted whatever happens.
  */
 
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeSessionEnv, classifyFailure, claudeCommand, parseStream } from "../claude/index.js";
@@ -27,6 +27,7 @@ import { claudeTools, isClaudeCodeProvider } from "../claude/provider.js";
 import * as config from "../config.js";
 import { agentEnv, piCommandFor, planPiCommand } from "../driver.js";
 import { piTools as realPiTools, type PiTools } from "../model/pitools.js";
+import { ANSWER_SHAPE_ENV } from "../pi-extensions/repeat-guard.js";
 import { copyTree, rmrf } from "../fsutil.js";
 import { run, type RunResult } from "../grade/proc.js";
 import type { ContextSize } from "../model/config.js";
@@ -35,6 +36,7 @@ import type { ModelIdentity } from "../model/types.js";
 import { validateSchema } from "./schema.js";
 import {
   claudeStreamStats,
+  openMessageKind,
   parseJsonDeliverable,
   piStreamStats,
   turnCounter,
@@ -51,6 +53,7 @@ export interface WorkerModel {
   baseUrl?: string;
   contextSize?: ContextSize;
   temperature?: number;
+  frequencyPenalty?: number;
   thinking?: string;
   maxTokens?: number;
   /** The weights the name stood for when the run began; the worker's record carries it. */
@@ -177,6 +180,9 @@ export interface WorkerDeps {
   piTools?: PiTools;
 }
 
+/** The pi extension that blocks a repeated tool call. Pi loads TypeScript, so the source file is the one it is given. */
+const REPEAT_GUARD = join(config.HARNESS_DIR, "pi-extensions", "repeat-guard.ts");
+
 /** What a pi worker is told about its directory, in place of pi's default system prompt. */
 export const WORKER_CHARTER = [
   "You are a worker. Your task is in the current directory.",
@@ -184,6 +190,7 @@ export const WORKER_CHARTER = [
   "- `spec/task.md` is the task. Read it first.",
   "- `workspace/` holds the task inputs. Read from it. Do not change it.",
   "- Use only the tools you are given. Call each tool with its own parameters.",
+  "- Make one tool call in each message. Read its result before you make the next call.",
   "- Every path is relative to the current directory. Do not use an absolute path.",
   "- When the task asks for a final answer in a given format, your final message is that answer and nothing else.",
   "",
@@ -244,6 +251,10 @@ export function workerArgs(
   const flags = [
     "--no-context-files",
     "--no-extensions",
+    // The one extension a worker loads. It blocks a call that repeats an earlier call of the session, and it
+    // cuts a runaway message. A nudge turn has no tools to guard, but its answer can be a runaway too.
+    "-e",
+    REPEAT_GUARD,
     "--no-prompt-templates",
     "--no-skills",
     // pi's default prompt names the pi docs under the harness checkout; a model takes that path for the
@@ -275,6 +286,10 @@ export function workerArgs(
   const env = agentEnv(process.env);
   env.PI_CODING_AGENT_DIR = job.piProvider ? home : (env.PI_CODING_AGENT_DIR ?? config.PI_HOME);
   env.PI_SKIP_VERSION_CHECK ??= "1";
+  // The guard cuts a message that has more records than the batch has items; it needs the field and the count.
+  if (job.ids !== undefined) {
+    env[ANSWER_SHAPE_ENV] = JSON.stringify({ idField: job.ids.field, records: job.ids.expected.length });
+  }
   return { cmd: plan.cmd, input: plan.input, env };
 }
 
@@ -293,11 +308,56 @@ function runError(r: RunResult, claude: boolean, stats: StreamStats, overTurns: 
     // before an error result is a stray sentence, not a deliverable.
     if (r.status !== 0 || !result || result.isError) return "no-result";
   }
-  // The stream says why the last turn ended: output cut at the limit, or all of it spent on thought.
-  if (stats.stopReason === "length") return "length";
+  // The stream says why the last turn ended: output cut at the limit, or all of it spent on thought. A turn
+  // that ends `aborted` was cut by the runaway guard of the session (pi-extensions/repeat-guard.ts): a
+  // message that was on its way to the limit, so it is the same failure, found sooner.
+  if (stats.stopReason === "length" || stats.stopReason === "aborted") return "length";
+  // A session that ends on a tool call has not answered: the guard stopped it (`terminate`), or the
+  // agent loop did. The text of that turn is a sentence beside the call.
+  if (!claude && stats.stopReason === "toolUse") return "no-result";
   if (stats.thinkingOnly) return "thinking-only";
   if (finalText.trim() === "") return "no-result";
   return null;
+}
+
+/** The newest `.jsonl` file under `dir`, or null. */
+function newestSessionFile(dir: string): string | null {
+  if (!existsSync(dir)) return null;
+  let best: { file: string; mtime: number } | null = null;
+  for (const entry of readdirSync(dir, { recursive: true }) as string[]) {
+    if (!entry.endsWith(".jsonl")) continue;
+    const file = join(dir, entry);
+    const mtime = statSync(file).mtimeMs;
+    if (best === null || mtime > best.mtime) best = { file, mtime };
+  }
+  return best?.file ?? null;
+}
+
+/**
+ * Removes the last message of a saved pi session when its output was cut at the limit, or aborted by the
+ * runaway guard of the session. A nudge continues that session. A message cut at the limit is a runaway
+ * more often than a near answer (one row written 129 times), so carrying it makes the model read its own
+ * loop again and spends the window. The event stream keeps the message: the stream is the record, the
+ * session is the context. Returns true when a message was removed.
+ */
+export function dropCutReply(sessionDir: string): boolean {
+  const file = newestSessionFile(sessionDir);
+  if (file === null) return false;
+  const lines = readFileSync(file, "utf8").split("\n");
+  let last = lines.length - 1;
+  while (last >= 0 && lines[last]!.trim() === "") last--;
+  if (last < 0) return false;
+  let entry: { type?: unknown; message?: { role?: unknown; stopReason?: unknown } };
+  try {
+    entry = JSON.parse(lines[last]!);
+  } catch {
+    return false;
+  }
+  const stop = entry.message?.stopReason;
+  if (entry.type !== "message" || entry.message?.role !== "assistant" || (stop !== "length" && stop !== "aborted")) return false;
+  lines.splice(last, 1);
+  writeFileSync(file, lines.join("\n"), "utf8");
+  return true;
 }
 
 /**
@@ -426,6 +486,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       const nudge = failing === null ? null : nudgeFor(failing, verdict.problems);
       if (nudge === null || sentFor.has(nudge.kind)) break;
       sentFor.add(nudge.kind);
+      dropCutReply(join(home, "session"));
       r = await exec(nudge.message, nudgeSec);
       stdout += r.stdout;
       verdict = judge(r, stdout);
@@ -478,6 +539,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       model: { provider: job.model.provider, name: job.model.model },
       ...(job.model.identity ? { modelIdentity: job.model.identity } : {}),
       ...(dropped.length > 0 ? { droppedTools: dropped } : {}),
+      ...(error === "timeout" && !claude && openMessageKind(stdout) === "text" ? { timeoutWriting: true } : {}),
     };
     writeFileSync(join(out, "trajectory", "worker.json"), JSON.stringify(record) + "\n", "utf8");
     return record;

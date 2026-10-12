@@ -1,0 +1,12 @@
+The final answer is:
+
+```
+{
+  "rows": [
+    {"line": 6871, "verdict": "LOGGED", "changelog_heading": "## 2026-10-06 20:33 - verify 0.4.1: the first version published to npm by CI", "evidence": "verify 0.4.1"},
+    {"line": 6872, "verdict": "LOGGED", "changelog_heading": "## 2026-10-06 21:09 - verify ON NPM: PUBLISH @danielsimonjr/verify, THEN POINT verify-mcp AT IT", "evidence": "@danielsimonjr/verify"},
+    {"line": 6873, "verdict": "LOGGED", "changelog_heading": "## 2026-10-06 21:43 - VERIFY-MCP LOCAL-MODEL TEST: STALE-ROW SWEEP OF C:\\TODO.md", "evidence": "qwen3.5:9b"},
+    {"line": 6874, "verdict": "LOGGED", "changelog_heading": "## 2026-10-07 06:27 - qwen3.5:9b PULLED ON THE EVO AND RUN THROUGH THE VERIFY DRIVER", "evidence": "qwen3.5:9b"}
+  ]
+}
+```

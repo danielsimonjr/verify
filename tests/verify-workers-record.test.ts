@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { claudeStreamStats, parseJsonDeliverable, piStreamStats, turnCounter } from "../harness/workers/record.ts";
+import { REPEAT_REASON } from "../harness/pi-extensions/repeat-guard.ts";
+import { claudeStreamStats, openMessageKind, parseJsonDeliverable, piStreamStats, turnCounter } from "../harness/workers/record.ts";
 
 const FIXTURES = join(import.meta.dir, "fixtures", "workers");
 const FENCE = "```";
@@ -100,7 +101,7 @@ describe("stream stats", () => {
       stopReason: "stop",
       thinkingOnly: false,
       toolErrors: 0,
-      toolErrorKinds: { invalid: 0, missing: 0, other: 0 },
+      toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 },
     });
   });
 
@@ -119,12 +120,32 @@ describe("stream stats", () => {
       stopReason: "",
       thinkingOnly: false,
       toolErrors: 0,
-      toolErrorKinds: { invalid: 0, missing: 0, other: 0 },
+      toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 },
+    });
+  });
+
+  describe("openMessageKind", () => {
+    const update = (assistantMessageEvent: object): string => JSON.stringify({ type: "message_update", assistantMessageEvent }) + "\n";
+    const ended = JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], usage: {}, stopReason: "stop" } }) + "\n";
+
+    test("is text when prose was streamed and the message did not end", () => {
+      expect(openMessageKind(update({ type: "text_delta", delta: "Row 1" }) + update({ type: "text_delta", delta: " is" }))).toBe("text");
+    });
+    test("is toolcall when the arguments of a call were streamed and the message did not end", () => {
+      expect(openMessageKind(update({ type: "toolcall_delta", delta: '{"path"' }))).toBe("toolcall");
+    });
+    test("is empty when the message ended, and for a stream with no fragment", () => {
+      expect(openMessageKind(update({ type: "text_delta", delta: "Row 1" }) + ended)).toBe("");
+      expect(openMessageKind("")).toBe("");
+    });
+    test("is the kind of the last message that did not end", () => {
+      const stream = update({ type: "text_delta", delta: "a" }) + ended + update({ type: "toolcall_delta", delta: "{" });
+      expect(openMessageKind(stream)).toBe("toolcall");
     });
   });
 
   test("an empty stream gives zeros and no text", () => {
-    const empty = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0 } };
+    const empty = { finalText: "", turns: 0, tools: 0, peakContext: 0, outputTokens: 0, compactions: 0, stopReason: "", thinkingOnly: false, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 } };
     expect(piStreamStats("")).toEqual(empty);
     expect(claudeStreamStats("")).toEqual(empty);
   });
@@ -154,7 +175,14 @@ describe("stream stats", () => {
     ].join("\n");
     const stats = piStreamStats(stream);
     expect(stats.toolErrors).toBe(4);
-    expect(stats.toolErrorKinds).toEqual({ invalid: 2, missing: 1, other: 1 });
+    expect(stats.toolErrorKinds).toEqual({ invalid: 2, missing: 1, other: 1, repeated: 0 });
+  });
+
+  test("pi: a call that the repeat guard blocked is classed as repeated, not as an error of the tool", () => {
+    const blocked = JSON.stringify({ type: "tool_execution_end", toolName: "read", isError: true, result: { content: [{ type: "text", text: REPEAT_REASON }] } });
+    const stats = piStreamStats([blocked, blocked].join("\n"));
+    expect(stats.toolErrors).toBe(2);
+    expect(stats.toolErrorKinds).toEqual({ invalid: 0, missing: 0, other: 0, repeated: 2 });
   });
 
   test("claude: a failed tool result is classed by its content", () => {
@@ -163,7 +191,7 @@ describe("stream stats", () => {
     const stats = claudeStreamStats(
       [user("<tool_use_error>InputValidationError: pattern is required</tool_use_error>"), user("File does not exist."), user("boom")].join("\n"),
     );
-    expect(stats.toolErrorKinds).toEqual({ invalid: 1, missing: 1, other: 1 });
+    expect(stats.toolErrorKinds).toEqual({ invalid: 1, missing: 1, other: 1, repeated: 0 });
   });
 
   test("claude: a tool result with is_error is counted", () => {

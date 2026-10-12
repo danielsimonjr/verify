@@ -94,6 +94,24 @@ export function parseOllamaContextLength(info: unknown): number | undefined {
   return max || undefined;
 }
 
+/**
+ * Where a chat template prints the tool list: in the system block (`system`, the list is in every
+ * turn), or inside the message loop (`message`, with the last user message: once a tool result is the
+ * last message the model sees no list, and writes calls as prose or invents tools). The loop is the
+ * `range` over `.Messages`; a `range` over the tools before it is the header. Undefined for a value
+ * that is not a template and for a template that does not range over the tools.
+ */
+export function parseOllamaToolPlacement(template: unknown): "system" | "message" | undefined {
+  if (typeof template !== "string") return undefined;
+  const tools = /range\s+(?:\$[\w]*\s*,\s*\$[\w]*\s*:=\s*)?\$?\.Tools\b/;
+  const loop = /range\s+[^}]*\.Messages\b/.exec(template);
+  const header = loop ? template.slice(0, loop.index) : template;
+  const body = loop ? template.slice(loop.index) : "";
+  if (tools.test(header)) return "system";
+  if (tools.test(body)) return "message";
+  return undefined;
+}
+
 export function parseOllamaToolCapability(capabilities: unknown): boolean | "unknown" {
   if (!Array.isArray(capabilities)) return "unknown";
   return capabilities.some((item) => String(item).toLowerCase() === "tools") ? true : false;
@@ -347,6 +365,7 @@ export class OllamaBackend implements ModelBackend {
     }
     let tools: boolean | "unknown" = "unknown";
     let numCtx: number | undefined;
+    let toolList: "system" | "message" | undefined;
     const show = await this.http.send(`${this.baseUrl}/api/show`, {
       method: "POST",
       body: { name: this.model },
@@ -355,6 +374,7 @@ export class OllamaBackend implements ModelBackend {
       const rec = (show.json ?? {}) as Record<string, unknown>;
       numCtx = parseOllamaNumCtx(rec.parameters);
       tools = parseOllamaToolCapability(rec.capabilities);
+      toolList = parseOllamaToolPlacement(rec.template);
     }
     const running = await this.runningContext();
     const identity = parseOllamaIdentity(tags.json, this.model);
@@ -364,6 +384,7 @@ export class OllamaBackend implements ModelBackend {
       contextSize: running ?? numCtx,
       contextSource: running !== undefined ? "loaded" : numCtx !== undefined ? "num_ctx" : undefined,
       ...(identity ? { identity } : {}),
+      ...(toolList ? { toolList } : {}),
     };
     this.capabilities = capabilities;
     return { model: this.model, capabilities, models: names };

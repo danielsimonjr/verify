@@ -22,6 +22,7 @@ import {
   parseOllamaNumCtx,
   parseOllamaRunningContext,
   parseOllamaToolCapability,
+  parseOllamaToolPlacement,
 } from "../harness/model/ollama.ts";
 import { ModelError, type StreamEvent } from "../harness/model/types.ts";
 import { normalizeBaseUrl } from "../harness/model/url.ts";
@@ -628,6 +629,99 @@ describe("ollama model identity", () => {
   test("a digest without a quantization is still an identity", async () => {
     const p = await probeOf({ name: "qwen:latest", digest: "abc123" });
     expect(p.capabilities.identity).toEqual({ digest: "abc123" });
+  });
+});
+
+describe("frequency penalty", () => {
+  test("resolveLocalConfig reads it from the input and from VERIHARNESS_FREQUENCY_PENALTY, the input first", () => {
+    const base = { provider: "ollama", model: "m", env: {} };
+    expect(resolveLocalConfig(base).frequencyPenalty).toBeUndefined();
+    expect(resolveLocalConfig({ ...base, frequencyPenalty: 0.4 }).frequencyPenalty).toBe(0.4);
+    expect(resolveLocalConfig({ ...base, env: { VERIHARNESS_FREQUENCY_PENALTY: "0.5" } }).frequencyPenalty).toBe(0.5);
+    expect(resolveLocalConfig({ ...base, frequencyPenalty: 0, env: { VERIHARNESS_FREQUENCY_PENALTY: "0.5" } }).frequencyPenalty).toBe(0);
+  });
+
+  test("a default applies only when neither the input nor the environment sets the value", () => {
+    const base = { provider: "ollama", model: "m", defaults: { temperature: 0.2, frequencyPenalty: 0.3 } };
+    expect(resolveLocalConfig({ ...base, env: {} })).toMatchObject({ temperature: 0.2, frequencyPenalty: 0.3 });
+    expect(resolveLocalConfig({ ...base, temperature: 0.9, env: { VERIHARNESS_FREQUENCY_PENALTY: "0" } })).toMatchObject({ temperature: 0.9, frequencyPenalty: 0 });
+  });
+
+  test("the pi provider carries it as frequency_penalty beside the temperature", () => {
+    const config = resolveLocalConfig({ provider: "ollama", model: "m", temperature: 0.2, frequencyPenalty: 0.3, env: {} });
+    const provider = buildPiProvider(config, "m", 32768);
+    expect((provider.config.models as { samplingParams?: unknown }[])[0]!.samplingParams).toEqual({ temperature: 0.2, frequency_penalty: 0.3 });
+  });
+});
+
+describe("ollama chat template: where the tool list is printed", () => {
+  // The two shapes that matter, cut down from the llama3.1 templates. The shipped one prints the list
+  // with the last user message; a model then sees no list once a tool result is the last message.
+  const SHIPPED = `{{- if or .System .Tools }}<|start_header_id|>system<|end_header_id|>
+{{- if .Tools }}
+
+You are a helpful assistant with tool calling capabilities.
+{{- end }}<|eot_id|>
+{{- end }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 }}
+{{- if eq .Role "user" }}
+{{- if and $.Tools $last }}
+{{ range $.Tools }}
+{{- . }}
+{{ end }}
+Question: {{ .Content }}<|eot_id|>
+{{- else }}{{ .Content }}{{- end }}
+{{- end }}
+{{- end }}`;
+  const IN_SYSTEM = `{{- if or .System .Tools }}<|start_header_id|>system<|end_header_id|>
+{{- if .Tools }}
+
+You have access to the following functions.
+{{ range .Tools }}
+{{- . }}
+{{ end }}
+{{- end }}<|eot_id|>
+{{- end }}
+{{- range $i, $_ := .Messages }}
+{{- if eq .Role "user" }}{{ .Content }}{{- end }}
+{{- end }}`;
+
+  test("a tool list printed inside the message loop is placed with a message", () => {
+    expect(parseOllamaToolPlacement(SHIPPED)).toBe("message");
+  });
+
+  test("a tool list printed in the header is placed in the system block", () => {
+    expect(parseOllamaToolPlacement(IN_SYSTEM)).toBe("system");
+  });
+
+  test("a template that does not range over the tools, and a value that is no template, say nothing", () => {
+    expect(parseOllamaToolPlacement("{{ .Prompt }}")).toBeUndefined();
+    expect(parseOllamaToolPlacement(undefined)).toBeUndefined();
+    expect(parseOllamaToolPlacement(42)).toBeUndefined();
+  });
+
+  const prepareWith = async (template: string) => {
+    const mock = scripted((hit) => {
+      if (hit.url.endsWith("/api/tags")) return jsonResponse({ models: [{ name: "llama:latest" }] });
+      if (hit.url.endsWith("/api/show")) return jsonResponse({ capabilities: ["completion", "tools"], parameters: "num_ctx 32768\n", template });
+      return jsonResponse({ error: "no chat" }, 500);
+    });
+    return prepareLocalProvider(
+      resolveLocalConfig({ provider: "ollama", model: "llama", retries: 0, timeoutMs: 1000, env: {} }),
+      { fetch: mock.fetch, ...quiet },
+    );
+  };
+
+  test("the probe records where the template prints the tools", async () => {
+    expect((await prepareWith(SHIPPED)).probe.capabilities.toolList).toBe("message");
+    expect((await prepareWith(IN_SYSTEM)).probe.capabilities.toolList).toBe("system");
+  });
+
+  test("a template that prints the tools with the last message is a warning, and the other is not", async () => {
+    const warned = await prepareWith(SHIPPED);
+    expect(warned.warnings.join("\n")).toContain("prints the tool list with the last user message only");
+    expect((await prepareWith(IN_SYSTEM)).warnings).toEqual([]);
   });
 });
 

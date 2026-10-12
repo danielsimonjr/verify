@@ -4,6 +4,46 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.11] - 2026-10-11
+
+### Added
+- A pi worker loads one extension, the repeat guard (`harness/pi-extensions/repeat-guard.ts`). It blocks a
+  `read`, `grep`, `find` or `ls` call that repeats an earlier call of the session, and the model reads
+  that the result is already in its context. The third block in a row stops the session, and the nudge
+  for a missing answer follows. In one run a model repeated one call 13 times and then compacted; the
+  repeated calls per session rose from 1.4 to 5.3 when the temperature fell to 0.2.
+- The same extension cuts a final message that holds more records than the batch has items (with
+  `--ids`; a nested key of the same name is not a record), or whose end is one unit of text written 12
+  times. One batch of four rows came back as 129 rows of the same id, 8192 tokens and 1353 s. The
+  record has the error `length`, and the nudge removes the cut message from the session. The
+  extension loads on every turn of a worker, a nudge turn too.
+- `toolErrorKinds` has the class `repeated`: a call that the guard blocked. `workers` names it in the
+  stderr line for a worker that fails most of its calls.
+- `--frequency-penalty` (`VERIHARNESS_FREQUENCY_PENALTY`) for pi workers.
+- `model-check` and `workers` warn when the chat template of an Ollama model prints the tool list with
+  the last user message only (llama3.1 does): the model sees no tool list after the first tool round.
+  `capabilities.toolList` says where the template prints it.
+
+### Changed
+- A pi worker is sampled with temperature 0.6 when the caller sets none (`WORKER_SAMPLING`). At the
+  server default (0.8) the first turn was a structured call in 85% of 145 samples; at 0.6, in 96% of 80.
+  At 0.2 the first turn was always structured, but a session that had repeated a call repeated it again
+  in 9 of 10 samples (2 of 10 at 0.8). A frequency penalty is not set: from a loop position it did not
+  end the loop.
+- The worker charter has the line "Make one tool call in each message. Read its result before you make
+  the next call." Messages with ten or more calls fell from 13.7% to 1.3%, and failed calls from 21% to
+  5.6%.
+
+### Fixed
+- A nudge after a message cut at the output limit continued a session that held the cut text, so the
+  model read its own runaway again (two nudges of 300 s each, no answer). The harness removes the cut
+  message from the saved session first. The event stream keeps it.
+- A pi session whose last turn ends on a tool call (the guard stopped it) was `complete` when that turn
+  had text beside the call. It is `no-result` now.
+- A `timeout` that came while the model was writing prose is retried by `--retries` (`timeoutWriting`
+  in `worker.json`). One attempt ran 1353 s on a runaway and the retry finished in 81 s. A timeout while
+  the model was working is still not retried: it is the speed of the batch or the model.
+
 ## [0.12.10] - 2026-10-11
 
 ### Fixed

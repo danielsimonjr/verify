@@ -25,7 +25,7 @@ import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { USAGE_LIMIT_EXIT, claudeTools, isClaudeCodeProvider } from "../claude/provider.js";
 import { DEFAULT_LANE_MAX, LANES, claudeCodeWindow } from "../config.js";
-import { canonicalLocalProvider, parseContextSize, resolveLocalConfig, type BackendDeps } from "../model/config.js";
+import { canonicalLocalProvider, parseContextSize, resolveLocalConfig, WORKER_SAMPLING, type BackendDeps } from "../model/config.js";
 import { prepareLocalProvider } from "../model/prepare.js";
 import type { PiProviderRecord } from "../model/pi.js";
 import { describeIdentity } from "../model/types.js";
@@ -37,7 +37,7 @@ import { runWorker, type WorkerJob, type WorkerModel } from "./worker.js";
 const USAGE =
   "usage: veriharness workers DIR --provider P --model M [--base-url U] [--context-size N|auto]\n" +
   "         [--count N] [--tools LIST] [--deliverable NAME] [--prompt FILE] [--only NAME]...\n" +
-  "         [--timeout S] [--max-turns N] [--max-parallel N] [--env none] [--temperature T] [--thinking L] [--max-tokens N]\n" +
+  "         [--timeout S] [--max-turns N] [--max-parallel N] [--env none] [--temperature T] [--frequency-penalty P] [--thinking L] [--max-tokens N]\n" +
   "         [--schema FILE] [--ids ARRAY.FIELD] [--retries N] [--nudge-timeout S] [--allow-compaction]\n";
 
 /** What a test replaces: the local server fetch and the worker runner. */
@@ -64,6 +64,17 @@ function keepAttempt(job: WorkerJob, attempt: number): void {
 }
 
 const RETRYABLE = new Set(["no-result", "no-json", "thinking-only", "length", "schema", "ids", "no-tool-calls"]);
+
+/**
+ * Whether a second session can end differently. A timeout of a session that was working is the speed of
+ * the batch or the model and repeats, so it is not run again. A timeout while the model was writing
+ * prose is a generation that ran on (one row written a hundred times), which a fresh session does not
+ * repeat: the retry that followed such a runaway completed in 81 s.
+ */
+function retryable(record: WorkerRecord): boolean {
+  if (record.error === null) return false;
+  return RETRYABLE.has(record.error) || (record.error === "timeout" && record.timeoutWriting === true);
+}
 
 interface Batch {
   name: string;
@@ -191,6 +202,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
         "max-parallel": { type: "string" },
         env: { type: "string" },
         temperature: { type: "string" },
+        "frequency-penalty": { type: "string" },
         thinking: { type: "string" },
         "max-tokens": { type: "string" },
         schema: { type: "string" },
@@ -227,7 +239,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
     if (values.env !== undefined && values.env !== "none") throw new UsageError(`--env '${values.env}': only --env none is supported`);
     if (claude) {
       if (values.env !== "none") throw new UsageError("a claude-code worker needs --env none, as on the driver");
-      const piOnly = ["temperature", "thinking", "max-tokens", "base-url", "context-size"].filter((n) => values[n as keyof typeof values] !== undefined);
+      const piOnly = ["temperature", "frequency-penalty", "thinking", "max-tokens", "base-url", "context-size"].filter((n) => values[n as keyof typeof values] !== undefined);
       if (piOnly.length) throw new UsageError(`${piOnly.map((n) => "--" + n).join(", ")} not supported with --provider claude-code`);
       // Each worker maps the tools again; a bad name must stop the run here, not fail every rollout.
       claudeTools(values.tools ?? DEFAULT_TOOLS);
@@ -292,12 +304,13 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
       baseUrl: values["base-url"],
       contextSize: parseContextSize(values["context-size"], "--context-size"),
       temperature: optionalNumber("--temperature", values.temperature),
+      frequencyPenalty: optionalNumber("--frequency-penalty", values["frequency-penalty"]),
       thinking: values.thinking,
       maxTokens: optionalNumber("--max-tokens", values["max-tokens"]),
     };
     let piProvider: PiProviderRecord | undefined;
     if (local) {
-      const config = resolveLocalConfig({ ...workerModel, provider, model });
+      const config = resolveLocalConfig({ ...workerModel, provider, model, defaults: WORKER_SAMPLING });
       const prepared = await prepareLocalProvider(config, deps);
       for (const warning of prepared.warnings) process.stderr.write(`workers: ${warning}\n`);
       const caps = prepared.probe.capabilities;
@@ -373,7 +386,7 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
         if (attempts > 1) keepAttempt(job, attempts - 1);
         record = await start({ ...job, attempt: attempts, priorSeconds, signal: stopAll.signal });
         priorSeconds += record.seconds;
-      } while (record.error !== null && RETRYABLE.has(record.error) && attempts <= retries && !limited);
+      } while (retryable(record) && attempts <= retries && !limited);
     } catch (err) {
       process.stderr.write(`error: ${batch.name}/${job.rollout}: ${err instanceof Error ? err.message : String(err)}\n`);
       errors++;
@@ -399,11 +412,13 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
       // Say what the failed results said: a worker that calls a tool with no arguments is not reading a path.
       const k = record.toolErrorKinds;
       const cause =
-        k.invalid >= k.missing && k.invalid >= k.other && k.invalid > 0
-          ? "the worker is calling tools with arguments the tool does not accept (see the tool results in trajectory/)"
-          : k.missing >= k.other && k.missing > 0
-            ? "the worker is reading paths or patterns the task does not have"
-            : "the tool results say why (see trajectory/)";
+        k.repeated >= k.invalid && k.repeated >= k.missing && k.repeated >= k.other && k.repeated > 0
+          ? "the worker is repeating a call it already made (the repeat guard blocked them; see trajectory/)"
+          : k.invalid >= k.missing && k.invalid >= k.other && k.invalid > 0
+            ? "the worker is calling tools with arguments the tool does not accept (see the tool results in trajectory/)"
+            : k.missing >= k.other && k.missing > 0
+              ? "the worker is reading paths or patterns the task does not have"
+              : "the tool results say why (see trajectory/)";
       process.stderr.write(`workers: ${batch.name}/${job.rollout}: ${record.toolErrors} of ${record.tools} tool calls failed: ${cause}\n`);
     }
     if (record.compactions > 0) {

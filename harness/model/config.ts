@@ -27,12 +27,34 @@ export const DEFAULT_RETRIES = 2;
 export const PI_PLACEHOLDER_API_KEY = "local";
 export const DEFAULT_PI_MAX_TOKENS = 8192;
 
+/**
+ * How a batch worker is sampled when the caller sets nothing. Only a pi worker takes this: the verifier
+ * and the driver set their own values.
+ *
+ * The temperature pulls two ways, and the value is where they meet (llama3.1:8b through Ollama):
+ * - The first turn must be a tool call, not prose with the call written as text. Structured first
+ *   turns: 85% at the server default (0.8; 123 of 145), 95% at 0.7, 96% at 0.6 (77 of 80), 100% at
+ *   0.4 and at 0.2. A turn that failed costs one short retry.
+ * - A session in a loop must be able to leave it. From a position that had repeated one call, the next
+ *   call repeated it again in 2 of 10 samples at 0.8, 3 at 0.7, 5 at 0.6, 8 at 0.4 and 9 at 0.2. The
+ *   repeat guard (`pi-extensions/repeat-guard.ts`) ends a loop that remains, but a model that was
+ *   never in one needs no guard.
+ *
+ * 0.6 is the highest value that keeps the first turn structured. No repetition penalty is set: from a
+ * loop position, with a penalty of 0.3 to 1.0, 7 to 10 of 10 samples still repeated the call (the
+ * penalty window is far shorter than the loop), and a penalty works against the keys that a JSON
+ * report repeats on every row. `--frequency-penalty` is there for a model that needs it.
+ */
+export const WORKER_SAMPLING = { temperature: 0.6 } as const;
+
 export interface LocalModelConfig {
   provider: LocalProviderId;
   model: string;
   baseUrl: string;
   temperature?: number;
   topP?: number;
+  /** OpenAI `frequency_penalty`: a token is less likely each time it was already written. */
+  frequencyPenalty?: number;
   maxTokens?: number;
   contextSize?: number;
   timeoutMs: number;
@@ -45,6 +67,9 @@ export interface LocalModelInput {
   baseUrl?: string;
   temperature?: number;
   topP?: number;
+  frequencyPenalty?: number;
+  /** Used for a value that neither the input nor the environment sets. */
+  defaults?: { temperature?: number; frequencyPenalty?: number };
   maxTokens?: number;
   /** `auto` is the same as omitted: the server decides. */
   contextSize?: ContextSize;
@@ -102,8 +127,13 @@ export function resolveLocalConfig(input: LocalModelInput): LocalModelConfig {
     provider,
     model,
     baseUrl: normalizeBaseUrl(input.baseUrl ?? baseUrlFromEnv(provider, env)),
-    temperature: input.temperature ?? optionalNumber(env.VERIHARNESS_TEMPERATURE, "VERIHARNESS_TEMPERATURE"),
+    temperature:
+      input.temperature ?? optionalNumber(env.VERIHARNESS_TEMPERATURE, "VERIHARNESS_TEMPERATURE") ?? input.defaults?.temperature,
     topP: input.topP ?? optionalNumber(env.VERIHARNESS_TOP_P, "VERIHARNESS_TOP_P"),
+    frequencyPenalty:
+      input.frequencyPenalty ??
+      optionalNumber(env.VERIHARNESS_FREQUENCY_PENALTY, "VERIHARNESS_FREQUENCY_PENALTY") ??
+      input.defaults?.frequencyPenalty,
     maxTokens: positiveInteger(
       input.maxTokens ?? optionalNumber(env.VERIHARNESS_MAX_TOKENS, "VERIHARNESS_MAX_TOKENS"),
       "max tokens",

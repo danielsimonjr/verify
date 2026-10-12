@@ -125,6 +125,11 @@ export interface Capabilities {
   contextSource?: "loaded" | "num_ctx" | "n_ctx";
   /** The model's digest and quantization, when the server lists them. */
   identity?: ModelIdentity;
+  /**
+   * Where the chat template prints the tool list: `system` (every turn) or `message` (with the last user
+   * message only). Absent when the server does not show the template or it names no tools.
+   */
+  toolList?: "system" | "message";
 }
 
 export interface ProbeResult {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
 import type { WorkerRecord } from "../harness/workers/record.ts";
+import { WORKER_SAMPLING } from "../harness/model/config.ts";
 import { main } from "../harness/workers/main.ts";
 import type { WorkerJob } from "../harness/workers/worker.ts";
 
@@ -27,7 +28,7 @@ function batchRoot(names: string[], prompt = true): string {
 }
 
 function ok(job: WorkerJob, error: WorkerRecord["error"] = null): WorkerRecord {
-  return { rollout: job.rollout, exit: 0, seconds: 1, totalSeconds: (job.priorSeconds ?? 0) + 1, turns: 1, tools: 0, peakContext: 1, outputTokens: 1, compactions: 0, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0 }, nudged: false, nudges: 0, attempts: job.attempt ?? 1, form: error ? null : "pure", error, model: { provider: job.model.provider, name: job.model.model } };
+  return { rollout: job.rollout, exit: 0, seconds: 1, totalSeconds: (job.priorSeconds ?? 0) + 1, turns: 1, tools: 0, peakContext: 1, outputTokens: 1, compactions: 0, toolErrors: 0, toolErrorKinds: { invalid: 0, missing: 0, other: 0, repeated: 0 }, nudged: false, nudges: 0, attempts: job.attempt ?? 1, form: error ? null : "pure", error, model: { provider: job.model.provider, name: job.model.model } };
 }
 
 /** A runWorker fake: records each call, the largest number in flight, and the order of starts and ends. */
@@ -226,7 +227,7 @@ describe("veriharness workers", () => {
   });
 
   test("the off-task warning names the class of error that occurred, not a guessed cause", async () => {
-    const kinds = (k: Partial<{ invalid: number; missing: number; other: number }>) => ({ invalid: 0, missing: 0, other: 0, ...k });
+    const kinds = (k: Partial<{ invalid: number; missing: number; other: number; repeated: number }>) => ({ invalid: 0, missing: 0, other: 0, repeated: 0, ...k });
     const invalid = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1"], fake((j) => ({ ...ok(j), tools: 10, toolErrors: 9, toolErrorKinds: kinds({ invalid: 9 }) })));
     expect(invalid.stderr).toContain("b01/r01: 9 of 10 tool calls failed");
     expect(invalid.stderr).toContain("arguments the tool does not accept");
@@ -237,6 +238,9 @@ describe("veriharness workers", () => {
     expect(other.stderr).toContain("b01/r01: 9 of 10 tool calls failed");
     expect(other.stderr).not.toContain("paths or patterns");
     expect(other.stderr).not.toContain("arguments the tool does not accept");
+    const repeated = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1"], fake((j) => ({ ...ok(j), tools: 10, toolErrors: 9, toolErrorKinds: kinds({ repeated: 9 }) })));
+    expect(repeated.stderr).toContain("b01/r01: 9 of 10 tool calls failed");
+    expect(repeated.stderr).toContain("repeating a call it already made");
   });
 
   test("--nudge-timeout and --allow-compaction reach every job; the nudge is on by default", async () => {
@@ -356,6 +360,33 @@ describe("veriharness workers", () => {
     expect(readFileSync(join(t, "attempt-1", "agent.jsonl"), "utf8")).toBe("stream 1");
     expect(JSON.parse(readFileSync(join(t, "attempt-2", "worker.json"), "utf8")).error).toBe("schema");
     expect(JSON.parse(readFileSync(join(t, "worker.json"), "utf8")).attempts).toBe(3);
+  });
+
+  /** The sampling parameters pi is given for a job: the first job's provider record. */
+  const sampling = (f: ReturnType<typeof fake>) =>
+    ((f.calls[0]!.piProvider!.config.models as { samplingParams?: unknown }[])[0]!).samplingParams;
+
+  test("a local worker is sampled with the worker defaults when the caller sets nothing", async () => {
+    // The server default (Ollama: temperature 0.8) leaves a small model answering the first turn in text
+    // one time in six; a low temperature (0.2) locks a session that has begun to repeat a call.
+    const f = fake();
+    await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1"], f);
+    expect(sampling(f)).toEqual({ temperature: WORKER_SAMPLING.temperature });
+  });
+
+  test("--temperature and --frequency-penalty replace the worker defaults, and 0 is a value", async () => {
+    const f = fake();
+    await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--temperature", "0.7", "--frequency-penalty", "0"], f);
+    expect(sampling(f)).toEqual({ temperature: 0.7, frequency_penalty: 0 });
+  });
+
+  test("--retries runs a rollout again when its time ran out while the model was writing prose", async () => {
+    // A runaway (one row written a hundred times) ends as a timeout, and another session can differ. A
+    // timeout while the model was working is the batch's or the model's speed, and repeats.
+    const f = fake((j) => ({ ...ok(j, (j.attempt ?? 1) < 2 ? "timeout" : null), ...((j.attempt ?? 1) < 2 ? { timeoutWriting: true } : {}) }));
+    const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--retries", "1"], f);
+    expect(f.calls).toHaveLength(2);
+    expect(r.lines[0]).toMatchObject({ error: null, attempts: 2 });
   });
 
   test("--retries stops at its count, and never repeats a usage limit or a timeout", async () => {
