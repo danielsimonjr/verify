@@ -4,6 +4,26 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.14] - 2026-10-12
+
+### Added
+- A final message that is a tool call written as text is sent back as a call, on a turn that offers the
+  tools (the nudge `call`). Ollama turns a message into a call only when the whole message parses as JSON;
+  prose before the call, or a value such as `True`, `6871-1` or `40*6983`, leaves it as text, and the
+  session ended with that text. The harness read the text as the answer and sent it back with no tools:
+  `missing property 'rows'`, a nudge that the model could not act on. The new nudge says that the tool did
+  not run and why (text around the call, the place where its JSON breaks, or more than one call), and asks
+  for one call. It is sent once, and has the time of a first turn. One run had 13 such messages in
+  9 sessions.
+- The guard cuts a message that writes a second call to a tool of the session as text. A message of 104
+  calls ran to the output limit, because the offset differs in each call and no unit
+  repeats exactly. Calls to a name that is not a tool of the session, as in an answer that lists function
+  specs, are left alone.
+- `textCallsIn`, `textCallOf`, and `runawayOf` with a `calls` kind.
+
+### Changed
+- `workerArgs` takes `withTools`: a nudge turn that keeps `--tools`.
+
 ## [0.12.13] - 2026-10-12
 
 ### Added

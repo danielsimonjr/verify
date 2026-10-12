@@ -36,6 +36,12 @@
  *   blocked too, and ends the session at the end of its turn: a local model that is given tools is told
  *   by its template to answer as a function call, and then sends its answer to the first tool it names.
  *   The harness then asks for the answer on a turn that has no tools.
+ * - A message that writes a second call to a tool of the session as text is cut like a runaway. The
+ *   template of a local model asks for a call as a JSON object, and a model that writes its whole plan as
+ *   a message of calls (104 in one message) runs to the output limit: the offset
+ *   changes in each call, so no unit repeats exactly. Only a call to a tool of the session counts, so
+ *   an answer that lists other objects with a name and parameters is left alone. The harness sees the
+ *   cut message and asks for one call.
  *
  * It also sizes each tool result to the room that is left before pi compacts the context, so that
  * one result cannot be the call that forces a compaction (see `capResult`).
@@ -205,7 +211,7 @@ export function textLength(content: readonly ResultPart[]): number {
  *
  * The harness counts a compaction as a failure: the answer would rest on turns the worker no longer holds.
  * Pi cuts a result at 50 KB, which is 14 to 16k tokens, and a window of 65536 tokens compacts above 49152:
- * three results that a model could not size before the call were enough (b06 r01 of run 7). A result may
+ * three results that a model could not size before the call were enough. A result may
  * take at most RESULT_SHARE of the room that is left, so the next result gets half of what is then left,
  * and the notice tells the model how to ask for less.
  *
@@ -339,27 +345,60 @@ function countRecords(text: string, field: string): number {
   return byDepth.get(Math.min(...byDepth.keys()))!;
 }
 
-/** Why a message is a runaway: more records than the batch has items, or text that repeats at its end. */
-export type Runaway = { kind: "records"; found: number; allowed: number } | { kind: "repeat" };
+/**
+ * The start of a tool call as the chat template of llama3.1 asks for it: `{"name": <tool>, "parameters": {`.
+ * `arguments` is read as `parameters`. A quote inside a string of an answer is escaped, so a call that is
+ * quoted there does not match: the pattern needs the brace and the quote next to each other.
+ */
+const TEXT_CALL = /\{\s*"name"\s*:\s*"([^"\\]+)"\s*,\s*"(?:parameters|arguments)"\s*:\s*\{/g;
+
+/** A tool call that is written in the text of a message: where it starts, and the tool it names. */
+export interface TextCallStart {
+  index: number;
+  tool: string;
+}
+
+/**
+ * The tool calls that `text` writes as text, in order. Ollama runs a call of this form only when the whole
+ * message parses as JSON; prose before the call, or an argument that is not JSON (`True`, `6871-1`), leaves
+ * it as text, and the session ends with the message as its last one. `tools`: the names of the tools of
+ * the session; a call to another name is not one, and is left out. Absent: every call of the form.
+ */
+export function textCallsIn(text: string, tools?: readonly string[]): TextCallStart[] {
+  const all = [...text.matchAll(TEXT_CALL)].map((m) => ({ index: m.index!, tool: m[1]! }));
+  return tools === undefined ? all : all.filter((c) => tools.includes(c.tool));
+}
+
+/** Calls written as text in one message, from which the message is a runaway. The charter asks for one call in a message. */
+export const RUNAWAY_CALLS = 2;
+
+/**
+ * Why a message is a runaway: more records than the batch has items, calls written as text one after
+ * another, or text that repeats at its end.
+ */
+export type Runaway = { kind: "records"; found: number; allowed: number } | { kind: "calls"; found: number } | { kind: "repeat" };
 
 /**
  * The runaway that `text`, the message so far, is, or null: it holds more records than the batch has items
- * (a record is a key `shape.idField`), or its end is one unit of text written again and again. The
- * first holds when the model writes the row of one id with another heading each time; the second
- * holds when a batch has no id field. The harness asks the same question of the message that the
- * guard cut, to tell the model what it saw.
+ * (a record is a key `shape.idField`), or it writes RUNAWAY_CALLS calls to the `tools` of the session as
+ * text, or its end is one unit of text written again and again. The first holds when the model writes
+ * the row of one id with another heading each time; the second when it scripts its calls in one
+ * message; the third when a batch has no id field. The harness asks the same question of the message
+ * that the guard cut, to tell the model what it saw. No `tools`: calls are not looked for.
  */
-export function runawayOf(text: string, shape?: AnswerShape): Runaway | null {
+export function runawayOf(text: string, shape?: AnswerShape, tools: readonly string[] = []): Runaway | null {
   if (shape !== undefined) {
     const found = countRecords(text, shape.idField);
     if (found > shape.records) return { kind: "records", found, allowed: shape.records };
   }
+  const calls = textCallsIn(text, tools).length;
+  if (calls >= RUNAWAY_CALLS) return { kind: "calls", found: calls };
   return repeatsAtEnd(text) ? { kind: "repeat" } : null;
 }
 
 /** True when `text`, the message so far, is a runaway (see `runawayOf`). */
-export function findRunaway(text: string, shape?: AnswerShape): boolean {
-  return runawayOf(text, shape) !== null;
+export function findRunaway(text: string, shape?: AnswerShape, tools: readonly string[] = []): boolean {
+  return runawayOf(text, shape, tools) !== null;
 }
 
 /** True when `input` holds a list of the shape's name whose elements are records (objects with the id field). */
@@ -386,17 +425,21 @@ export default function repeatGuard(pi: ExtensionApi, env: NodeJS.ProcessEnv = p
   // The arguments that each tool lists. The tools are registered after the extensions are loaded, so the
   // list is read at the first call; a session that gives no list is left to the checks of pi.
   const declared = new Map<string, string[]>();
-  const declaredFor = (toolName: string): string[] | undefined => {
-    if (declared.size === 0) {
-      try {
-        for (const tool of pi.getAllTools?.() ?? []) {
-          const names = declaredArguments(tool.parameters);
-          if (names !== undefined) declared.set(tool.name, names);
-        }
-      } catch {
-        // The check is an aid: a session whose tools cannot be read keeps the checks of pi.
+  const tools = new Set<string>();
+  const load = (): void => {
+    if (tools.size > 0) return;
+    try {
+      for (const tool of pi.getAllTools?.() ?? []) {
+        tools.add(tool.name);
+        const names = declaredArguments(tool.parameters);
+        if (names !== undefined) declared.set(tool.name, names);
       }
+    } catch {
+      // The check is an aid: a session whose tools cannot be read keeps the checks of pi.
     }
+  };
+  const declaredFor = (toolName: string): string[] | undefined => {
+    load();
     return declared.get(toolName);
   };
   // True once a call held the answer: the session is stopped at the end of that turn.
@@ -456,7 +499,8 @@ export default function repeatGuard(pi: ExtensionApi, env: NodeJS.ProcessEnv = p
     text += e.delta;
     if (text.length - checkedAt < CHECK_EVERY) return;
     checkedAt = text.length;
-    if (findRunaway(text, shape)) {
+    load();
+    if (findRunaway(text, shape, [...tools])) {
       aborted = true;
       ctx.abort();
     }

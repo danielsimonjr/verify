@@ -183,7 +183,8 @@ veriharness workers DIR --provider P --model M [--base-url U] [--context-size N|
      `--no-extensions`, `-e` (the repeat guard), `--no-prompt-templates`,
      `--no-skills`, `--no-session`, `--system-prompt`
      (`workerCharter` in `workers/worker.ts`: `WORKER_CHARTER`, and the `--schema` text when the job has
-     one), `--mode json` and `--tools LIST`. A nudge turn has `--no-tools` instead of `--tools`. A local
+     one), `--mode json` and `--tools LIST`. A nudge turn has `--no-tools` instead of `--tools`, except the
+     nudge `call`, which keeps the tools: it asks for a tool call. A local
      model gets its own pi home with the `models.json` that `buildPiProvider` and `materializePiHome`
      write. pi's default system prompt is not used: it names the pi docs under the harness checkout, and
      a model takes that path for the task's own. The schema is in the charter because the charter is
@@ -207,7 +208,10 @@ veriharness workers DIR --provider P --model M [--base-url U] [--context-size N|
      end is one unit of 24 to 600 characters written 12 times. The id count is read at the shallowest
      depth of braces where the key stands. The stop reason `aborted` is the error `length`, and the
      nudge removes that message from the session; it names the runaway (`runawayOf`: the records found
-     and the ids of the batch, or text that repeats). A call of a tool that is not `read`, `grep`, `find`
+     and the ids of the batch, calls written as text, or text that repeats). The guard cuts a message
+     that writes a second call to a tool of the session as text (`textCallsIn`: `{"name": <tool>,
+     "parameters": {`), because no unit of such a message repeats exactly. A call of a tool that is not
+     `read`, `grep`, `find`
      or `ls` clears the guard's memory of calls. A session that ends in its tool calls (the guard
      stopped it, or its last turn asks for a tool) is `stuck`.
    - A job with `--ids` has the output limit of its model cut to the answer that the batch needs:
@@ -260,15 +264,18 @@ turns it no longer held. `error` is one of `timeout`, `no-result`, `no-json`, `s
 (a call that the guard blocked) and `other` by the text of each result. `nudged` is true when a pi session that ended without an answer, or with
 an answer that does not fit the schema or the ids, was continued with a short message, and `nudges`
 counts the messages. A session gets one message for each kind of failure: time, cut, stuck, format,
-json, schema, ids (`--nudge-timeout` is the budget of each, default 300 s; 0 turns it off). The json
-message names the place where the text stops being JSON. `length` is a last
+json, schema, ids, call (`--nudge-timeout` is the budget of each, default 300 s; 0 turns it off; the
+call nudge has the time of a first turn). The json message names the place where the text stops being
+JSON. The call message is for a final message that writes a tool call of the session as text (`textCallOf`:
+the server ran none): it names the tool and the reason, offers the tools and asks for one call. `length` is a last
 turn cut at the output limit; `thinking-only` is a last turn of thought with no text; `stuck` is a
 session that ended in its tool calls; `schema` is a
 deliverable that parses and does not fit the `--schema` file; `ids` is a deliverable that fits the schema
 and whose record ids (`--ids ARRAY.FIELD`) are not the ids of the batch in `manifest.json`;
 `no-tool-calls` is a pi session that was
-offered tools and ended with no tool call, whatever its last turn says (it is never nudged: an answer that
-was not read from the files is not made right by a second message). A rollout with an error keeps the last
+offered tools and ended with no tool call, whatever its last turn says (an answer that was not read from the
+files is not made right by a second message, so it is not nudged for an answer; a first message that is a call
+written as text is sent back as a call). A rollout with an error keeps the last
 text of the worker as `deliverables/<name>.partial.txt`. `droppedTools` is present only when the
 harness left a pi tool out because it could not provide the tool's binary.
 

@@ -41,9 +41,11 @@ import {
   openMessageKind,
   parseJsonDeliverable,
   piStreamStats,
+  textCallOf,
   turnCounter,
   type DeliverableForm,
   type StreamStats,
+  type TextCall,
   type WorkerError,
   type WorkerRecord,
 } from "./record.js";
@@ -202,11 +204,24 @@ function cutBy(runaway: Runaway, ids: WorkerIds | undefined): string {
       "Write your final answer once, with one record for each id and each id once, as the text of your next message."
     );
   }
+  if (runaway.kind === "calls") {
+    return (
+      `Your last message was stopped because it wrote ${runaway.found} tool calls as text. A message holds one call. ` +
+      "Write your final answer once, in the format the task asked for, as the text of your next message."
+    );
+  }
   return (
     "Your last message was stopped because it wrote the same text again and again. " +
     "Write your final answer once, in the format the task asked for, as the text of your next message."
   );
 }
+
+/**
+ * The errors of a session whose last message can be a call that did not run: no error (the text parsed to
+ * something that is not an answer), text that is not JSON, a session that made no call, and a message that
+ * the guard cut because it wrote several calls.
+ */
+const ANSWER_ERRORS: ReadonlySet<WorkerError | null> = new Set<WorkerError | null>([null, "no-json", "no-tool-calls", "length"]);
 
 /** Most errors a nudge lists: a model that was given more would lose the first ones. */
 const NUDGE_LISTED = 8;
@@ -223,8 +238,32 @@ function nudgeList(heading: string, problems: readonly string[]): string {
   ].join("\n");
 }
 
+/**
+ * The nudge for a message that wrote a tool call as text. The model meant to call a tool, and the call did
+ * not run; it is told that, and why, and asked for the call again. It is not told that its answer is wrong:
+ * it gave none.
+ */
+function callNudge(call: TextCall): string {
+  let head: string;
+  const why: string[] = [];
+  if (call.calls > 1) {
+    head = `Your last message wrote ${call.calls} tool calls as text, and no tool ran.`;
+    why.push("A message holds one call.");
+  } else {
+    head = `Your last message wrote a call to the ${call.tool} tool as text, and the tool did not run.`;
+    if (call.around) why.push("The call has other text around it.");
+  }
+  if (call.problem !== null) why.push(`The call is not valid JSON: ${call.problem}`);
+  return [
+    head,
+    ...why.map((w) => `- ${w.slice(0, 300)}`),
+    `Make one call now. Write only the JSON object {"name": "${call.tool}", "parameters": {...}} as your whole message. ` +
+      "Use JSON values in the arguments: strings in double quotes, numbers, true, false, null.",
+  ].join("\n");
+}
+
 /** The ways an answer can fail that a nudge can put right. A session is sent back once for each. */
-type NudgeKind = "time" | "cut" | "format" | "json" | "schema" | "ids" | "stuck";
+type NudgeKind = "time" | "cut" | "format" | "json" | "schema" | "ids" | "stuck" | "call";
 
 /**
  * The nudge for a session that ended with `error`, or null when a nudge cannot help.
@@ -300,6 +339,8 @@ export function workerArgs(
   home: string,
   /** A nudge turn: the message and `-c`, in the session saved under `home`. Absent: the first turn, with the job's prompt. */
   nudge?: string,
+  /** A nudge turn that offers the tools: the nudge asks for a tool call, which a turn with none cannot make. */
+  withTools = false,
 ): { cmd: string[]; input?: string; env: NodeJS.ProcessEnv } {
   if (isClaudeCodeProvider(job.model.provider)) {
     const cmd = [
@@ -341,8 +382,9 @@ export function workerArgs(
     "--mode",
     "json",
     // A nudge asks for the answer, and a model that is offered tools is told by some chat templates
-    // (llama3.1's) to answer with a function call. The first turn keeps the tools.
-    ...(nudge === undefined ? ["--tools", job.tools] : ["--no-tools"]),
+    // (llama3.1's) to answer with a function call. The first turn keeps the tools, and so does the nudge
+    // that asks for a call that did not run.
+    ...(nudge === undefined || withTools ? ["--tools", job.tools] : ["--no-tools"]),
     "--provider",
     job.piProvider?.id ?? job.model.provider,
     "--model",
@@ -519,8 +561,9 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     // complete stdout replaces it at the end.
     const streamPath = join(out, "trajectory", "agent.jsonl");
     const isJson = job.deliverable.toLowerCase().endsWith(".json");
-    const exec = async (nudge: string | undefined, timeoutSec: number): Promise<RunResult> => {
-      const { cmd, input, env } = workerArgs(offered, home, nudge);
+    const toolNames = offered.tools.split(",").map((t) => t.trim()).filter((t) => t !== "");
+    const exec = async (nudge: string | undefined, timeoutSec: number, withTools = false): Promise<RunResult> => {
+      const { cmd, input, env } = workerArgs(offered, home, nudge, withTools);
       const live = openSync(streamPath, nudge === undefined ? "w" : "a");
       const onStdout = (chunk: Buffer): void => {
         writeSync(live, chunk);
@@ -546,7 +589,7 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
       // A message that the guard cut: ask the guard's question of it again, to tell the model what was seen.
       let cut: string | null = null;
       if (error === "length" && !claude) {
-        const runaway = runawayOf(stats.finalText, answerShapeOf(job));
+        const runaway = runawayOf(stats.finalText, answerShapeOf(job), toolNames);
         if (runaway !== null) cut = cutBy(runaway, job.ids);
       }
       if (error === null && isJson) {
@@ -565,7 +608,14 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
           }
         }
       }
-      return { stats, error, parsed, problems, problemKind, cut };
+      // A message that holds a tool call written as text: the model meant to call a tool, the server did
+      // not run the call, and the session ended with the text. It is not an answer, whatever it parses to.
+      let call: TextCall | null = null;
+      const answered = error === null && parsed !== null && problems.length === 0;
+      if (!claude && isJson && !answered && toolNames.length > 0 && ANSWER_ERRORS.has(error)) {
+        call = textCallOf(stats.finalText, toolNames);
+      }
+      return { stats, error, parsed, problems, problemKind, cut, call };
     };
 
     if (!claude) mkdirSync(join(home, "session"), { recursive: true });
@@ -582,11 +632,17 @@ export async function runWorker(job: WorkerJob, deps: WorkerDeps = {}): Promise<
     const sentFor = new Set<NudgeKind>();
     while (nudgeSec !== undefined && !claude && !overTurns && !r.aborted && !r.error) {
       const failing: WorkerError | null = verdict.error ?? (verdict.problems.length > 0 ? verdict.problemKind : null);
-      const nudge = failing === null ? null : nudgeFor(failing, verdict.problems, verdict.cut);
+      // A call that did not run is asked for again, with the tools offered. It is asked for once; a call
+      // that is written as text again is then read as the answer it failed to be, and sent back as one.
+      let nudge: { kind: NudgeKind; message: string } | null = null;
+      if (verdict.call !== null && !sentFor.has("call")) nudge = { kind: "call", message: callNudge(verdict.call) };
+      else if (failing !== null) nudge = nudgeFor(failing, verdict.problems, verdict.cut);
       if (nudge === null || sentFor.has(nudge.kind)) break;
       sentFor.add(nudge.kind);
       dropCutReply(join(home, "session"));
-      r = await exec(nudge.message, nudgeSec);
+      // A call nudge goes on with the work: it has the time of a first turn, not of an answer, and the tools.
+      const asCall = nudge.kind === "call";
+      r = await exec(nudge.message, asCall ? Math.max(nudgeSec, job.timeoutSec) : nudgeSec, asCall);
       stdout += r.stdout;
       verdict = judge(r, stdout);
     }

@@ -134,7 +134,8 @@ harness/
   workers/         run worker rollouts on each task folder, in isolated copies
   pi-extensions/   the guard: the one pi extension a worker loads (blocks a repeated tool call or one
                    with an argument the tool does not list, stops a session after three turns in
-                   which every call failed, sizes tool results, cuts a runaway answer)
+                   which every call failed, sizes tool results, cuts a runaway answer or a message
+                   that writes its calls as text)
   views.ts         plain-text views rendered beside binary artifacts (.cells.tsv, .text.txt)
   prompts/         CHARTER (system prompt), MISSION, the two investigation playbooks and
                    record formats, ADJUDICATE, REPAIR

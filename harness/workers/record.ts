@@ -21,7 +21,7 @@
 import { StringDecoder } from "node:string_decoder";
 import { parseStream } from "../claude/stream.js";
 import type { ModelIdentity } from "../model/types.js";
-import { ANSWER_IN_CALL_REASON, REPEAT_REASON } from "../pi-extensions/repeat-guard.js";
+import { ANSWER_IN_CALL_REASON, REPEAT_REASON, textCallsIn } from "../pi-extensions/repeat-guard.js";
 
 /** How the JSON sat in the last message: the whole text, one whole fence, or inside prose. */
 export type DeliverableForm = "pure" | "fenced" | "embedded";
@@ -406,6 +406,36 @@ function firstJsonError(s: string, from = 0): JsonError | null {
     return fail(i, `expected a value, found ${show(c)}; a value is a string in double quotes, a number, true, false, null, an object or an array`);
   }
   return value(0);
+}
+
+/** A tool call that a message wrote as text, and why it did not run. */
+export interface TextCall {
+  /** The tool of the first call that names a tool of the session. */
+  tool: string;
+  /** The calls to tools of the session that the message writes as text. */
+  calls: number;
+  /** The message has text before or after that call. A template runs a call only when it is the whole message. */
+  around: boolean;
+  /** Where the JSON of that call breaks (`jsonProblem`), or null when it is valid JSON. */
+  problem: string | null;
+}
+
+/**
+ * The tool call that `text` writes as text, or null when it writes none to a tool of the session.
+ *
+ * A model that is given tools by a chat template such as llama3.1's writes a call as a JSON object, and the
+ * server turns the message into a call only when the whole message parses. A call with prose before it, or
+ * with `True` or `40*6983` for a value, stays text: the session ends with it as its last message. It is a
+ * call that did not run, and not an answer, whatever the answer format says about it.
+ */
+export function textCallOf(text: string, tools: readonly string[]): TextCall | null {
+  const all = textCallsIn(text, tools);
+  const first = all[0];
+  if (first === undefined) return null;
+  const end = valueEnd(text, first.index);
+  const call = end < 0 ? text.slice(first.index) : text.slice(first.index, end + 1);
+  const around = text.slice(0, first.index).trim() !== "" || (end >= 0 && text.slice(end + 1).trim() !== "");
+  return { tool: first.tool, calls: all.length, around, problem: jsonProblem(call) };
 }
 
 /**

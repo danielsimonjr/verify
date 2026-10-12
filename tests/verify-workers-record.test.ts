@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { ANSWER_IN_CALL_REASON, REPEAT_REASON, undeclaredReason } from "../harness/pi-extensions/repeat-guard.ts";
-import { claudeStreamStats, jsonProblem, openMessageKind, parseJsonDeliverable, piStreamStats, toolErrorKind, turnCounter } from "../harness/workers/record.ts";
+import { claudeStreamStats, jsonProblem, openMessageKind, parseJsonDeliverable, piStreamStats, textCallOf, toolErrorKind, turnCounter } from "../harness/workers/record.ts";
 
 const FIXTURES = join(import.meta.dir, "fixtures", "workers");
 const FENCE = "```";
@@ -276,6 +276,58 @@ describe("toolErrorKind of the guard's blocks", () => {
   });
 });
 
+describe("textCallOf", () => {
+  const TOOLS = ["read", "grep", "find", "ls"];
+
+  test("a call that is the whole message and is valid JSON: the tool, one call, nothing around it, no problem", () => {
+    expect(textCallOf('{"name": "grep", "parameters": {"pattern": "x"}}', TOOLS)).toEqual({ tool: "grep", calls: 1, around: false, problem: null });
+  });
+
+  test("text before the call is reported, and so is text after it", () => {
+    const before = textCallOf('Let us start with the first row.\n\n{"name": "grep", "parameters": {"pattern": "6890"}}', TOOLS)!;
+    expect(before).toMatchObject({ tool: "grep", calls: 1, around: true, problem: null });
+    const after = textCallOf('{"name": "grep", "parameters": {"pattern": "6890"}}\nThen I read it.', TOOLS)!;
+    expect(after.around).toBe(true);
+  });
+
+  test("a value that is not JSON is named with its place", () => {
+    const call = textCallOf('{"name": "grep", "parameters": {"pattern":"ZBOOK", "ignoreCase":True, "limit":10}}', TOOLS)!;
+    expect(call.around).toBe(false);
+    expect(call.problem).toContain("found 'T'");
+    expect(call.problem).toContain("[HERE]");
+  });
+
+  test("an expression where a number belongs is named", () => {
+    const call = textCallOf('{"name": "read", "parameters": {"limit":40,"offset":40*6983,"path":"workspace/CHANGELOG.md"}}', TOOLS)!;
+    expect(call.problem).toContain("found '*'");
+  });
+
+  test("calls written one after another are counted, and the first names the tool", () => {
+    const text = '1. {"name": "grep", "parameters": {"pattern": "a"}}\n2. {"name": "read", "parameters": {"path": "x"}}\n3. {"name": "ls", "parameters": {}}';
+    expect(textCallOf(text, TOOLS)).toMatchObject({ tool: "grep", calls: 3 });
+  });
+
+  test("a call that never closes is named as not closed", () => {
+    const call = textCallOf('{"name": "grep", "parameters": {"pattern": "a"', TOOLS)!;
+    expect(call.problem).toContain("not closed");
+  });
+
+  test("a call to a tool that the session does not offer is not a call of the session", () => {
+    expect(textCallOf('{"name": "web_search", "parameters": {"q": "x"}}', TOOLS)).toBeNull();
+    expect(textCallOf('{"name": "grep", "parameters": {"pattern": "a"}}', [])).toBeNull();
+    // It is not counted with the calls of the session either.
+    const text = '{"name": "web_search", "parameters": {"q": "x"}}\n{"name": "grep", "parameters": {"pattern": "a"}}';
+    expect(textCallOf(text, TOOLS)).toMatchObject({ tool: "grep", calls: 1 });
+  });
+
+  test("an answer is not a call, even when it quotes one in a string", () => {
+    const answer = JSON.stringify({ rows: [{ line: 1, verdict: "LOGGED", evidence: '{"name": "grep", "parameters": {"pattern": "x"}}' }] });
+    expect(textCallOf(answer, TOOLS)).toBeNull();
+    expect(textCallOf("No matches found.", TOOLS)).toBeNull();
+    expect(textCallOf("", TOOLS)).toBeNull();
+  });
+});
+
 describe("jsonProblem", () => {
   test("text that has no JSON in it has no problem to name", () => {
     expect(jsonProblem("The rows are logged.")).toBeNull();
@@ -287,7 +339,7 @@ describe("jsonProblem", () => {
     expect(jsonProblem("Here it is: " + FENCE + 'json\n{"rows": []}\n' + FENCE)).toBeNull();
   });
 
-  test("a backslash that starts no escape is named, with the rule that fixes it (b08 r03 of run 7)", () => {
+  test("a backslash that starts no escape is named, with the rule that fixes it", () => {
     const text = '{"rows": [{"line": 1, "evidence": "C:\\Users\\danie\\x"}]}';
     const problem = jsonProblem(text)!;
     expect(problem).toContain("character 38");
@@ -297,13 +349,13 @@ describe("jsonProblem", () => {
     expect(problem).toContain("C:");
   });
 
-  test("a missing closing brace is named at the end of the text (b14 r03 of run 7)", () => {
+  test("a missing closing brace is named at the end of the text", () => {
     const problem = jsonProblem('{"rows": [{"line": 1, "verdict": "LOGGED"}]')!;
     expect(problem).toContain("object that starts at character 1");
     expect(problem).toContain("not closed");
   });
 
-  test("a closing character that does not match is named (b08 r01 of run 7)", () => {
+  test("a closing character that does not match is named", () => {
     const problem = jsonProblem('{"rows": [{"line": 1, "evidence": "x")}]}')!;
     expect(problem).toContain("character 38");
     expect(problem).toContain("comma or a closing brace");

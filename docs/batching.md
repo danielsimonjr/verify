@@ -201,7 +201,7 @@ model, leave the digest fields out.
 | `no-result` | No final answer. For Claude Code, also an exit code that is not 0 or an error result. |
 | `stuck` | The session ended in its tool calls: the guard stopped it after three turns in a row in which every tool call failed, or its last turn asked for a tool. A pi worker only. |
 | `no-json` | A `.json` deliverable, and the final text holds no JSON. |
-| `length` | The last turn ended at the output-token limit, or the runaway guard cut it (it held more records than the batch has items, or one unit of text again and again). Its text is cut. |
+| `length` | The last turn ended at the output-token limit, or the runaway guard cut it (it held more records than the batch has items, two or more calls to tools written as text, or one unit of text again and again). Its text is cut. |
 | `thinking-only` | The last turn held thinking and no text: the model spent its output on thought. |
 | `no-tool-calls` | A pi worker was offered tools and made no tool call. Its answer, whatever it says, rests on nothing it read. |
 | `schema` | The deliverable is JSON but does not fit the `--schema` file. |
@@ -258,24 +258,39 @@ Three things end a pi session with no answer: the time limit, a last turn of tho
 last turn cut at the output limit. A fourth is a session that the guard stopped after failed tool
 calls. A fifth is a final message without the JSON, and a sixth is a final message whose JSON stops
 being JSON at some place. A seventh is an answer that parses and does not fit the `--schema` file, and
-an eighth is an answer that fits it and has the wrong `--ids`. Each one used to throw away what the
+an eighth is an answer that fits it and has the wrong `--ids`. A ninth is a final message that is a
+tool call written as text. Each one used to throw away what the
 worker had found. `workers` now continues the same session with a short message: stop investigating,
 do not think further, write the answer now. The message depends on the cause. For a schema or an ids
 error it lists the errors (the first eight). For a JSON that is not valid it names the character where
 the text stops being JSON, the rule that it breaks and the text around that place. For a stuck session
 it says that the tool calls failed or repeated an earlier call and that no tool is offered. For a message
 that the guard cut it says what the guard saw: how many records the message held and which ids the batch
-has, or that the message wrote the same text again and again.
+has, or that the message wrote the same text again and again. For a call written as text it says that
+the tool did not run and why, and asks for one call.
 
 A session is sent back once for each kind of failure: `time`, `cut`, `stuck`, `format`, `json`,
-`schema` and `ids`. An answer that is put right can fail the next check. A model that answered in
+`schema`, `ids` and `call`. An answer that is put right can fail the next check. A model that answered in
 prose, then in the wrong shape, then with the wrong ids needs three messages, and one message for all
-three kinds leaves the last check with no chance. A kind is never sent twice, so a session gets seven
+three kinds leaves the last check with no chance. A kind is never sent twice, so a session gets eight
 messages at most.
 
-A nudge turn offers no tools (`--no-tools`): a chat template such as llama3.1's tells a model that
-holds tools to answer with a function call, so a nudge that left the tools on was answered with more
-tool calls. Before a nudge, the harness removes the last message of the saved session when that
+**A call written as text.** The template of a local model (llama3.1's) asks for a tool call as a JSON
+object, `{"name": <tool>, "parameters": {...}}`, and Ollama turns a message into a call only when the
+whole message parses as one. A call with prose before it, or with `True`, `6871-1` or `40*6983` for a
+value, stays text: the session ends with that message, and it is not an answer. A final message of a
+`.json` deliverable that is not a valid answer and holds such a call to a tool of the session is sent
+back with the nudge `call`. The nudge names the tool, says that it did not run, and gives the reason:
+the text around the call, the place where its JSON breaks (the same words as the `json` nudge), or
+that the message holds more than one call. It asks for one call as the whole message, with JSON values.
+This is the one nudge that offers the tools, because a call cannot be made on a turn that has none, and
+it has the time of a first turn (`--timeout`), because the work goes on. It is sent once. A call that is
+written as text again is then read as the answer it failed to be and gets the nudges of an answer. A
+call to a tool that the session does not offer is not a call of the session and is not touched.
+
+Every other nudge turn offers no tools (`--no-tools`): a chat template such as llama3.1's tells a model
+that holds tools to answer with a function call, so a nudge that left the tools on was answered with
+more tool calls. Before a nudge, the harness removes the last message of the saved session when that
 message was cut at the output limit, or aborted by the guard, or is the empty turn that an abort ended
 after a tool result. A cut message is mostly a runaway (one row written many times), and the model
 would read its own loop again. `agent.jsonl` keeps the message. Each nudge has its own
@@ -288,7 +303,7 @@ session. A nudge needs a saved session, so a Claude Code worker has none, and `-
 
 A small model can repeat one tool call, again and again, until its context is full, or call a tool with
 arguments that it does not accept. A pi worker therefore loads one extension, the guard
-(`harness/pi-extensions/repeat-guard.ts`), which does four things with tool calls and one with the
+(`harness/pi-extensions/repeat-guard.ts`), which does four things with tool calls and two with the
 answer.
 
 **Repeated calls.** The tools of a worker only read, so a repeat returns the text that the model
@@ -338,13 +353,17 @@ same id, 8192 tokens and ten minutes of a local model. The guard cuts a message 
 records than the batch has items (it counts the key of `--ids ARRAY.FIELD` at the shallowest depth
 where it is written, so a nested object with a key of the same name is not a record; the harness gives
 it the field and the number of items), or when the end of the text is one unit of 24 to 600
-characters written 12 times in a row (a batch with no ids, or a runaway of another shape). A cut
+characters written 12 times in a row (a batch with no ids, or a runaway of another shape). A message that
+writes a second call to a tool of the session as text (`{"name": "grep", "parameters": {...}}`) is cut
+too: a model that writes its plan as calls (104 in one message) runs to the output limit, because the
+offset changes in each call and no unit repeats exactly. An answer that lists other objects with a name
+and parameters is not touched. A cut
 message ends with the stop reason `aborted`. The record has the error `length`, as for a message that
 reached the limit, and the nudge for it removes the message from the session before it asks for the
 answer. The harness asks the guard's question of the cut text again, so the nudge says why the message
 was stopped (for example: it held 4 records, and the batch has 3 ids: 7, 8, 9) and asks for one
-record for each id, written once. A message that reached the output limit with no runaway in it keeps
-the text about a cut.
+record for each id, written once; for calls written as text it is the nudge `call`, with the tools
+offered. A message that reached the output limit with no runaway in it keeps the text about a cut.
 
 With `--ids`, the output limit of the model is also cut to the answer that the batch needs: 1024 tokens
 for each item and 1024 for the rest of the message, and never less than 4096, because the limit is

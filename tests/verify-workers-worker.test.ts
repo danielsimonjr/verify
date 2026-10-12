@@ -147,6 +147,14 @@ describe("workerArgs", () => {
     expect(nudge).toContain("-c");
   });
 
+  test("a nudge that asks for a call offers the tools: a call cannot be made with none", () => {
+    const call = workerArgs(job({ nudgeTimeoutSec: 90 }), join(root, "home"), "Make the call again.", true).cmd;
+    expect(call[call.indexOf("--tools") + 1]).toBe("read,grep,find,ls");
+    expect(call).not.toContain("--no-tools");
+    expect(call).toContain("-c");
+    expect(call.at(-1)).toBe("Make the call again.");
+  });
+
   test("every turn of a pi worker loads the repeat guard, a nudge turn too", () => {
     // Pi runs with --no-extensions; the guard is the one extension that is named, so a worker loads
     // nothing from the user's pi home. A nudge turn has no tools to guard, and its answer can be a
@@ -414,6 +422,92 @@ describe("runWorker", () => {
     const f = sequence({ stdout: turns([[{ type: "text", text: '{"rows": [{"line": 7' }], "length"]) }, { stdout: PI_STREAM });
     await runWorker(job({ ids: IDS3, nudgeTimeoutSec: 90 }), { run: f.run });
     expect(f.calls[1]!.args.at(-1)).toContain("cut off or held only thinking");
+  });
+
+  const TEXT_CALL = 'Let us start with the first row.\n\n{"name": "grep", "parameters": {"pattern": "6890"}}';
+  const ANSWER_7 = '{"rows": [{"line": 7, "verdict": "LOGGED"}]}';
+
+  test("a tool call that the model wrote as text is sent back as a call, on a turn that offers the tools", async () => {
+    // The model meant to call grep. Ollama kept the message as text (prose before the call), the session
+    // ended, and the text was read as the answer: `missing property 'rows'`, sent with no tools.
+    const f = sequence({ stdout: worked(TEXT_CALL) }, { stdout: worked(ANSWER_7) });
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, timeoutSec: 120, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(2);
+    const second = f.calls[1]!;
+    expect(second.args).toContain("-c");
+    expect(second.args).toContain("--tools");
+    expect(second.args).not.toContain("--no-tools");
+    const message = second.args.at(-1)!;
+    expect(message).toContain("call to the grep tool");
+    expect(message).toContain("did not run");
+    expect(message).toContain("other text around it");
+    expect(message).toContain('{"name": "grep", "parameters": {...}}');
+    expect(message).not.toContain("missing property");
+    // The turn goes on with the work, so it has the time of a first turn, not of an answer.
+    expect(second.opts.timeoutMs).toBe(120_000);
+    expect(rec).toMatchObject({ error: null, nudged: true, nudges: 1 });
+  });
+
+  test("a call whose arguments are not JSON is sent back with the place where they break", async () => {
+    const text = '{"name": "grep", "parameters": {"pattern":"ZBOOK", "ignoreCase":True, "limit":10}}';
+    const f = sequence({ stdout: worked(text) }, { stdout: worked(ANSWER_7) });
+    await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
+    const message = f.calls[1]!.args.at(-1)!;
+    expect(message).toContain("The call is not valid JSON");
+    expect(message).toContain("found 'T'");
+    expect(message).not.toContain("other text around it");
+    expect(f.calls[1]!.args).not.toContain("--no-tools");
+  });
+
+  test("a first message that is a call written as text is sent back as a call, not as a session that read nothing", async () => {
+    const f = sequence({ stdout: answer(TEXT_CALL) }, { stdout: worked(ANSWER_7) });
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls[1]!.args).not.toContain("--no-tools");
+    expect(rec).toMatchObject({ error: null, nudged: true });
+  });
+
+  test("a message that the guard cut for several calls written as text is sent back as a call, with the message removed", async () => {
+    // 104 calls in one message ran to the output limit; the nudge said "held only thinking".
+    const calls =
+      'Here is the code:\n{"name": "grep", "parameters": {"pattern": "a"}}\n{"name": "read", "parameters": {"path": "x"}}';
+    const read = turns([[{ type: "toolCall", id: "c1", name: "read", arguments: { path: "spec/task.md" } }], "toolUse"]);
+    const ran = JSON.stringify({ type: "tool_execution_end", toolCallId: "c1", toolName: "read", result: { content: [{ type: "text", text: "ok" }] }, isError: false }) + "\n";
+    const cut = turns([[{ type: "text", text: calls }], "aborted"]);
+    const f = sequence({ stdout: read + ran + cut }, { stdout: worked(ANSWER_7) });
+    await runWorker(job({ ids: IDS3, nudgeTimeoutSec: 90 }), { run: f.run });
+    const message = f.calls[1]!.args.at(-1)!;
+    expect(message).toContain("2 tool calls");
+    expect(message).toContain("A message holds one call");
+    expect(message).not.toContain("held only thinking");
+    expect(f.calls[1]!.args).not.toContain("--no-tools");
+  });
+
+  test("a call nudge is sent once: a call that is written as text again gets the nudges of an answer", async () => {
+    const f = sequence({ stdout: worked(TEXT_CALL) }, { stdout: worked(TEXT_CALL) }, { stdout: answer(ANSWER_7) });
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(3);
+    expect(f.calls[1]!.args).not.toContain("--no-tools");
+    expect(f.calls[2]!.args).toContain("--no-tools");
+    expect(f.calls[2]!.args.at(-1)).toContain("missing property 'rows'");
+    expect(rec).toMatchObject({ error: null, nudges: 2 });
+  });
+
+  test("an answer that quotes a call in a string is an answer, and is not sent back as a call", async () => {
+    const quoted = JSON.stringify({ rows: [{ line: 7, verdict: "LOGGED", evidence: '{"name": "grep", "parameters": {"pattern": "x"}}' }] });
+    const f = sequence({ stdout: worked(quoted) });
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(1);
+    expect(rec).toMatchObject({ error: null, nudged: false });
+  });
+
+  test("an answer that holds a literal call-shaped object is an answer, and is not sent back as a call", async () => {
+    // The answer fits the schema. The call-shaped object is data in it, not a call that did not run.
+    const holds = JSON.stringify({ rows: [{ line: 7, verdict: "LOGGED", seen: { name: "read", parameters: { path: "x" } } }] });
+    const f = sequence({ stdout: worked(holds) });
+    const rec = await runWorker(job({ schema: LINE_SCHEMA, nudgeTimeoutSec: 90 }), { run: f.run });
+    expect(f.calls).toHaveLength(1);
+    expect(rec).toMatchObject({ error: null, nudged: false });
   });
 
   test("a nudge after the empty turn that the abort ended continues from the turn before it", async () => {

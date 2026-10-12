@@ -31,6 +31,7 @@ import repeatGuard, {
   RUNAWAY_MIN_UNIT,
   RUNAWAY_REPEATS,
   runawayOf,
+  textCallsIn,
 } from "../harness/pi-extensions/repeat-guard.ts";
 
 const fixture = (name: string) => readFileSync(join(import.meta.dir, "fixtures", "workers", name), "utf8");
@@ -215,8 +216,56 @@ describe("findRunaway", () => {
   });
 });
 
+describe("textCallsIn", () => {
+  test("it finds a call as the template of llama3.1 writes it: the name and the arguments", () => {
+    const text = '{"name": "grep", "parameters": {"pattern": "6890", "limit": 10}}';
+    expect(textCallsIn(text)).toEqual([{ index: 0, tool: "grep" }]);
+    expect(textCallsIn(text, ["read"])).toEqual([]);
+    expect(textCallsIn(text, ["grep", "read"])).toEqual([{ index: 0, tool: "grep" }]);
+  });
+
+  test("it finds a call after prose, in a fence, and with arguments that are not JSON", () => {
+    // Ollama runs a call only when the whole message is JSON that parses; these stay text.
+    const text = 'Let us look.\n\n```python\n{"name": "read", "parameters": {"offset": 6871-1, "ignoreCase": True}}\n```';
+    expect(textCallsIn(text)).toEqual([{ index: text.indexOf("{"), tool: "read" }]);
+  });
+
+  test("each call is found, and `arguments` is read as `parameters`", () => {
+    const text = '1. {"name": "grep", "parameters": {"pattern": "a"}}\n2. {"name": "read", "arguments": {"path": "x"}}';
+    expect(textCallsIn(text).map((c) => c.tool)).toEqual(["grep", "read"]);
+  });
+
+  test("an answer that quotes a call inside a string holds no call", () => {
+    const answer = JSON.stringify({ rows: [{ line: 1, verdict: "LOGGED", evidence: '{"name": "grep", "parameters": {"pattern": "x"}}' }] });
+    expect(textCallsIn(answer)).toEqual([]);
+  });
+
+  test("an object with a name and no parameters is not a call", () => {
+    expect(textCallsIn('{"name": "grep", "path": "x"}')).toEqual([]);
+    expect(textCallsIn("no braces at all")).toEqual([]);
+  });
+});
+
 describe("runawayOf", () => {
   const shape = { idField: "line", records: 2 };
+
+  test("a second call written as text in one message is a runaway, and one call is not", () => {
+    // A model wrote 104 calls as one message: no unit repeats exactly, the offset changes in each,
+    // so it ran to the output limit (447 s).
+    const one = 'Let us look.\n{"name": "grep", "parameters": {"pattern": "a"}}';
+    const tools = ["read", "grep", "find", "ls"];
+    expect(runawayOf(one, shape, tools)).toBeNull();
+    const two = one + '\n{"name": "read", "parameters": {"path": "x"}}';
+    expect(runawayOf(two, shape, tools)).toEqual({ kind: "calls", found: 2 });
+    expect(findRunaway(two, shape, tools)).toBe(true);
+  });
+
+  test("objects with a name and parameters that name no tool of the session are not calls", () => {
+    // An answer can list function specs. Only a call to a tool that the session has is a call of it.
+    const specs = '{"name": "get_weather", "parameters": {"city": "x"}}\n{"name": "get_time", "parameters": {"tz": "x"}}';
+    expect(runawayOf(specs, shape, ["read", "grep"])).toBeNull();
+    expect(runawayOf(specs, shape)).toBeNull();
+  });
 
   test("more records than the batch has items says how many there were and how many the batch has", () => {
     expect(runawayOf('{"rows": [{"line": 1}, {"line": 2}, {"line": 3', shape)).toEqual({ kind: "records", found: 3, allowed: 2 });
@@ -259,10 +308,11 @@ describe("answerShapeFromEnv", () => {
 describe("the extension watches the text of a message", () => {
   type Handler = (event: unknown, ctx: { abort(): void }) => unknown;
 
-  function load(env: NodeJS.ProcessEnv = {}) {
+  function load(env: NodeJS.ProcessEnv = {}, tools: { name: string }[] = []) {
     const handlers: Record<string, Handler> = {};
     let aborts = 0;
-    repeatGuard({ on: (name: string, handler: Handler) => void (handlers[name] = handler) } as never, env);
+    const api = { on: (name: string, handler: Handler) => void (handlers[name] = handler), getAllTools: () => tools };
+    repeatGuard(api as never, env);
     const ctx = { abort: () => void aborts++ };
     const delta = (text: string) =>
       handlers.message_update!({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } }, ctx);
@@ -280,6 +330,24 @@ describe("the extension watches the text of a message", () => {
     expect(aborts()).toBe(1);
     delta(` ${row(4)}`);
     expect(aborts()).toBe(1);
+  });
+
+  test("it aborts a message that writes a second tool call as text, and not the first", () => {
+    const { delta, aborts } = load({}, [{ name: "read" }, { name: "grep" }]);
+    const call = (n: number) => `{"name": "read", "parameters": {"path": "f${n}.md", "note": "${"x".repeat(250)}"}}`;
+    delta(`Let us look.\n${call(1)}`);
+    expect(aborts()).toBe(0);
+    delta(`\n${call(2)}`);
+    expect(aborts()).toBe(1);
+  });
+
+  test("two objects with a name and parameters are left alone when the session has no tool of that name", () => {
+    const { delta, aborts } = load({}, [{ name: "read" }]);
+    const spec = (n: number) => `{"name": "get_item_${n}", "parameters": {"note": "${"x".repeat(250)}"}}`;
+    delta(spec(1));
+    delta(spec(2));
+    delta(spec(3));
+    expect(aborts()).toBe(0);
   });
 
   test("a new message starts a new text", () => {
