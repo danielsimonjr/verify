@@ -34,6 +34,10 @@ commands:
   workers       run worker rollouts on each batch, each in an isolated copy
 `;
 
+/**
+ * Dispatch `argv[0]` to the `main` of the matching command module and return its exit code.
+ * No command, `-h` or `--help` prints the usage text to stderr; a missing command exits 2.
+ */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   const [cmd, ...rest] = argv;
   if (!cmd || cmd === "-h" || cmd === "--help") {

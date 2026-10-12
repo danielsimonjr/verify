@@ -23,6 +23,7 @@ import type JSZip from "jszip";
 
 import { type XNode, attr, childrenNamed, parseOrdered, rootOf } from "./xml.js";
 
+/** One relationship of a package part: its id, its type URI and the package path of its target. */
 export type Rel = { id: string; type: string; target: string };
 
 /** The root element of a part, or undefined when the package has no such part. */

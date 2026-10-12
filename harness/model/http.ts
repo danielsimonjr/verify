@@ -24,6 +24,10 @@ import { timerDelay } from "../timer.js";
 
 export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
+/**
+ * A network-level failure of one request: `unreachable` (connection refused or host not found),
+ * `timeout` (the request was aborted) or `reset` (the connection broke).
+ */
 export class TransportError extends Error {
   readonly kind: "unreachable" | "timeout" | "reset";
 
@@ -34,6 +38,10 @@ export class TransportError extends Error {
   }
 }
 
+/**
+ * The outcome of one request. `text` is the body and `json` is its parsed form, or `undefined` when the
+ * body is empty or not JSON. For a streamed success, `text` is empty and `stream` holds the body.
+ */
 export interface HttpResult {
   status: number;
   text: string;
@@ -43,10 +51,15 @@ export interface HttpResult {
 
 const TRANSIENT_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
+/** Return true for an HTTP status that `HttpClient` retries: 408, 429, 500, 502, 503 and 504. */
 export function isTransientStatus(status: number): boolean {
   return TRANSIENT_STATUS.has(status);
 }
 
+/**
+ * Classify a thrown fetch error by its name, code and message as `timeout` (abort), `reset`
+ * (ECONNRESET, EPIPE, ETIMEDOUT), `refused` (connection refused, host not found, `fetch failed`) or `other`.
+ */
 export function networkFailureKind(err: unknown): "refused" | "timeout" | "reset" | "other" {
   if (!err || typeof err !== "object") return "other";
   const e = err as { name?: string; message?: string; code?: string; cause?: unknown };
@@ -69,6 +82,11 @@ export function networkFailureKind(err: unknown): "refused" | "timeout" | "reset
   return "other";
 }
 
+/**
+ * A JSON-over-HTTP client with a per-request timeout and retries. `send` retries a transient status and
+ * a connection reset up to `retries` more times, waiting `retryDelayMs` times the attempt number. It
+ * never retries a timeout or a refused connection.
+ */
 export class HttpClient {
   readonly fetchImpl: FetchLike;
   readonly timeoutMs: number;
@@ -183,6 +201,10 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Read a byte stream as UTF-8 and yield it one line at a time, without the line break (`\n` or `\r\n`).
+ * A final line with no break is yielded too. The reader lock is released when the generator ends.
+ */
 export async function* readLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -206,6 +228,10 @@ export async function* readLines(stream: ReadableStream<Uint8Array>): AsyncGener
   }
 }
 
+/**
+ * Pick the error message out of a response: `error` as a string, `error.message`, or `message` from the
+ * parsed `json`, in that order. When none is present, return the trimmed `text`.
+ */
 export function errorText(json: unknown, text: string): string {
   if (json && typeof json === "object") {
     const rec = json as Record<string, unknown>;

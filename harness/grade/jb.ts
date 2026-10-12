@@ -66,6 +66,10 @@ export function rubricsFor(key: string): string | null {
   return prof && tn ? findRubrics(prof, tn) : null;
 }
 
+/**
+ * Send a one-token chat request to the JobBench judge endpoint. Returns "" when the judge answers
+ * with a success status and JSON, else a message that names the HTTP status or the network error.
+ */
 export async function preflight(): Promise<string> {
   const body = JSON.stringify({
     model: ENV.JUDGE_MODEL,
@@ -99,6 +103,11 @@ export async function preflight(): Promise<string> {
   }
 }
 
+/**
+ * Grade a deliverables folder against the RUBRICS.json of the JobBench task `key` with the
+ * benchmark's judge script; the score is total score over max score. A run with judge errors
+ * repeats once; if errors remain, the score is null. `opts.workers` sets the judge parallelism (default 6).
+ */
 export function grade(
   key: string,
   deliverables: string,

@@ -21,6 +21,7 @@
 /** What Python's str.strip() removes; JS trim() differs on \x1c-\x1f, \x85 and \ufeff. */
 const PY_SPACE = /^[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/g;
 
+/** Remove leading and trailing white space from `s` as Python's `str.strip()` does. */
 export function pyStrip(s: string): string {
   return s.replace(PY_SPACE, "");
 }

@@ -85,6 +85,10 @@ export function gradingSettings(defaultPath = join(CONFIGS, "grading_settings.js
   return out;
 }
 
+/**
+ * Check that the APEX grader can run. Returns "" when it can, else a message: no judge key
+ * (`GEMINI_API_KEY`, or `APEX_JUDGE_MODEL` starting with `vertex_ai/`) or no grading venv python.
+ */
 export function preflight(): string {
   if (
     !apiKeys().length &&
@@ -157,6 +161,7 @@ async function writeZip(path: string, files: { name: string; data: Buffer }[]): 
   writeFileSync(path, buf);
 }
 
+/** Options for the APEX `grade` function. Both fields are optional. */
 export type ApexOptions = {
   /** Runner timeout in milliseconds (default 30 minutes). */
   timeout?: number;
@@ -164,6 +169,11 @@ export type ApexOptions = {
   command?: string[];
 };
 
+/**
+ * Grade the `answer.md` of an APEX deliverables folder against the rubric of task `key`
+ * (`<index>_<domain>`) with the benchmark's rubric-judge runner. The score is the mean of the
+ * verifier scores; the result holds `score: null` and an `error` when the runner fails or a verifier has no score.
+ */
 export async function grade(
   key: string,
   deliverables: string,

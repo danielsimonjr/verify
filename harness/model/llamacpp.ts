@@ -46,6 +46,10 @@ import {
 } from "./types.js";
 import { apiRoots } from "./url.js";
 
+/**
+ * Settings of the llama-server HTTP client: an optional replacement fetch function, the request
+ * timeout in milliseconds, the number of retries and an optional delay between retries.
+ */
 export interface LlamaCppDeps {
   fetch?: FetchLike;
   timeoutMs: number;
@@ -53,6 +57,7 @@ export interface LlamaCppDeps {
   retryDelayMs?: number;
 }
 
+/** One model that the server lists: its id and whether the server has it loaded. */
 export interface ListedModel {
   id: string;
   loaded: boolean;
@@ -71,6 +76,11 @@ export function matchLoadedModel(
   return { error: "none", ids };
 }
 
+/**
+ * Reads the models from a `/models` reply: a list, or an object with `data` or `models`. An entry
+ * is a string id (loaded) or an object with `id`, `name` or `model` and an optional status.
+ * Without a status, a model counts as loaded unless its `loaded` field is false.
+ */
 export function parseModelIds(body: unknown): ListedModel[] {
   if (!body) return [];
   const list = Array.isArray(body)
@@ -106,6 +116,10 @@ function modelStatus(rec: Record<string, unknown>): string {
   return "";
 }
 
+/**
+ * Returns the context size from a `/props` reply: `n_ctx`, else `default_generation_settings.n_ctx`.
+ * Returns undefined when neither is a number.
+ */
 export function parseLlamaContext(props: unknown): number | undefined {
   if (!props || typeof props !== "object") return undefined;
   const rec = props as Record<string, unknown>;
@@ -118,6 +132,10 @@ export function parseLlamaContext(props: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * ModelBackend for llama-server. `probe` checks health, finds the loaded model and reads its
+ * context size; `complete` and `stream` send chat requests to the OpenAI-compatible endpoint.
+ */
 export class LlamaCppBackend implements ModelBackend {
   readonly id = "llamacpp" as const;
   readonly baseUrl: string;

@@ -38,6 +38,7 @@ import {
   textIn,
 } from "./xml.js";
 
+/** One slide of a presentation: its 1-based position and the package path of its part. */
 export type SlideRef = { number: number; path: string };
 
 /** Slides in presentation order. Falls back to file-name order for a package without one. */
@@ -83,6 +84,7 @@ function nonVisual(shape: XNode): XNode | undefined {
   return childrenOf(shape).find((c) => /^p:nv\w+Pr$/.test(tagOf(c)));
 }
 
+/** The `name` attribute of the shape's `p:cNvPr` element; "" when the shape has none. */
 export function shapeName(shape: XNode): string {
   return attr(child(nonVisual(shape), "p:cNvPr") ?? {}, "name") ?? "";
 }

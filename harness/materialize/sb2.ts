@@ -53,6 +53,11 @@ function specs(): Map<string, Spec> {
   return out;
 }
 
+/**
+ * Yields one task for each graded task key that has a dataset record and at least two seeds in the
+ * pool: the instruction as spec, the input spreadsheet in the workspace, and one rollout for each
+ * seed with its output files, its accuracy as score and its trajectory file.
+ */
 export function* iterTasks(pool: string): Generator<Task> {
   const prefix = POOLS[pool]!;
   const sb2 = sb2Root();

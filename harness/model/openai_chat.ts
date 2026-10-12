@@ -30,6 +30,7 @@ import {
   argumentsToJson,
 } from "./types.js";
 
+/** Converts a tool definition to the OpenAI `function` tool shape; a missing description becomes "". */
 export function openAiTool(tool: { name: string; description?: string; parameters: Record<string, unknown> }) {
   return {
     type: "function",
@@ -41,6 +42,11 @@ export function openAiTool(tool: { name: string; description?: string; parameter
   };
 }
 
+/**
+ * Converts a chat message to an OpenAI message. A tool result gets role `tool` and the id of its
+ * call; an assistant message with tool calls carries them as `function` calls; any other message
+ * keeps its role and content.
+ */
 export function toOpenAiMessage(message: ChatMessage): Record<string, unknown> {
   if (message.role === "tool") {
     return {
@@ -63,6 +69,11 @@ export function toOpenAiMessage(message: ChatMessage): Record<string, unknown> {
   return { role: message.role, content: message.content ?? "" };
 }
 
+/**
+ * Builds the JSON body of a chat completions request from a ChatRequest: the model, the messages,
+ * the stream flag, the sampling and token limits that the request sets, the tools with an optional
+ * tool choice, the JSON object response format in JSON mode, and `include_usage` for a stream.
+ */
 export function buildOpenAiChatBody(model: string, req: ChatRequest): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model,
@@ -109,6 +120,11 @@ function toolCallsOf(raw: unknown): ToolCall[] {
   return out;
 }
 
+/**
+ * Converts a non-streamed chat completions reply to a ChatResponse from its first choice. A tool
+ * call without an id gets `call_<index>`; a missing finish reason becomes `tool_calls` when there
+ * are calls, else `stop`. An empty text becomes null.
+ */
 export function parseOpenAiChatResponse(body: unknown, fallbackModel: string): ChatResponse {
   const rec = (body ?? {}) as Record<string, unknown>;
   const model = typeof rec.model === "string" && rec.model ? rec.model : fallbackModel;
@@ -172,6 +188,10 @@ export function pushOpenAiDelta(
   return { events, finish, usage };
 }
 
+/**
+ * Turns the tool calls assembled from stream deltas into `tool_call` events in index order. It
+ * skips a call with no name, gives a missing id `call_<position>` and a missing argument text `{}`.
+ */
 export function flushToolCalls(tools: Map<number, ToolBuild>): StreamEvent[] {
   const events: StreamEvent[] = [];
   const indexes = [...tools.keys()].sort((a, b) => a - b);
@@ -201,6 +221,12 @@ function openAiFrameError(payload: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * Turns the lines of a chat completions SSE stream into stream events: text as it arrives, then
+ * the assembled tool calls, then one `done` event with the finish reason and the usage. Throws a
+ * ModelError when a frame carries an error, or when the stream ends with neither a finish reason
+ * nor `[DONE]`.
+ */
 export async function* parseOpenAiSseLines(lines: AsyncIterable<string>): AsyncGenerator<StreamEvent> {
   const tools = new Map<number, ToolBuild>();
   let finish: string | undefined;

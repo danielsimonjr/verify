@@ -35,8 +35,10 @@ export const PI_TOOL_BINARY: Readonly<Record<string, string>> = { find: "fd", gr
 
 /** The path of each binary asked for, or null for one that could not be provided. */
 export type Provided = Record<string, string | null>;
+/** A function that makes the named binaries available and returns the path of each one. */
 export type Provide = (binaries: readonly string[]) => Promise<Provided>;
 
+/** The outcome of `PiTools.provide`: the tools that can run, and the tools left out. */
 export interface PiToolsResult {
   /** The tools to offer, in the order asked: those whose binary was provided, and those that need none. */
   tools: string;
@@ -44,6 +46,7 @@ export interface PiToolsResult {
   dropped: { tool: string; binary: string }[];
 }
 
+/** The harness side of the pi binary tools: it provides the binaries and seeds pi agent directories. */
 export interface PiTools {
   /** Provide the binaries the tools need, once per process, and name the tools that can run. */
   provide(tools: string): Promise<PiToolsResult>;
@@ -53,6 +56,11 @@ export interface PiTools {
 
 const exeSuffix = process.platform === "win32" ? ".exe" : "";
 
+/**
+ * Creates a PiTools from a `provide` function and the cache directory of the binaries. It asks the
+ * provider once for each binary, keeps the answer, leaves out a tool whose binary is null, and
+ * treats a provider that throws as one that provides nothing.
+ */
 export function makePiTools(opts: { provide: Provide; cacheDir: string }): PiTools {
   const memo = new Map<string, Promise<string | null>>();
 
@@ -113,6 +121,7 @@ const MANAGER_SCRIPT = [
 /** The whole of a download is bounded: pi's own limit is 120 s for the file and 10 s for each request. */
 const PROVIDE_TIMEOUT_MS = 300_000;
 
+/** The inputs of `provideWithPi`: a process runner, the path of pi's tool manager, the agent directory and the Node command. */
 export interface PiManagerOptions {
   run: (cmd: string, args: string[], opts: RunOptions) => Promise<RunResult>;
   /** pi's `dist/utils/tools-manager.js`. */

@@ -88,6 +88,7 @@ export const PI_CLI_JS = join(
 export const PI_HOME = join(HARNESS_DIR, "pi-home");
 
 export const BENCHES = ["apex", "wsb", "wb", "sb2", "jb"] as const;
+/** The name of one benchmark: a member of `BENCHES`. */
 export type Bench = (typeof BENCHES)[number];
 
 /**

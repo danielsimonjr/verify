@@ -29,9 +29,9 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFileAtomic } from "../fsutil.js";
-import { createBackend, type BackendDeps, type LocalModelConfig } from "./config.js";
+import { createBackend, DEFAULT_PI_MAX_TOKENS, type BackendDeps, type LocalModelConfig } from "./config.js";
 import {
-  PI_CONTEXT_RESERVE,
+  MIN_CONTEXT_WINDOW,
   contextTooSmallError,
   contextUnknownError,
   contextUnusableError,
@@ -51,12 +51,21 @@ const PING_TOOL = {
   parameters: { type: "object", properties: {}, additionalProperties: false },
 };
 
+/**
+ * Test seams and switches for `prepareLocalProvider`. `cache` turns the cache of a passed tool check on
+ * or off, `assumeTools` skips the test tool call when the server does not state tool support, and
+ * `now` replaces the clock that the cache reads.
+ */
 export interface PrepareDeps extends BackendDeps {
   cache?: boolean;
   assumeTools?: boolean;
   now?: () => number;
 }
 
+/**
+ * A checked local backend: the config, the backend, the model name the server reports, the probe with
+ * its tool result filled in, the pi provider record for it, and any warnings to show the user.
+ */
 export interface PreparedLocal {
   config: LocalModelConfig;
   backend: ModelBackend;
@@ -66,6 +75,11 @@ export interface PreparedLocal {
   warnings: string[];
 }
 
+/**
+ * Probe the backend for `config`, check its context window and its tool calling, and return a
+ * `PreparedLocal`. Throws a `ModelError` when the server is unreachable, the model is missing, the window
+ * is unknown or too small, or the model cannot call tools.
+ */
 export async function prepareLocalProvider(config: LocalModelConfig, deps: PrepareDeps = {}): Promise<PreparedLocal> {
   const backend = createBackend(config, deps);
   const probe = await backend.probe();
@@ -105,14 +119,14 @@ export function enforceContext(config: LocalModelConfig, probe: ProbeResult, war
     throw contextTooSmallError(config.provider, probe.model, have, want);
   }
   const window = want ?? have;
-  if (window <= PI_CONTEXT_RESERVE) {
+  if (window <= MIN_CONTEXT_WINDOW) {
     throw contextUnusableError(config.provider, probe.model, window);
   }
-  if (window < 8192) {
+  if (window < DEFAULT_PI_MAX_TOKENS) {
     warnings.push(
       `${config.provider} model '${probe.model}' is registered with a ${window}-token context. ` +
-        `pi withholds ${PI_CONTEXT_RESERVE} tokens plus the prompt from that window, so replies can be ` +
-        `cut to a few tokens and verifier tasks are long; raise it above 8192 ` +
+        `The task prompt, the tool results and a reply of up to ${DEFAULT_PI_MAX_TOKENS} tokens must fit in it, ` +
+        `and verifier tasks are long; raise it above ${DEFAULT_PI_MAX_TOKENS} ` +
         `(Ollama: OLLAMA_CONTEXT_LENGTH or a Modelfile num_ctx; llama-server: -c).`,
     );
   }

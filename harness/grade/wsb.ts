@@ -52,6 +52,10 @@ function parseEnvFile(): Record<string, string> {
   return env;
 }
 
+/**
+ * Send a one-token chat request to the judge endpoint named in the `.env` file of the benchmark.
+ * Returns "" when the judge answers with a success status and JSON, else a message that names the HTTP status or the network error.
+ */
 export async function preflight(): Promise<string> {
   const env = parseEnvFile();
   const url = env.JUDGE_BASE_URL ?? "";
@@ -198,6 +202,12 @@ function runJudge(stageRoot: string, workers: number, timeout: number): string {
   }
 }
 
+/**
+ * Grade a deliverables folder for the Workspace-Bench task `key`: stage the folder, its trace and
+ * the task metadata, run the agent-as-a-judge container once, and return the share of rubrics that passed.
+ * The score is null with an `error` when the metadata is missing, a link is found, or the judge fails.
+ * `opts.trace` overrides the default `trajectory/agent.json` beside the folder.
+ */
 export function grade(
   key: string,
   deliverables: string,
@@ -226,6 +236,12 @@ export function grade(
   }
 }
 
+/**
+ * Grade many Workspace-Bench deliverables with one judge container run. Each item is
+ * `[key, deliverables, trace]`; the result maps each `key` to its grade. An item with no metadata
+ * or with a link gets a null score and an error, and the other items still run.
+ * The judge uses at most `workers` workers.
+ */
 export function gradeBatch(
   items: [string, string, string | null][],
   workers = 8,

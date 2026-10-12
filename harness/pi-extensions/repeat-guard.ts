@@ -195,6 +195,22 @@ export const CHARS_PER_TOKEN = 3;
 /** A result is never cut below this: a model that gets a few lines can still tell what it asked for. */
 export const MIN_RESULT_CHARS = 1000;
 
+/**
+ * What a window at or below the compaction reserve means for a worker, or null when it has room. The room
+ * for results is the window less the reserve and the context, so at this window it is 0 and `capResult`
+ * cuts every result to MIN_RESULT_CHARS. Measured on a pi session with the window registered at 12288:
+ * 0 compactions, every result cut to about 1000 characters. pi has a cut point for a compaction only
+ * when the context holds more than the 20000 tokens that it keeps.
+ */
+export function noRoomWarning(window: number | undefined): string | null {
+  if (window === undefined || window > COMPACTION_RESERVE_TOKENS) return null;
+  return (
+    `the window of ${window} tokens is at or below the reserve of ${COMPACTION_RESERVE_TOKENS} that pi holds back ` +
+    `before it compacts, so no room is left for tool results: every result is cut to ${MIN_RESULT_CHARS} characters. ` +
+    `Use a window above ${COMPACTION_RESERVE_TOKENS}.`
+  );
+}
+
 /** A part of the content of a tool result. */
 export interface ResultPart {
   type: string;

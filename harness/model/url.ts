@@ -31,6 +31,10 @@ export function normalizeBaseUrl(raw: string): string {
   return out;
 }
 
+/**
+ * Normalize `baseUrl` and return the server root and its OpenAI-compatible `/v1` URL. A `baseUrl` that
+ * already ends in `/v1` is split; one that does not gets `/v1` appended for `openai`.
+ */
 export function apiRoots(baseUrl: string): { root: string; openai: string } {
   const trimmed = normalizeBaseUrl(baseUrl);
   if (trimmed.endsWith("/v1")) {

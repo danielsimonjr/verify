@@ -49,6 +49,10 @@ import {
   foldEvents,
 } from "./types.js";
 
+/**
+ * Settings of the Ollama HTTP client: an optional replacement fetch function, the request timeout
+ * in milliseconds, the number of retries and an optional delay between retries.
+ */
 export interface OllamaDeps {
   fetch?: FetchLike;
   timeoutMs: number;
@@ -56,6 +60,7 @@ export interface OllamaDeps {
   retryDelayMs?: number;
 }
 
+/** Returns true when `wanted` is in `names`; `name` and `name:latest` count as the same model. */
 export function ollamaModelPresent(names: string[], wanted: string): boolean {
   const has = (name: string) => names.some((n) => n === name);
   if (has(wanted)) return true;
@@ -79,12 +84,14 @@ export function parseOllamaIdentity(tags: unknown, wanted: string): ModelIdentit
   return undefined;
 }
 
+/** Reads the `num_ctx` value from the `parameters` text of `/api/show`; undefined when it has none. */
 export function parseOllamaNumCtx(parameters: unknown): number | undefined {
   if (typeof parameters !== "string") return undefined;
   const match = parameters.match(/(?:^|\n)\s*num_ctx\s+(\d+)/);
   return match ? Number(match[1]) : undefined;
 }
 
+/** Returns the largest number under a key that ends in `.context_length` in a model info object, or undefined. */
 export function parseOllamaContextLength(info: unknown): number | undefined {
   if (!info || typeof info !== "object") return undefined;
   let max = 0;
@@ -112,11 +119,20 @@ export function parseOllamaToolPlacement(template: unknown): "system" | "message
   return undefined;
 }
 
+/**
+ * Returns true when the `capabilities` list of `/api/show` includes `tools`, false when the list
+ * does not, and `unknown` when `capabilities` is not a list.
+ */
 export function parseOllamaToolCapability(capabilities: unknown): boolean | "unknown" {
   if (!Array.isArray(capabilities)) return "unknown";
   return capabilities.some((item) => String(item).toLowerCase() === "tools") ? true : false;
 }
 
+/**
+ * Builds the JSON body of an `/api/chat` request: the messages, the stream flag, the `options`
+ * (temperature, top_p, num_predict, num_ctx) that the request sets, the tools in OpenAI form with
+ * an optional tool choice, and `format: "json"` in JSON mode.
+ */
 export function buildOllamaChatBody(model: string, req: ChatRequest): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model,
@@ -205,6 +221,11 @@ export function parseOllamaRunningContext(body: unknown, wanted: string): number
   return undefined;
 }
 
+/**
+ * Converts a non-streamed `/api/chat` reply to a ChatResponse: the model (or `fallbackModel`), the
+ * text (null when empty), the tool calls, the finish reason and the token usage. A finish reason
+ * that the server omits becomes `tool_calls` when there are calls, else `stop`.
+ */
 export function parseOllamaChat(body: unknown, fallbackModel: string): ChatResponse {
   const rec = (body ?? {}) as Record<string, unknown>;
   const message = (rec.message ?? {}) as Record<string, unknown>;
@@ -237,6 +258,10 @@ function ollamaUsage(rec: Record<string, unknown>): TokenUsage | undefined {
   };
 }
 
+/**
+ * Reads one frame of a streamed `/api/chat` reply. Returns its text, its tool calls, whether it is
+ * the terminal frame (`done: true`), and its finish reason, usage and model when present.
+ */
 export function pushOllamaChunk(
   payload: unknown,
 ): { text: string; toolCalls: ToolCall[]; done: boolean; finish?: string; usage?: TokenUsage; model?: string } {
@@ -300,6 +325,11 @@ function accumulateToolCalls(acc: ToolCall[], incoming: ToolCall[], ids: ToolCal
   }
 }
 
+/**
+ * Turns the NDJSON lines of a streamed `/api/chat` reply into stream events: text as it arrives,
+ * then the merged tool calls, then one `done` event. A line that is not JSON is skipped. Throws a
+ * ModelError when a frame carries an error or the stream ends without a `done: true` frame.
+ */
 export async function* parseOllamaNdjson(lines: AsyncIterable<string>): AsyncGenerator<StreamEvent> {
   let finish: string | undefined;
   let usage: TokenUsage | undefined;
@@ -340,6 +370,10 @@ export async function* parseOllamaNdjson(lines: AsyncIterable<string>): AsyncGen
   yield { type: "done", finishReason: finish ?? (toolCalls.length ? "tool_calls" : undefined), usage };
 }
 
+/**
+ * ModelBackend for the Ollama native API. `probe` checks that the model is pulled and reads its
+ * capabilities and context size; `complete` and `stream` send chat requests to `/api/chat`.
+ */
 export class OllamaBackend implements ModelBackend {
   readonly id = "ollama" as const;
   readonly model: string;

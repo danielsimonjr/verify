@@ -146,6 +146,7 @@ export function progressIntervalMs(env: NodeJS.ProcessEnv = process.env): number
   return sec > 0 ? Math.round(sec * 1000) : 60_000;
 }
 
+/** The outcome of `runWithBudget`: exit code, timeout flag and the tail of stderr. */
 export interface BudgetedRun {
   /** Exit code; null when the process was killed or never started. */
   code: number | null;
@@ -158,6 +159,10 @@ export interface BudgetedRun {
   spawnError?: string;
 }
 
+/**
+ * The settings of `runWithBudget`: the working folder, the environment and the time budget,
+ * plus optional stdin text, a stdout file, a kill hook and a heartbeat callback.
+ */
 export interface BudgetedRunOptions {
   cwd: string;
   env: NodeJS.ProcessEnv;

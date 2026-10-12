@@ -61,6 +61,11 @@ function rewardOf(reward: unknown, where: string): number {
 
 const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
+/**
+ * Yields one task for each index entry of the pool in the code, office and web domains: the
+ * instruction as spec, the environment tree, a link to the task repository, and one rollout for
+ * each seed that has a reward and a run directory. The reward is the rollout score.
+ */
 export function* iterTasks(pool: string): Generator<Task> {
   const index = readJsonStrict<Record<string, Record<string, Record<string, { dir?: string; reward?: unknown } | null>>>>(
     wbIndex(),

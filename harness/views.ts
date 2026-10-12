@@ -50,6 +50,7 @@ export const VIEW_SUFFIXES = [".cells.tsv", ".text.txt"] as const;
 export const INSTRUMENT_SUFFIXES = [".pre-recalc.xlsx", ".recalc.xlsx"] as const;
 export const TEXT_VIEW_CAP = 400_000;
 
+/** True when the file name ends with a view suffix or an instrument suffix: a file the harness made, not an artifact. */
 export function isView(name: string): boolean {
   return (
     VIEW_SUFFIXES.some((s) => name.endsWith(s)) ||
@@ -169,6 +170,11 @@ function fileExtLower(fn: string): string {
   return idx >= 0 ? low.slice(idx) : "";
 }
 
+/**
+ * Write a text view beside each artifact below `root`: `<name>.cells.tsv` for a spreadsheet and
+ * `<name>.text.txt` for a .docx, .pptx or .pdf file. Links are not followed. An existing view is kept,
+ * except a stale cells view or any cells view when `refresh` is true. Returns the number of views written.
+ */
 export async function renderViews(root: string, refresh = false): Promise<number> {
   const pending: Promise<boolean>[] = [];
 

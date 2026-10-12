@@ -89,12 +89,12 @@ describe("registered context window [4178394609, 4178394627]", () => {
     expect(() => buildPiProvider(config, "qwen", 0)).toThrow(/verified context window/);
   });
 
-  test("pi's 4096-token reserve: every window at or below it is refused, one above it is registered", async () => {
+  test("the window floor of 4096 tokens: every window at or below it is refused, one above it is registered", async () => {
     for (const window of [1, 2048, 4095, 4096]) {
       const mock = ollamaServer({ show: { parameters: `num_ctx ${window}` } });
       await expect(prepareLocalProvider(ollamaConfig(), { fetch: mock.fetch, ...quiet })).rejects.toMatchObject({
         code: "unsupported",
-        message: expect.stringContaining("reserves 4096 tokens"),
+        message: expect.stringContaining("cannot hold a verifier task"),
       });
     }
     const mock = ollamaServer({ show: { parameters: "num_ctx 4097" } });
@@ -103,7 +103,7 @@ describe("registered context window [4178394609, 4178394627]", () => {
     expect(prepared.warnings.join(" ")).toContain("4097");
   });
 
-  test("the reserve check uses the window pi will get: the requested size when given, else the server's", async () => {
+  test("the floor check uses the window pi will get: the requested size when given, else the server's", async () => {
     const big = () => ollamaServer({ show: { parameters: "num_ctx 32768" } });
     await expect(prepareLocalProvider(ollamaConfig({ contextSize: 4096 }), { fetch: big().fetch, ...quiet })).rejects.toThrow(
       /4096-token context window/,
@@ -117,8 +117,10 @@ describe("registered context window [4178394609, 4178394627]", () => {
     const prepared = await prepareLocalProvider(ollamaConfig(), { fetch: mock.fetch, ...quiet });
     const warning = prepared.warnings.join(" ");
     expect(warning).toContain("5000");
-    expect(warning).toContain("4096");
+    expect(warning).toContain("8192");
     expect(warning).not.toContain("pi can run that");
+    // pi 0.84.4 holds back no 4096 tokens: the warning must not say so.
+    expect(warning).not.toContain("withholds");
   });
 
   test("llama-server: a 4096-token n_ctx is refused the same way", async () => {
@@ -139,6 +141,6 @@ describe("registered context window [4178394609, 4178394627]", () => {
         resolveLocalConfig({ provider: "llamacpp", model: "model.gguf", retries: 0, timeoutMs: 1000, env: {} }),
         { fetch: mock.fetch, ...quiet },
       ),
-    ).rejects.toThrow(/reserves 4096 tokens/);
+    ).rejects.toThrow(/cannot hold a verifier task/);
   });
 });

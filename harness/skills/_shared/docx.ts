@@ -82,6 +82,10 @@ const shownName = (name: string) => (BUILT_IN_STYLES.has(name) ? name[0].toUpper
 /** Paragraph style names by id, and the name of the default paragraph style ("" if none). */
 export type ParagraphStyles = { byId: Map<string, string>; fallback: string };
 
+/**
+ * Read `word/styles.xml` of the package and return its paragraph styles. Built-in names such as
+ * "heading 1" are capitalised, as python-docx shows them.
+ */
 export async function paragraphStyles(zip: JSZip): Promise<ParagraphStyles> {
   const byId = new Map<string, string>();
   let fallback = "";

@@ -43,6 +43,7 @@ const TASKS_URL =
   "https://huggingface.co/datasets/mercor/apex-agents/resolve/main/tasks_and_rubrics.json";
 const FETCH_TIMEOUT_MS = 60_000;
 
+/** One task record of the APEX task list: its id, its domain name and its prompt text. */
 export type ApexTask = { task_id: string; domain: string; prompt: string };
 
 /**
@@ -55,6 +56,10 @@ export function defaultCachePath(): string {
   return env && env.length > 0 ? env : join(DATA, "_cache", "apex-tasks_and_rubrics.json");
 }
 
+/**
+ * Options of `loadTasks`: a replacement fetch function, a cache file path and a Hugging Face token.
+ * Each one is optional and has a default.
+ */
 export type TasksSource = {
   fetchImpl?: typeof fetch;
   cachePath?: string;

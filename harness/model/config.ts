@@ -14,7 +14,7 @@
 
 import type { FetchLike } from "./http.js";
 import { LlamaCppBackend } from "./llamacpp.js";
-import { PI_CONTEXT_RESERVE } from "./messages.js";
+import { MIN_CONTEXT_WINDOW } from "./messages.js";
 import { OllamaBackend } from "./ollama.js";
 import type { LocalProviderId, ModelBackend } from "./types.js";
 import { normalizeBaseUrl } from "./url.js";
@@ -47,6 +47,10 @@ export const DEFAULT_PI_MAX_TOKENS = 8192;
  */
 export const WORKER_SAMPLING = { temperature: 0.6 } as const;
 
+/**
+ * A fully resolved local-model setting: the provider is canonical, the model and base URL are set, and
+ * the timeout and retry count have values.
+ */
 export interface LocalModelConfig {
   provider: LocalProviderId;
   model: string;
@@ -61,6 +65,10 @@ export interface LocalModelConfig {
   retries: number;
 }
 
+/**
+ * The raw, partly filled setting that `resolveLocalConfig` accepts. Every field is optional: an unset
+ * field falls back to its `VERIHARNESS_*` environment variable in `env`, then to a default.
+ */
 export interface LocalModelInput {
   provider?: string;
   model?: string;
@@ -83,23 +91,28 @@ export type ContextSize = number | "auto";
 
 /**
  * Parse a `--context-size` value. `auto` in any case returns `"auto"`. A number must be a whole number
- * above PI_CONTEXT_RESERVE (4096): pi withholds that many tokens, so a smaller window holds no prompt.
+ * above MIN_CONTEXT_WINDOW (4096): a window at or below it holds no verifier task.
  */
 export function parseContextSize(raw: string | undefined, name: string): ContextSize | undefined {
   if (raw === undefined || raw === "") return undefined;
   if (raw.trim().toLowerCase() === "auto") return "auto";
   const n = Number(raw);
-  if (!Number.isInteger(n) || n <= PI_CONTEXT_RESERVE) {
-    throw new Error(`${name} must be 'auto' or a whole number above ${PI_CONTEXT_RESERVE}, not '${raw}'`);
+  if (!Number.isInteger(n) || n <= MIN_CONTEXT_WINDOW) {
+    throw new Error(`${name} must be 'auto' or a whole number above ${MIN_CONTEXT_WINDOW}, not '${raw}'`);
   }
   return n;
 }
 
+/** Test seams for `createBackend`: a replacement `fetch`, and the base delay in milliseconds between retries. */
 export interface BackendDeps {
   fetch?: FetchLike;
   retryDelayMs?: number;
 }
 
+/**
+ * Map a provider name to `ollama` or `llamacpp`, ignoring case and outer spaces. Accepts `llama.cpp`,
+ * `llama-cpp` and `llama_cpp` for `llamacpp`. Returns `undefined` for any other name.
+ */
 export function canonicalLocalProvider(name: string | undefined): LocalProviderId | undefined {
   const n = name?.trim().toLowerCase();
   if (n === "ollama") return "ollama";
@@ -107,10 +120,16 @@ export function canonicalLocalProvider(name: string | undefined): LocalProviderI
   return undefined;
 }
 
+/** Return true when `name` is a local provider name that `canonicalLocalProvider` accepts. */
 export function isLocalProvider(name: string | undefined): name is LocalProviderId {
   return canonicalLocalProvider(name) !== undefined;
 }
 
+/**
+ * Turn a `LocalModelInput` into a `LocalModelConfig`. Each value comes from the input, then from its
+ * `VERIHARNESS_*` environment variable, then from a default. Throws when the provider is not local,
+ * the model is empty, or a number is invalid.
+ */
 export function resolveLocalConfig(input: LocalModelInput): LocalModelConfig {
   const provider = canonicalLocalProvider(input.provider);
   if (!provider) {
@@ -149,6 +168,10 @@ export function resolveLocalConfig(input: LocalModelInput): LocalModelConfig {
   };
 }
 
+/**
+ * Build the `OllamaBackend` or the `LlamaCppBackend` for `config.provider`, with the config's timeout and
+ * retry count. Ollama gets the base URL without a trailing `/v1`.
+ */
 export function createBackend(config: LocalModelConfig, deps: BackendDeps = {}): ModelBackend {
   const http = {
     fetch: deps.fetch,

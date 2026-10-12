@@ -67,6 +67,10 @@ function firstTruthy(...vs: unknown[]): unknown {
   return vs.find(truthy) ?? vs[vs.length - 1];
 }
 
+/**
+ * Renders OpenAI-style chat messages as `<role>` text blocks that hold the reasoning, the content,
+ * the tool calls and the name of a tool result. It skips system messages and messages with no text.
+ */
 export function renderOpenaiMessages(messages: Record<string, unknown>[]): string {
   const out: string[] = [];
   for (const m of messages) {
@@ -91,6 +95,10 @@ export function renderOpenaiMessages(messages: Record<string, unknown>[]): strin
   return out.join("\n\n");
 }
 
+/**
+ * Renders opencode event lines (one JSON object per line) as `<tool NAME>`, `<assistant>` and
+ * `<thinking>` text blocks. It skips a line that is not a JSON object and an event with no text.
+ */
 export function renderOpencodeEvents(lines: string[]): string {
   const out: string[] = [];
   for (const line of lines) {
@@ -120,6 +128,11 @@ export function renderOpencodeEvents(lines: string[]): string {
   return out.join("\n\n");
 }
 
+/**
+ * Reads the tool results from the raw CLI output of a run (`agent/cbc-output.txt`, else
+ * `agent/cc-output.txt`). Returns the result text by tool_use_id, with a `[tool reported an error]`
+ * prefix on an error result. The map is empty when neither file can be read.
+ */
 export function wbToolResults(runDir: string): Record<string, string> {
   let raw: string | null = null;
   for (const name of ["cbc-output.txt", "cc-output.txt"]) {
@@ -168,6 +181,11 @@ export function wbToolResults(runDir: string): Record<string, string> {
   return out;
 }
 
+/**
+ * Renders the steps of an ATIF trajectory (an object with `steps`, or the list itself) as
+ * `<source step_id>` text blocks of reasoning, message, tool calls and tool results. A tool result
+ * comes from the call itself, else from `results` by the id of the call.
+ */
 export function renderAtifSteps(
   traj: unknown,
   results: Record<string, string> = {},
@@ -208,6 +226,10 @@ export function renderAtifSteps(
   return out.join("\n\n");
 }
 
+/**
+ * Renders the `trace.executionTrace` of the wsb agent JSON file `f` as `<tool>` and `<role>` text
+ * blocks. Returns a `(trajectory unreadable: ...)` line when the file cannot be read or parsed.
+ */
 export function renderWsbTraj(f: string): string {
   try {
     const tr = (JSON.parse(readText(f, "utf8")) as Record<string, unknown>).trace ?? {};
@@ -236,6 +258,11 @@ export function renderWsbTraj(f: string): string {
 
 const SB2_OPAQUE = new Set([...OPAQUE, "tool_calls"]);
 
+/**
+ * Renders the `history` of the sb2 trajectory JSON file `f` as `<role>` text blocks of thought,
+ * action and content, without the system prompt. Returns a `(trajectory unreadable: ...)` line when
+ * the file cannot be read or parsed.
+ */
 export function renderSb2Traj(f: string): string {
   try {
     const h = (JSON.parse(readText(f, "utf8")) as Record<string, unknown>).history ?? [];

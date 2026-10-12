@@ -168,6 +168,8 @@ def _result(det: dict) -> dict:
 
 
 def main() -> int:
+  """Read a JSON payload (`data`, `cat`, `outputs_dir`) from the file in argv[1] or from stdin,
+  grade it, and print the result as one JSON line. Return 0."""
   if len(sys.argv) > 1:
     payload = json.loads(Path(sys.argv[1]).read_text())
   else:

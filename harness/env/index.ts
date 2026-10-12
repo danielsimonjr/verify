@@ -34,6 +34,7 @@ const DEFAULT_IMAGES: Record<string, string> = {
 const uid = (): number => process.getuid?.() ?? 0;
 const gid = (): number => process.getgid?.() ?? 0;
 
+/** True when `docker info` exits 0 within 30 seconds. False when docker is missing, fails or times out. */
 export function dockerAvailable(): boolean {
   try {
     const r = spawnSync("docker", ["info"], { encoding: "utf8", timeout: 30_000 });
@@ -74,6 +75,12 @@ export function wbTaskName(wsPath: string): string {
   return partition(name, "__")[1] || name;
 }
 
+/**
+ * The Docker image that runs the workspace `ws`, or null when no native environment is usable.
+ * The result is null when docker is unavailable. The `VERIHARNESS_IMAGE_<BENCH>` variable wins;
+ * a `wb` workspace uses its derived `vh/` image, else its exported base image; the other
+ * benchmarks use a default image if it exists locally.
+ */
 export function imageFor(ws: string): string | null {
   if (!dockerAvailable()) return null;
   const wsPath = resolve(ws);
@@ -92,6 +99,11 @@ export function imageFor(ws: string): string | null {
   return image && imageExists(image) ? image : null;
 }
 
+/**
+ * A Docker container environment for one task workspace. `wrap` rewrites a command into a
+ * `docker run` command with the workspace, skills, vendor and pi directories mounted; `kill`
+ * removes a container by name.
+ */
 export class Native {
   readonly ws: string;
   readonly image: string;

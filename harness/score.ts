@@ -362,6 +362,12 @@ function positiveInt(raw: string | undefined): number | null {
   return raw === undefined ? null : (parseCount(raw.trim(), 1) ?? null);
 }
 
+/**
+ * Run `veriharness score`: score one cell folder (`<bench>_<pool>`). Regrade each finished task
+ * with the benchmark grader, append each row to `scores.partial.jsonl` so a run can resume, then
+ * write `scores.json` and print the summary. Returns 0, or 2 for bad arguments or a failed grader preflight.
+ * `deps` replaces the data root and the grader, for tests.
+ */
 export async function main(argv: string[] = process.argv.slice(2), deps: Partial<ScoreDeps> = {}): Promise<number> {
   const dataRoot = deps.dataRoot ?? config.DATA;
   const grade = deps.grade ?? DEFAULT_GRADE;

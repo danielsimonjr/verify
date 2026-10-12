@@ -30,6 +30,10 @@ const ADAPTERS: Record<Bench, () => Promise<{ POOLS: Record<string, unknown>; it
   jb: () => import("./jb.js"),
 };
 
+/**
+ * Runs the materialization CLI for `<bench> [--pool P] [--only KEY] [--limit N]`. Returns exit code
+ * 2 for an unknown bench or a usage error, else the exit code of `runCli`.
+ */
 export async function main(argv: string[]): Promise<number> {
   const bench = argv[0];
   if (!bench || !BENCHES.includes(bench as Bench)) {

@@ -164,7 +164,8 @@ peak in its stderr line. A rollout with a compaction ends as `compacted`: its de
 the batch with the results of its tools did not fit under that point. `--retries` runs it again, and
 the deliverable of the attempt before is kept in `trajectory/attempt-N/deliverables/`. Make the batches
 smaller if it repeats. `--allow-compaction` accepts such a rollout. A window at or below the reserve
-makes every rollout compact, and `workers` writes a warning before it starts.
+leaves no room for tool results: the guard cuts every result to 1000 characters (measured at a window of
+12288: 0 compactions, every result cut), and `workers` writes a warning before it starts.
 Compaction caps `peakContext`, so the suggested `--item-tokens` of a compacted rollout is a lower
 bound: the line says "at least".
 

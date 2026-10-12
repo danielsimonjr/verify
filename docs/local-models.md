@@ -34,7 +34,7 @@ The harness probes Ollama's native API (`/api/tags`, `/api/show`, `/api/ps`, `/a
 
 ### Context length
 
-pi 0.84.4 subtracts a 4096-token reserve from the registered context window before it will generate, so a window of 4096 or less cannot run a turn. The harness reads the effective window from the server and refuses to invent one (there is no silent 32768 default).
+The harness refuses a window of 4096 tokens or less: it cannot hold a verifier task and a reply. Above that, `workers` also warns when the window is at or below 16384 tokens, the reserve that pi holds back before it compacts: no room is left for tool results, and the repeat guard cuts every result to 1000 characters. The harness reads the effective window from the server and refuses to invent one (there is no silent 32768 default).
 
 For Ollama, a model that is already loaded reports its effective window as `context_length` on `GET /api/ps`. That value wins, because it is the window the process is actually using. Otherwise the harness reads the `num_ctx` parameter from `ollama show`. The architecture `context_length` inside `model_info` is the model's maximum, not the window the server will use, so it is ignored. If neither source is present, preflight fails:
 
@@ -271,7 +271,7 @@ line, and the worker record has `droppedTools`.
 | `does not support tool calling` | The verifier cannot use this model. Pick one with tools, or restart llama-server with `--jinja`. |
 | `not JSON` | JSON mode was requested and the body was not a JSON value. The text is discarded. |
 | `does not advertise num_ctx` / `did not report n_ctx` | The server did not say how large the context is. Set it and retry. The harness does not assume 32768. |
-| `4096 or less` | pi reserves 4096 tokens, so that window cannot generate a reply. |
+| `4096 or less` | A window of 4096 tokens or less cannot hold a verifier task and a reply. |
 | `num_ctx` / `context` too small | The server is configured with a shorter window than `--context-size`. |
 
 Transient HTTP statuses (408, 429, 500, 502, 503, 504) and connection resets are retried. `VERIHARNESS_MODEL_RETRIES` is the extra attempt count (default 2). A model that answered a required tool call is remembered for six hours under the system temp directory so a batch does not repeat the probe. Failures are not cached. Set `VERIHARNESS_MODEL_CACHE=0` to probe every time.

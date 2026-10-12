@@ -202,6 +202,12 @@ async function proxyUrl(): Promise<string> {
   throw new Error(`judge proxy did not come up; see ${pdir}/proxy.log`);
 }
 
+/**
+ * Grade a WorkBuddy deliverables folder for the task `key` (`<domain>__<task>`). Copy the folder,
+ * run the Python driver `wb.py` under the benchmark's own python, and return the `VH_RESULT` result
+ * it prints. The result has `score: null` and an `error` when the key, the folder or the image is missing, or the driver fails.
+ * `opts.keep` keeps the temp folder and puts its path in `detail.kept`.
+ */
 export async function grade(
   key: string,
   deliverables: string,

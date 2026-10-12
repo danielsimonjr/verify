@@ -4,6 +4,20 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.15] - 2026-10-12
+
+### Fixed
+- The window warning of `workers` said that a window at or below 16384 tokens makes every rollout
+  compact. A pi session with the window registered at 12288 had 0 compactions, and the guard cut each of
+  its tool results to 1000 characters. The warning now says that (`noRoomWarning`).
+- `PI_CONTEXT_RESERVE` stated that pi withholds 4096 tokens. pi 0.84.4 holds back none at that size; the
+  one reserve it has is the compaction reserve of 16384 tokens. The constant is `MIN_CONTEXT_WINDOW`, a
+  floor of the harness, and the error, the warning and the docs say what it is. The floor is the same:
+  a window of 4096 tokens or less is refused.
+
+### Changed
+- Every exported symbol of the harness has a doc comment (154 had none), and the doc gate passes.
+
 ## [0.12.14] - 2026-10-12
 
 ### Added

@@ -85,6 +85,11 @@ function taskInstructions(ds: string): { prof: string; tn: string; td: string; i
   return out;
 }
 
+/**
+ * Yields one task for each JobBench task folder that has an instructions file: the instructions as
+ * spec, the task folder and the optional search files as trees, and one rollout for each pool label
+ * that has a judge file. A rollout score is the judge total score divided by its maximum score.
+ */
 export function* iterTasks(pool: string): Generator<Task> {
   const labels = POOLS[pool]!;
   const { ds, judgeRoot, trajRoot, outputRoot } = jbPaths();

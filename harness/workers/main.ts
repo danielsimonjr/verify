@@ -29,7 +29,7 @@ import { canonicalLocalProvider, parseContextSize, resolveLocalConfig, WORKER_SA
 import { prepareLocalProvider } from "../model/prepare.js";
 import type { PiProviderRecord } from "../model/pi.js";
 import { describeIdentity } from "../model/types.js";
-import { COMPACTION_RESERVE_TOKENS } from "../pi-extensions/repeat-guard.js";
+import { COMPACTION_RESERVE_TOKENS, noRoomWarning } from "../pi-extensions/repeat-guard.js";
 import { isMain } from "../runtime.js";
 import type { WorkerRecord } from "./record.js";
 import { unsupportedKeywords } from "./schema.js";
@@ -330,12 +330,8 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Workers
       );
       if (caps.identity) workerModel.identity = caps.identity;
       windowTokens = config.contextSize ?? caps.contextSize;
-      if (windowTokens !== undefined && windowTokens <= COMPACTION_RESERVE_TOKENS) {
-        process.stderr.write(
-          `workers: the window of ${windowTokens} tokens is at or below the reserve of ${COMPACTION_RESERVE_TOKENS}: ` +
-            `pi compacts above the window less ${COMPACTION_RESERVE_TOKENS} tokens, so every rollout compacts and ends as compacted\n`,
-        );
-      }
+      const noRoom = noRoomWarning(windowTokens);
+      if (noRoom !== null) process.stderr.write(`workers: ${noRoom}\n`);
       // A limit that came from the environment is the user's as much as one from --max-tokens, so the
       // worker does not derive a cap over it.
       if (config.maxTokens !== undefined) workerModel.maxTokens = config.maxTokens;

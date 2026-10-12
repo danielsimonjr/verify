@@ -22,6 +22,7 @@
 
 export type LocalProviderId = "ollama" | "llamacpp";
 
+/** The class of a `ModelError`: why a call to a local model server failed. */
 export type ModelErrorCode =
   | "unreachable"
   | "model_missing"
@@ -30,6 +31,7 @@ export type ModelErrorCode =
   | "http"
   | "bad_response";
 
+/** The error that the model layer throws. `provider` names the backend and `code` gives the class of failure. */
 export class ModelError extends Error {
   readonly code: ModelErrorCode;
   readonly provider: string;
@@ -42,6 +44,7 @@ export class ModelError extends Error {
   }
 }
 
+/** One tool call that the model made: a call `id`, the tool `name`, and its arguments. */
 export interface ToolCall {
   id: string;
   name: string;
@@ -49,12 +52,17 @@ export interface ToolCall {
   arguments: string;
 }
 
+/** A tool that a request offers to the model: its `name`, an optional `description`, and a JSON Schema for its `parameters`. */
 export interface ToolSpec {
   name: string;
   description?: string;
   parameters: Record<string, unknown>;
 }
 
+/**
+ * One message of a chat. An `assistant` message may carry `toolCalls`; a `tool` message answers one call
+ * and sets `toolCallId`. `content` is `null` when a message holds only tool calls.
+ */
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
@@ -63,8 +71,10 @@ export interface ChatMessage {
   name?: string;
 }
 
+/** Whether the model may call a tool (`auto`), must not (`none`), or must call at least one (`required`). */
 export type ToolChoice = "auto" | "none" | "required";
 
+/** One chat request to a backend: the messages, the tools on offer, and the sampling and limit settings. */
 export interface ChatRequest {
   messages: ChatMessage[];
   tools?: ToolSpec[];
@@ -80,11 +90,13 @@ export interface ChatRequest {
   timeoutMs?: number;
 }
 
+/** The token counts of one reply: tokens read from the prompt and tokens written. */
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
 }
 
+/** A complete reply: the model name, the assistant `message`, the `finishReason`, and the `usage` when the server reports it. */
 export interface ChatResponse {
   model: string;
   message: ChatMessage;
@@ -92,6 +104,7 @@ export interface ChatResponse {
   usage?: TokenUsage;
 }
 
+/** One event of a streamed reply: a piece of text, a finished tool call, or the last event with the finish reason and usage. */
 export type StreamEvent =
   | { type: "text"; text: string }
   | { type: "tool_call"; toolCall: ToolCall }
@@ -114,6 +127,10 @@ export function describeIdentity(identity: ModelIdentity | undefined): string {
   return ` digest=${identity.digest}${identity.quantization ? ` quantization=${identity.quantization}` : ""}`;
 }
 
+/**
+ * What a probe found out about a model: tool and JSON-mode support, the context window and where it came
+ * from, the identity, and the tool-list placement.
+ */
 export interface Capabilities {
   /** `unknown` means the server did not say; a required tool call is the check. */
   tools: boolean | "unknown";
@@ -132,6 +149,7 @@ export interface Capabilities {
   toolList?: "system" | "message";
 }
 
+/** What a backend's `probe` returns: the model name it resolved, the capabilities it found, and the model names on the server. */
 export interface ProbeResult {
   model: string;
   capabilities: Capabilities;
@@ -139,6 +157,10 @@ export interface ProbeResult {
   models: string[];
 }
 
+/**
+ * A client for one local model server and one model. `probe` reads the server's capabilities,
+ * `complete` returns a whole reply, and `stream` yields the reply as events.
+ */
 export interface ModelBackend {
   readonly id: LocalProviderId;
   readonly model: string;
@@ -148,12 +170,18 @@ export interface ModelBackend {
   stream(req: ChatRequest): AsyncIterable<StreamEvent>;
 }
 
+/** Return tool-call arguments as JSON text: a string unchanged, `{}` for a missing value, and `JSON.stringify` of anything else. */
 export function argumentsToJson(value: unknown): string {
   if (typeof value === "string") return value;
   if (value === undefined || value === null) return "{}";
   return JSON.stringify(value);
 }
 
+/**
+ * Join stream events into one `ChatResponse`. Text events become the content, tool-call events become
+ * `toolCalls`, and the `done` event gives the finish reason and usage. A reply with tool calls and the
+ * reason `stop` gets the reason `tool_calls`.
+ */
 export function foldEvents(model: string, events: StreamEvent[]): ChatResponse {
   let text = "";
   const toolCalls: ToolCall[] = [];
@@ -180,6 +208,10 @@ export function foldEvents(model: string, events: StreamEvent[]): ChatResponse {
   };
 }
 
+/**
+ * Throw a `bad_response` `ModelError` when `content` is not valid JSON, after a request that asked for
+ * JSON mode. The message holds the first 200 characters.
+ */
 export function assertJsonContent(provider: string, content: string | null): void {
   const text = (content ?? "").trim();
   try {
@@ -194,6 +226,10 @@ export function assertJsonContent(provider: string, content: string | null): voi
   }
 }
 
+/**
+ * Throw an `unsupported` `ModelError` when the request offered tools with `toolChoice` `required` and the
+ * response holds no tool call.
+ */
 export function assertRequiredTools(provider: string, req: ChatRequest, response: ChatResponse): void {
   if (!req.tools?.length || req.toolChoice !== "required") return;
   if (response.message.toolCalls?.length) return;

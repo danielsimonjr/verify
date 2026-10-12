@@ -131,6 +131,10 @@ export async function* iteratePool<T, R>(
   if (failure) throw (failure as { error: unknown }).error;
 }
 
+/**
+ * Like `mapPool`, but every item runs to its end. The result holds one settled outcome per item,
+ * in input order: `fulfilled` with the value, or `rejected` with the reason. This call does not reject.
+ */
 export async function mapPoolSettled<T, R>(
   items: T[],
   concurrency: number,

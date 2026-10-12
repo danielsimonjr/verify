@@ -15,6 +15,10 @@
 import { errorText, TransportError } from "./http.js";
 import { ModelError, type ChatRequest, type LocalProviderId } from "./types.js";
 
+/**
+ * Build the `unreachable` error for a server that does not answer. The message tells how to start Ollama
+ * or llama-server and ends with `detail`.
+ */
 export function unreachableError(provider: LocalProviderId, baseUrl: string, detail: string): ModelError {
   const hint =
     provider === "ollama"
@@ -26,6 +30,7 @@ export function unreachableError(provider: LocalProviderId, baseUrl: string, det
   return new ModelError(provider, "unreachable", `${hint} (${detail})`);
 }
 
+/** Build the `timeout` error: `detail` plus a hint to raise `--request-timeout` or `VERIHARNESS_MODEL_TIMEOUT`. */
 export function timeoutError(provider: LocalProviderId, detail: string): ModelError {
   return new ModelError(
     provider,
@@ -34,6 +39,10 @@ export function timeoutError(provider: LocalProviderId, detail: string): ModelEr
   );
 }
 
+/**
+ * Build the `model_missing` error for a model the server does not have, with the command that pulls or
+ * serves it. `extra` is added to the llama-server message only.
+ */
 export function modelMissingError(provider: LocalProviderId, model: string, baseUrl: string, extra?: string): ModelError {
   const hint =
     provider === "ollama"
@@ -45,6 +54,10 @@ export function modelMissingError(provider: LocalProviderId, model: string, base
   return new ModelError(provider, "model_missing", hint);
 }
 
+/**
+ * Build the `unsupported` error for a model that cannot call tools, with the fix for Ollama or
+ * llama-server. `detail` is the server's own text, added at the end.
+ */
 export function toolsUnsupportedError(provider: LocalProviderId, model: string, detail?: string): ModelError {
   const why = detail ? ` Server said: ${detail}` : "";
   const hint =
@@ -57,6 +70,10 @@ export function toolsUnsupportedError(provider: LocalProviderId, model: string, 
   return new ModelError(provider, "unsupported", `${hint}${why}`);
 }
 
+/**
+ * Build the `unsupported` error for a request that asked for JSON mode on a model that has none.
+ * `detail` is the server's own text, added at the end.
+ */
 export function jsonUnsupportedError(provider: LocalProviderId, model: string, detail?: string): ModelError {
   const why = detail ? ` Server said: ${detail}` : "";
   return new ModelError(
@@ -67,6 +84,10 @@ export function jsonUnsupportedError(provider: LocalProviderId, model: string, d
   );
 }
 
+/**
+ * Build the `unsupported` error for a server that does not report a context window. The message tells
+ * how to set one. `want` is the requested `--context-size`, named in the message when given.
+ */
 export function contextUnknownError(provider: LocalProviderId, model: string, want?: number): ModelError {
   if (provider === "ollama") {
     const asked = want === undefined ? "" : ` --context-size ${want} cannot be guaranteed.`;
@@ -92,9 +113,14 @@ export function contextUnknownError(provider: LocalProviderId, model: string, wa
   );
 }
 
-/** pi 0.84.4 withholds this many tokens, so a window at or below the reserve cannot generate. */
-export const PI_CONTEXT_RESERVE = 4096;
+/**
+ * The smallest window the harness registers: a window at or below it holds no verifier task, because the
+ * task prompt and one reply cannot both fit. It is a floor of the harness. pi 0.84.4 holds back no tokens
+ * at this size; the one reserve it has is COMPACTION_RESERVE_TOKENS (16384), in the repeat guard.
+ */
+export const MIN_CONTEXT_WINDOW = 4096;
 
+/** Build the `unsupported` error for a context `window` at or below `MIN_CONTEXT_WINDOW`, with the way to raise it. */
 export function contextUnusableError(provider: LocalProviderId, model: string, window: number): ModelError {
   const how =
     provider === "ollama"
@@ -104,10 +130,11 @@ export function contextUnusableError(provider: LocalProviderId, model: string, w
     provider,
     "unsupported",
     `${provider} model '${model}' would be registered with a ${window}-token context window. ` +
-      `pi 0.84.4 reserves 4096 tokens, so a window of 4096 or less leaves no room for a reply. ${how}`,
+      `A window of ${MIN_CONTEXT_WINDOW} tokens or less cannot hold a verifier task and a reply. ${how}`,
   );
 }
 
+/** Build the `unsupported` error for a server whose context `have` is below the requested `want`, with the way to raise it. */
 export function contextTooSmallError(
   provider: LocalProviderId,
   model: string,
@@ -129,6 +156,11 @@ const TOOL_UNSUPPORTED = /tool/;
 const TOOL_REASON = /not support|does not support|unsupported|unavailable|jinja/;
 const JSON_UNSUPPORTED = /response_format|json mode|json_object|does not support json|unsupported json/;
 
+/**
+ * Map a failed HTTP response to a `ModelError`. A 404, or a "model ... not found" text, gives
+ * `model_missing`. A text that names a tool as unsupported gives `unsupported` for tools. A text that
+ * names JSON mode gives `unsupported` for JSON. Any other response gives an `http` error.
+ */
 export function httpFailure(
   provider: LocalProviderId,
   model: string,
@@ -151,12 +183,18 @@ export function httpFailure(
   return new ModelError(provider, "http", `${provider} request failed (HTTP ${status}) at ${baseUrl}: ${detail || text.slice(0, 300)}`);
 }
 
+/** Map a `TransportError` to a `ModelError`: `timeout` for a timeout, `unreachable` for a refused connection, `http` for a reset. */
 export function transportFailure(provider: LocalProviderId, baseUrl: string, err: TransportError): ModelError {
   if (err.kind === "timeout") return timeoutError(provider, err.message);
   if (err.kind === "unreachable") return unreachableError(provider, baseUrl, err.message);
   return new ModelError(provider, "http", `${provider} connection failed at ${baseUrl}: ${err.message}`);
 }
 
+/**
+ * Throw before a request when the server is already known to lack a feature the request needs: tools
+ * when `tools` is `false` and the request lists tools, JSON mode when `json` is `false` and the request
+ * asks for it. A value of `"unknown"` or `undefined` passes.
+ */
 export function guardKnownFeatures(
   provider: LocalProviderId,
   model: string,

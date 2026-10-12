@@ -246,6 +246,9 @@ def _proxy_url() -> str:
 
 
 def grade(key: str, deliverables: Path, keep: bool = False, **_) -> dict:
+  """Grade a WorkBuddy deliverables folder (agent.patch and artifacts/) for the task `key`
+  (`<domain>__<task>`). Run the driver of this file under the benchmark's own python and return
+  its `VH_RESULT` dict, or a dict with `score` None and an `error`. `keep` keeps the temp dir."""
   dom, _, tname = key.partition("__")
   if dom not in DS_NAME:
     return {"score": None, "error": f"unknown domain {dom}", "grader": GRADER}
@@ -402,12 +405,16 @@ def _driver(a) -> dict:
   detail = {"image": a.image, "verifier_user": user, "warnings": []}
 
   def sh(*args, check=True, **kw):
+    """Run the command `args` on the host and return the completed process. When `check` is true,
+    raise RuntimeError with the tail of its output on a non-zero exit."""
     r = subprocess.run(list(args), capture_output=True, text=True, **kw)
     if check and r.returncode:
       raise RuntimeError(f"{args[:3]} failed: {(r.stderr or r.stdout)[-600:]}")
     return r
 
   def dexec(cmd, u="root", check=True, cwd=None):
+    """Run the shell command `cmd` with `bash -c` inside the grading container as user `u`,
+    in the directory `cwd` when given. Return the completed process."""
     return sh(
         "docker",
         "exec",
@@ -422,12 +429,17 @@ def _driver(a) -> dict:
     )
 
   class Env:
+    """The minimal environment object the benchmark verifier uses: it runs commands in the
+    grading container with `docker exec` and copies directories with `docker cp`."""
+
     os = TaskOS.LINUX
     capabilities = EnvironmentCapabilities(mounted=False)
 
     async def exec(
         self, command, cwd=None, env=None, timeout_sec=None, user=None
     ):
+      """Run `command` in the container with `bash -c` as `user` (default: the verifier user).
+      Return an ExecResult; kill the process and re-raise when `timeout_sec` passes."""
       argv = [
           "docker",
           "exec",
@@ -453,10 +465,12 @@ def _driver(a) -> dict:
       )
 
     async def upload_dir(self, source_dir, target_dir):
+      """Copy the host folder `source_dir` into `target_dir` in the container."""
       dexec(f"mkdir -p '{target_dir}'")
       sh("docker", "cp", f"{source_dir}/.", f"{cid}:{target_dir}")
 
     async def download_dir(self, source_dir, target_dir):
+      """Copy `source_dir` from the container into the host folder `target_dir`."""
       Path(target_dir).mkdir(parents=True, exist_ok=True)
       sh("docker", "cp", f"{cid}:{source_dir}/.", str(target_dir))
 

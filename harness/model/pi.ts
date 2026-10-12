@@ -26,11 +26,17 @@ import { DEFAULT_PI_MAX_TOKENS, PI_PLACEHOLDER_API_KEY, type LocalModelConfig } 
 import { ModelError } from "./types.js";
 import { apiRoots } from "./url.js";
 
+/** One provider entry for pi's `models.json`: its `id` is the key and `config` is the value stored under it. */
 export interface PiProviderRecord {
   id: string;
   config: Record<string, unknown>;
 }
 
+/**
+ * Build the pi provider record for `resolvedModel`. The window is `contextWindow` when positive, else
+ * `config.contextSize`; with neither, it throws. `maxTokens` is capped at the window, and the sampling
+ * values that `config` sets are written to the model as `samplingParams`.
+ */
 export function buildPiProvider(
   config: LocalModelConfig,
   resolvedModel: string,

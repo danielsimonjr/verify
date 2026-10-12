@@ -420,11 +420,12 @@ describe("veriharness workers", () => {
     expect(existsSync(join(out, "deliverables", "report.json"))).toBe(false);
   });
 
-  test("a window at or below the compaction reserve is warned about: pi compacts after every turn", async () => {
+  test("a window at or below the compaction reserve is warned about: no room is left, every result is cut", async () => {
     const r = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--context-size", "16384"], fake());
-    expect(r.stderr).toContain("pi compacts above the window less 16384 tokens");
+    expect(r.stderr).toContain("every result is cut to 1000 characters");
+    expect(r.stderr).not.toContain("ends as compacted");
     const wide = await workers([batchRoot(["b01"]), ...OLLAMA, "--count", "1", "--context-size", "65536"], fake());
-    expect(wide.stderr).not.toContain("pi compacts above the window less");
+    expect(wide.stderr).not.toContain("every result is cut");
   });
 
   /** The sampling parameters pi is given for a job: the first job's provider record. */

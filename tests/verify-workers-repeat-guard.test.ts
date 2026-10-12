@@ -27,6 +27,7 @@ import repeatGuard, {
   findRunaway,
   MAX_FAILURES_IN_A_ROW,
   MIN_RESULT_CHARS,
+  noRoomWarning,
   REPEAT_REASON,
   RUNAWAY_MIN_UNIT,
   RUNAWAY_REPEATS,
@@ -401,6 +402,29 @@ describe("capResult", () => {
 
   test("a result that fits in half of the room is not touched", () => {
     expect(capResult(text(5000), usage(10000))).toBeUndefined();
+  });
+
+  test("a window at or below the reserve leaves no room: every result is cut to MIN_RESULT_CHARS, and pi has not compacted", () => {
+    // Measured on a pi session with the window registered at 12288 (reserve 16384): 5 tool results, each
+    // cut to about 1000 characters, 0 compactions, peak context 2503 tokens.
+    for (const contextWindow of [12288, COMPACTION_RESERVE_TOKENS]) {
+      const out = capResult(text(5000), { tokens: 100, contextWindow })!;
+      const body = textOf(out);
+      expect(body.startsWith("x".repeat(MIN_RESULT_CHARS))).toBe(true);
+      expect(body.slice(0, MIN_RESULT_CHARS + 1)).not.toBe("x".repeat(MIN_RESULT_CHARS + 1));
+      expect(body).toContain("room for about 0 more tokens");
+    }
+  });
+
+  test("the warning for a window at or below the reserve says what the guard does, not that the rollout compacts", () => {
+    const warning = noRoomWarning(12288)!;
+    expect(warning).toContain("12288");
+    expect(warning).toContain(String(COMPACTION_RESERVE_TOKENS));
+    expect(warning).toContain(`${MIN_RESULT_CHARS} characters`);
+    expect(warning).not.toContain("ends as compacted");
+    expect(noRoomWarning(COMPACTION_RESERVE_TOKENS)).not.toBeNull();
+    expect(noRoomWarning(COMPACTION_RESERVE_TOKENS + 1)).toBeNull();
+    expect(noRoomWarning(undefined)).toBeNull();
   });
 
   test("a context of unknown size is not touched: nothing is known to cut against", () => {

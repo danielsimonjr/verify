@@ -64,6 +64,7 @@ function writeJsonAtomic(path: string, obj: unknown): void {
   writeFileAtomic(path, JSON.stringify(obj, null, 1));
 }
 
+/** File text given as a string, or as a function that returns the string when the file is written. */
 export type TextOrFn = string | (() => string);
 
 const BLOCK_NAMES = new Set([
@@ -84,6 +85,10 @@ const BLOCK_DIRS = new Set([
   "model_traj",
 ]);
 
+/**
+ * Returns true when a file name may carry grading data: a blocked exact name, a name that starts
+ * with a blocked prefix, or a name that contains a blocked word in any letter case.
+ */
 export function isLeakBlocked(name: string): boolean {
   const low = name.toLowerCase();
   return (
@@ -93,6 +98,10 @@ export function isLeakBlocked(name: string): boolean {
   );
 }
 
+/**
+ * Copies one file to `dst` and creates the parent directory of `dst`. A source with a leak-blocked
+ * name throws an error, or only prints a warning when `lenient` is true.
+ */
 export function copyFile(src: string, dst: string, lenient = false): void {
   if (isLeakBlocked(basename(src))) {
     if (!lenient) {
@@ -104,6 +113,11 @@ export function copyFile(src: string, dst: string, lenient = false): void {
   copyFileSync(src, dst);
 }
 
+/**
+ * Copies the files under `src` to the same relative paths under `dst`, in sorted order, without
+ * following symbolic links. It skips files with a leak-blocked name and files below a blocked
+ * directory name.
+ */
 export function copyTree(src: string, dst: string): void {
   const files = walkFiles(src, { followLinks: false }).sort();
   for (const p of files) {
@@ -114,6 +128,10 @@ export function copyTree(src: string, dst: string): void {
   }
 }
 
+/**
+ * One model attempt at a task. It holds the seed, the score (null when unknown), the files and
+ * texts to write as deliverables, and the trajectory as text or as a function that makes the text.
+ */
 export class Rollout {
   seed: string;
   score: number | null;
@@ -128,6 +146,10 @@ export class Rollout {
   }
 }
 
+/**
+ * One task to materialize. It holds the key, the spec text, the files, texts, trees and
+ * symbolic links of the workspace, and the rollouts by seed.
+ */
 export class Task {
   key: string;
   spec: string;
@@ -147,6 +169,11 @@ function text(v: TextOrFn): string {
   return typeof v === "function" ? v() : v;
 }
 
+/**
+ * Writes one task to `<dataRoot>/<bench>/<pool>/tasks/<key>` and replaces any earlier directory:
+ * the spec, the workspace, and for each rollout (labels `r01`, `r02`, ... in seed order) its
+ * deliverables and trajectory. Returns the meta record that maps each label to its seed and score.
+ */
 export async function writeTask(
   bench: string,
   pool: string,
@@ -208,8 +235,14 @@ export async function writeTask(
   return meta;
 }
 
+/** A synchronous or asynchronous sequence of tasks, as an adapter's `iterTasks` returns. */
 export type TaskIterable = Iterable<Task> | AsyncIterable<Task>;
 
+/**
+ * Parses `--pool`, `--only` (may repeat) and `--limit` from `argv`. Returns the list of pools (all
+ * of `pools` for `all`), the set of task keys to keep or null, and the limit or undefined. Throws
+ * UsageError for an unknown argument, a missing value, a bad limit or an unknown pool.
+ */
 export function parseCliArgs(argv: string[], pools: string[]) {
   let pool = "all";
   const only: string[] = [];
@@ -243,6 +276,11 @@ export function parseCliArgs(argv: string[], pools: string[]) {
   return { poolList, only: only.length ? new Set(only) : null, limit };
 }
 
+/**
+ * Materializes the tasks of each selected pool that `iterTasks` yields, and records each one in the
+ * pool's `meta.json` and a `.done` marker. It skips a task that is already done and a task with
+ * fewer than two rollouts, and stops at the limit. Returns exit code 0.
+ */
 export async function runCli(
   bench: string,
   pools: string[],

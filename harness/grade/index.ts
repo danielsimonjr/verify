@@ -19,6 +19,10 @@ import { basename, dirname } from "node:path";
 import { BENCHES, type Bench } from "../config.js";
 import { assertNoLinkBelow, SymlinkError } from "../fsutil.js";
 
+/**
+ * The result of one grading: `score` is a number, or null when the grader could not score.
+ * `error` says why a grade failed; the other fields carry grader output.
+ */
 export type GradeResult = {
   score: number | null;
   error?: string | null;
@@ -29,6 +33,10 @@ export type GradeResult = {
   [key: string]: unknown;
 };
 
+/**
+ * The shape of a per-benchmark grader module. `grade` is required; `preflight` and
+ * `gradeBatch` are optional.
+ */
 export type GradeModule = {
   grade: (key: string, deliverables: string, ...args: unknown[]) => GradeResult | Promise<GradeResult>;
   preflight?: () => string | Promise<string>;
@@ -38,6 +46,7 @@ export type GradeModule = {
   ) => Record<string, GradeResult> | Promise<Record<string, GradeResult>>;
 };
 
+/** Import the grader module of the benchmark `bench`. Throws when `bench` is not in `BENCHES`. */
 export async function loadGradeModule(bench: string): Promise<GradeModule> {
   if (!BENCHES.includes(bench as Bench)) {
     throw new Error(`unknown bench ${JSON.stringify(bench)}`);
@@ -45,6 +54,10 @@ export async function loadGradeModule(bench: string): Promise<GradeModule> {
   return (await import(`./${bench}.js`)) as GradeModule;
 }
 
+/**
+ * Grade one deliverables folder with the grader of `bench`. A symbolic link at or below the
+ * folder returns a null score with an error before the grader loads. `kw` passes to the grader.
+ */
 export async function gradeDeliverables(
   bench: string,
   key: string,
@@ -65,6 +78,7 @@ export async function gradeDeliverables(
   return ret instanceof Promise ? await ret : ret;
 }
 
+/** Run the `preflight` check of the grader of `bench`. Returns "" when the grader is ready or has no check, else the problem text. */
 export async function preflight(bench: string): Promise<string> {
   const mod = await loadGradeModule(bench);
   if (!mod.preflight) return "";

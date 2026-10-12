@@ -83,6 +83,11 @@ function rolloutPayload(td: string): [string, string][] {
     .map((p) => [p, posixRel(outDir, p)] as [string, string]);
 }
 
+/**
+ * Yields one task for each task directory found in the finished runs of the pool's model, in key
+ * order. Each run adds one rollout whose score is the share of rubrics that passed (null when the
+ * judge failed). A task with no rubrics or no judge file in a run adds nothing for that run.
+ */
 export function* iterTasks(pool: string): Generator<Task> {
   const model = POOLS[pool]!;
   const metas = taskMeta();

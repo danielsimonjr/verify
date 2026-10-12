@@ -20,6 +20,10 @@ import { gradeDeliverables } from "./index.js";
 
 const USAGE = "usage: veriharness grade <bench> <task_key> <deliverables_dir> [--json]\n";
 
+/**
+ * Run `veriharness grade`: grade the deliverables folder of one task and print the score
+ * (`--json` prints the whole result). Returns 0 on success, 2 for bad arguments, 1 when the grader throws.
+ */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   let json = false;
   const args: string[] = [];
