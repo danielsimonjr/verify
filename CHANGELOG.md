@@ -4,6 +4,12 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- Raise `fast-xml-parser` from 5.11.2 to 5.12.0 (`^5.12.0`) in `package.json`, `package-lock.json` and
+  `bun.lock`. Version 5.12.0 is the first patched version for Dependabot alert 3 (low severity).
+
 ## [0.12.15] - 2026-10-12
 
 ### Fixed
