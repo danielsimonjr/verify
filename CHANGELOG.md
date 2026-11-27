@@ -6,6 +6,9 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- The test of a relative `CLAUDE_CONFIG_DIR` runs in its own temp folder, so a test run no longer leaves `rel-config-dir-for-test` in the repo root.
+
 ## [0.12.16] - 2026-11-27
 
 ### Security
