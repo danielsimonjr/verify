@@ -6,6 +6,8 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.12.16] - 2026-11-27
+
 ### Security
 - Raise `fast-xml-parser` from 5.11.2 to 5.12.0 (`^5.12.0`) in `package.json`, `package-lock.json` and
   `bun.lock`. Version 5.12.0 is the first patched version for Dependabot alert 3 (low severity).
