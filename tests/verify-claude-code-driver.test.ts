@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { ClaudeRuntime, SESSION_MARKERS } from "../harness/claude/index.ts";
 import { SKILLS_DIR } from "../harness/config.ts";
@@ -183,10 +185,20 @@ describe("the command line of every turn", () => {
   });
 
   test("a relative or ~ CLAUDE_CONFIG_DIR reaches the child as the absolute path the harness uses", async () => {
-    rig.script(happyRules(rig.ws));
-    await rig.run(ARGS, { CLAUDE_CONFIG_DIR: "rel-config-dir-for-test" });
-    expect(rig.calls().length).toBeGreaterThan(0);
-    for (const { env } of rig.calls()) expect(env.CLAUDE_CONFIG_DIR).toBe(resolve("rel-config-dir-for-test"));
+    const repoRoot = fileURLToPath(new URL("../", import.meta.url));
+    const workdir = mkdtempSync(join(tmpdir(), "vcc-cwd-"));
+    const previous = process.cwd();
+    try {
+      process.chdir(workdir);
+      rig.script(happyRules(rig.ws));
+      await rig.run(ARGS, { CLAUDE_CONFIG_DIR: "rel-config-dir-for-test" });
+      expect(rig.calls().length).toBeGreaterThan(0);
+      for (const { env } of rig.calls()) expect(env.CLAUDE_CONFIG_DIR).toBe(resolve("rel-config-dir-for-test"));
+      expect(existsSync(join(repoRoot, "rel-config-dir-for-test"))).toBe(false);
+    } finally {
+      process.chdir(previous);
+      rmSync(workdir, { recursive: true, force: true });
+    }
   });
 
   test("the skill library is added with --add-dir, and not when there are no skills", async () => {
